@@ -32,26 +32,134 @@ sprite_shadow_1  EQU   $0E00                 ; code/colour, 154 sprites; +$0800
                                              ; Y/X, +$1000 flags (308 bytes)
 frame_counter    EQU   $1016                 ; +1 per main IRQ; also the game's
                                              ; randomness
+score_parity     EQU   $1017                 ; (score_p1+1 ^ score_p2+1) & 1,
+                                             ; latched by task_bonus_sequence
+seq_step         EQU   $1018                 ; sprite sequence step of
+                                             ; $F5A5/$F60B
+bonus_anim_idx   EQU   $101D                 ; index 0-23 into dat_F7AE
+score_anim_step  EQU   $101E                 ; task_score_anim frame index
+                                             ; (dat_F0C1)
 flip_screen      EQU   $102C                 ; player 2 on a cocktail cabinet
 cur_player       EQU   $102D                 ; 0 = P1, 1 = P2
-two_players      EQU   $102E
+two_players      EQU   $102E                 ; 1 = two-player game
 game_mode        EQU   $102F                 ; scheduler mode 0-9 (both CPUs)
 main_task        EQU   $1030                 ; main scheduler task index
-player_speed     EQU   $1032
+player_speed     EQU   $1032                 ; fighter movement speed
 stage            EQU   $1035                 ; effective stage (< 60)
+stage_params     EQU   $1036                 ; load_stage_params: $1036 attack
+                                             ; counts, $103A trio thresholds,
+                                             ; $1042/$104A group thresholds,
+                                             ; $1052 dive paths (36 bytes)
+refill_left      EQU   $1071                 ; refills left this stage
+                                             ; (load_stage_params)
+bonus_slots_used EQU   $1074                 ; in-use sprites at $1F27/$1F29
+                                             ; (0-2)
 sub_task         EQU   $107A                 ; sub scheduler task index
+stage_setup_pass EQU   $1081                 ; task_stage_setup: 0 = template
+                                             ; pass, else layout pass
+formation_path_ptr EQU   $1082               ; formation path, 4-byte steps,
+                                             ; restarts at formation_path on
+                                             ; $FF (2 bytes)
 formation_ptr    EQU   $1086                 ; sub: current formation slot (2
                                              ; bytes)
+formation_slot   EQU   $1096                 ; sub: index of the slot
+                                             ; task_formation_move works on
+                                             ; ($FF = none)
+formation_started EQU   $10AC                ; 0 until formation_move first
+                                             ; runs ($55)
 frame_sync       EQU   $10AF                 ; $11 = sub done, $22 = main done
-player_step      EQU   $10D1
-shot_speed       EQU   $10D2
-shot_slots_end   EQU   $10D3                 ; (2 bytes)
-dual_fighter     EQU   $10DB
-lives_p1         EQU   $1104
-lives_p2         EQU   $1105
+group1_count     EQU   $10B0                 ; launch group 1: 64-frame counter
+group1_timer     EQU   $10B1                 ; launch group 1: frame timer (2
+                                             ; bytes)
+group1_index     EQU   $10B3                 ; launch group 1: next position of
+                                             ; dat_FC09 (0-$13)
+group1_mode      EQU   $10B4                 ; launch group 1: non-zero ->
+                                             ; threshold entry 3
+group2_count     EQU   $10B5                 ; launch group 2: counters
+                                             ; $10B5-$10B9 as group 1
+trio_timer       EQU   $10BA                 ; trio launches: frame timer (2
+                                             ; bytes)
+trio_free_count  EQU   $10BC                 ; trio launches: free formation
+                                             ; slots counted
+trio_group       EQU   $10BD                 ; trio launches: group 0-3 of
+                                             ; dat_FDE9
+formation_sprites_dirty EQU   $10BF          ; set:
+                                             ; task_refresh_formation_sprites
+                                             ; redraws
+obj188A_count    EQU   $10C0                 ; slot-42 object: 64-frame counter
+obj188A_done     EQU   $10C1                 ; slot-42 object: no more starts
+capture_anim_idx EQU   $10CD                 ; index into dat_E6F9, step 2,
+                                             ; wraps at $30
+capture_state    EQU   $10CE                 ; 0 idle, 1 steer, 2/3 latch
+                                             ; target Y
+player_step      EQU   $10D1                 ; fighter step per frame
+shot_speed       EQU   $10D2                 ; shot Y step per frame
+shot_slots_end   EQU   $10D3                 ; end of the player shot slots
+                                             ; ($0EA6, or $0EA8) (2 bytes)
+capture_x_hi     EQU   $10D7                 ; capture window X bound (<$D7)
+capture_x_lo     EQU   $10D8                 ; capture window X bound (<$D8)
+player_frozen    EQU   $10D9                 ; non-zero: the player cannot move
+                                             ; (capture, effects)
+capture_substate EQU   $10DA                 ; index into tbl_E7F5
+dual_fighter     EQU   $10DB                 ; dual fighter active
+refill_request   EQU   $10F8                 ; formation refill due
+refill_step      EQU   $10FC                 ; refill fly-in step
+refill_count     EQU   $10FD                 ; placements left in this refill
+player_dying     EQU   $10FE                 ; non-zero while the player dies
+                                             ; (sounds gated)
+refill_delay     EQU   $10FF                 ; refill: calls between placements
+lives_p1         EQU   $1104                 ; player 1 reserve lives
+lives_p2         EQU   $1105                 ; player 2 reserve lives
+effect_request   EQU   $1108                 ; effect spawn requests pending
+                                             ; (task_spawn_effect)
+effect_pos       EQU   $1109                 ; position (Y, X) of the requested
+                                             ; effect (2 bytes)
+effect_flags     EQU   $110B                 ; flags ($80 | type) of the
+                                             ; requested effect
+player_exploding EQU   $110F                 ; the player explosion is running;
+                                             ; alias player_hit
+bonus_obj_count  EQU   $1114                 ; countdown ($32) during which
+                                             ; shots flip pictures
+bonus_obj_div5   EQU   $1115                 ; divides task_move_enemy_shots
+                                             ; calls by 5
+escort_step      EQU   $1116                 ; escort fly-in step
+wing_sprite_idx  EQU   $1117                 ; escort fly-in: wing sprites
+                                             ; placed
+wing_group       EQU   $1118                 ; escort fly-in: wing group
+object_state     EQU   $111D                 ; sub: state of the 4 objects
+                                             ; ($0EE2 + 10k), object_states (4
+                                             ; bytes)
+ready_active     EQU   $112A                 ; 1 while READY counts; also $55 =
+                                             ; formation attacks allowed (sub
+                                             ; $B385)
+formation_end    EQU   $112D                 ; end of the formation scan ($188D
+                                             ; after stage start) (2 bytes)
+bonus_state      EQU   $1132                 ; sub: challenging-stage bonus
+                                             ; object states (tbl_BEDD) (5
+                                             ; bytes)
+bonus_free       EQU   $113A                 ; sub: 1 = bonus object k
+                                             ; done/free (5 bytes)
+challenge_step   EQU   $115A                 ; sub: challenging-stage sequencer
+                                             ; step ($BB96)
+results_delay    EQU   $115B                 ; results screen: frames before
+                                             ; the next step
+results_hits_left EQU   $1162                ; results screen: hit markers
+                                             ; still to draw
+results_count    EQU   $1164                 ; hits counted in the challenging
+                                             ; stage / results
+score_anim_done  EQU   $1176                 ; task_score_anim has finished for
+                                             ; good
 player_y         EQU   $1600                 ; sprite shadow bank 2, slot 0
-player_x         EQU   $1601
+player_x         EQU   $1601                 ; fighter X, low 8 bits (bit 8 in
+                                             ; $1E01)
+formation_y      EQU   $1688                 ; formation block Y, integer part
+                                             ; (fraction $0E88)
+formation_x      EQU   $1689                 ; formation block X, integer part
+                                             ; (fraction $0E89)
 formation_flags  EQU   $1860                 ; b0: slot occupied (45 bytes)
+shot_fired_flags EQU   $1A10                 ; one per formation member
+                                             ; ($1A10-$1A51): shot already
+                                             ; fired (66 bytes)
 
 
 ; Referenced from: $E015 reset_sub
@@ -193,47 +301,53 @@ A428: 9B 9B 99 96 93 91 8F 8C  FCB    $9B,$9B,$99,$96,$93,$91,$8F,$8C
 A430: 89 86 84 81 7F 7D 7B 78  FCB    $89,$86,$84,$81,$7F,$7D,$7B,$78
 A438: 76 74 74 73 73 72 72 71  FCB    $76,$74,$74,$73,$73,$72,$72,$71
 A440: 71 71 70 70 70 70 70 70  FCB    $71,$71,$70,$70,$70,$70,$70,$70
-A448: F0 A3 A0 30 34 38 3B 3E  FCB    $F0,$A3,$A0,$30,$34,$38,$3B,$3E
-A450: 41 44 46 49 4B 4D 4F 51  FCB    $41,$44,$46,$49,$4B,$4D,$4F,$51
-A458: 53 55 56 57 58 5B 5D 60  FCB    $53,$55,$56,$57,$58,$5B,$5D,$60
-A460: 62 63 65 66 68 69 6C 6D  FCB    $62,$63,$65,$66,$68,$69,$6C,$6D
-A468: 6E 6F 70 71 72 72 74 77  FCB    $6E,$6F,$70,$71,$72,$72,$74,$77
-A470: 78 78 79 79 7A 7B 7C 7C  FCB    $78,$78,$79,$79,$7A,$7B,$7C,$7C
-A478: 7D 7D 7E 7E 7F 7F 80 80  FCB    $7D,$7D,$7E,$7E,$7F,$7F,$80,$80
-A480: 81 81 82 82 82 83 84 84  FCB    $81,$81,$82,$82,$82,$83,$84,$84
-A488: 84 85 86 86 87 87 87 88  FCB    $84,$85,$86,$86,$87,$87,$87,$88
-A490: 89 8A 8B 8C 8D 8E 8E 8F  FCB    $89,$8A,$8B,$8C,$8D,$8E,$8E,$8F
-A498: 8F 90 90 91 92 93 95 98  FCB    $8F,$90,$90,$91,$92,$93,$95,$98
-A4A0: 9B 9E A0 A2 A4 A7 AA AD  FCB    $9B,$9E,$A0,$A2,$A4,$A7,$AA,$AD
-A4A8: B0 B2 00 03 06 08 0A 0B  FCB    $B0,$B2,$00,$03,$06,$08,$0A,$0B
-A4B0: 0F 12 15 18 1A 1C 1E 20  FCB    $0F,$12,$15,$18,$1A,$1C,$1E,$20
-A4B8: 23 25 27 29 2B 2D 2F 32  FCB    $23,$25,$27,$29,$2B,$2D,$2F,$32
-A4C0: 35 37 39 3B 3D 40 42 44  FCB    $35,$37,$39,$3B,$3D,$40,$42,$44
-A4C8: 46 49 4C 4E 50 52 55 58  FCB    $46,$49,$4C,$4E,$50,$52,$55,$58
-A4D0: 5B 5D 60 63 66 69 6C 6E  FCB    $5B,$5D,$60,$63,$66,$69,$6C,$6E
-A4D8: 70 73 75 77 7A 7D 80 83  FCB    $70,$73,$75,$77,$7A,$7D,$80,$83
-A4E0: 85 87 89 8B 8C 8E 90 92  FCB    $85,$87,$89,$8B,$8C,$8E,$90,$92
-A4E8: 95 98 9A 9D A0 A2 A4 A7  FCB    $95,$98,$9A,$9D,$A0,$A2,$A4,$A7
-A4F0: A9 AB AE B0 B2 01 03 05  FCB    $A9,$AB,$AE,$B0,$B2,$01,$03,$05
-A4F8: 06 07 08 09 08 07 06 05  FCB    $06,$07,$08,$09,$08,$07,$06,$05
-A500: 04 03 02 01 00 00 B3 B1  FCB    $04,$03,$02,$01,$00,$00,$B3,$B1
-A508: AF AE AD AC AB AA AA AA  FCB    $AF,$AE,$AD,$AC,$AB,$AA,$AA,$AA
-A510: AA A9 A9 A9 A9 A8 A8 A8  FCB    $AA,$A9,$A9,$A9,$A9,$A8,$A8,$A8
-A518: A8 A7 A7 A7 A7 A6 A6 A6  FCB    $A8,$A7,$A7,$A7,$A7,$A6,$A6,$A6
-A520: A6 A7 A8 A9 AA AE B2 02  FCB    $A6,$A7,$A8,$A9,$AA,$AE,$B2,$02
-A528: 06 0A 0E 12 16 1A 1E 22  FCB    $06,$0A,$0E,$12,$16,$1A,$1E,$22
-A530: 26 2A 2E 32 36 3A 3E 42  FCB    $26,$2A,$2E,$32,$36,$3A,$3E,$42
-A538: 46 4A 4E 52 56 5A 5E 62  FCB    $46,$4A,$4E,$52,$56,$5A,$5E,$62
-A540: 66 6A 6E 72 76 7A 7E 82  FCB    $66,$6A,$6E,$72,$76,$7A,$7E,$82
-A548: 86 8A 8E 92 96 9A 9E A2  FCB    $86,$8A,$8E,$92,$96,$9A,$9E,$A2
-A550: A6 A9 AB AB AB AB AC AC  FCB    $A6,$A9,$AB,$AB,$AB,$AB,$AC,$AC
-A558: AC AC AD AD AD AD AE AE  FCB    $AC,$AC,$AD,$AD,$AD,$AD,$AE,$AE
-A560: AE AE AF AF AF AF B0 B0  FCB    $AE,$AE,$AF,$AF,$AF,$AF,$B0,$B0
-A568: B0 B0 B1 B1 B1 B2 B2 B2  FCB    $B0,$B0,$B1,$B1,$B1,$B2,$B2,$B2
-A570: F0 A4 4B                 FCB    $F0,$A4,$4B
+A448: F0 A3 A0                 FCB    $F0,$A3,$A0
 
-; Referenced from: $F6AE sub_F60B
-dat_A573:
+; Path stream (gp2-8): shares its first 151 headings with path_C000; ends F0 A4
+; 4B.
+path_A44B:
+A44B: 30 34 38 3B 3E 41 44 46  FCB    $30,$34,$38,$3B,$3E,$41,$44,$46
+A453: 49 4B 4D 4F 51 53 55 56  FCB    $49,$4B,$4D,$4F,$51,$53,$55,$56
+A45B: 57 58 5B 5D 60 62 63 65  FCB    $57,$58,$5B,$5D,$60,$62,$63,$65
+A463: 66 68 69 6C 6D 6E 6F 70  FCB    $66,$68,$69,$6C,$6D,$6E,$6F,$70
+A46B: 71 72 72 74 77 78 78 79  FCB    $71,$72,$72,$74,$77,$78,$78,$79
+A473: 79 7A 7B 7C 7C 7D 7D 7E  FCB    $79,$7A,$7B,$7C,$7C,$7D,$7D,$7E
+A47B: 7E 7F 7F 80 80 81 81 82  FCB    $7E,$7F,$7F,$80,$80,$81,$81,$82
+A483: 82 82 83 84 84 84 85 86  FCB    $82,$82,$83,$84,$84,$84,$85,$86
+A48B: 86 87 87 87 88 89 8A 8B  FCB    $86,$87,$87,$87,$88,$89,$8A,$8B
+A493: 8C 8D 8E 8E 8F 8F 90 90  FCB    $8C,$8D,$8E,$8E,$8F,$8F,$90,$90
+A49B: 91 92 93 95 98 9B 9E A0  FCB    $91,$92,$93,$95,$98,$9B,$9E,$A0
+A4A3: A2 A4 A7 AA AD B0 B2 00  FCB    $A2,$A4,$A7,$AA,$AD,$B0,$B2,$00
+A4AB: 03 06 08 0A 0B 0F 12 15  FCB    $03,$06,$08,$0A,$0B,$0F,$12,$15
+A4B3: 18 1A 1C 1E 20 23 25 27  FCB    $18,$1A,$1C,$1E,$20,$23,$25,$27
+A4BB: 29 2B 2D 2F 32 35 37 39  FCB    $29,$2B,$2D,$2F,$32,$35,$37,$39
+A4C3: 3B 3D 40 42 44 46 49 4C  FCB    $3B,$3D,$40,$42,$44,$46,$49,$4C
+A4CB: 4E 50 52 55 58 5B 5D 60  FCB    $4E,$50,$52,$55,$58,$5B,$5D,$60
+A4D3: 63 66 69 6C 6E 70 73 75  FCB    $63,$66,$69,$6C,$6E,$70,$73,$75
+A4DB: 77 7A 7D 80 83 85 87 89  FCB    $77,$7A,$7D,$80,$83,$85,$87,$89
+A4E3: 8B 8C 8E 90 92 95 98 9A  FCB    $8B,$8C,$8E,$90,$92,$95,$98,$9A
+A4EB: 9D A0 A2 A4 A7 A9 AB AE  FCB    $9D,$A0,$A2,$A4,$A7,$A9,$AB,$AE
+A4F3: B0 B2 01 03 05 06 07 08  FCB    $B0,$B2,$01,$03,$05,$06,$07,$08
+A4FB: 09 08 07 06 05 04 03 02  FCB    $09,$08,$07,$06,$05,$04,$03,$02
+A503: 01 00 00 B3 B1 AF AE AD  FCB    $01,$00,$00,$B3,$B1,$AF,$AE,$AD
+A50B: AC AB AA AA AA AA A9 A9  FCB    $AC,$AB,$AA,$AA,$AA,$AA,$A9,$A9
+A513: A9 A9 A8 A8 A8 A8 A7 A7  FCB    $A9,$A9,$A8,$A8,$A8,$A8,$A7,$A7
+A51B: A7 A7 A6 A6 A6 A6 A7 A8  FCB    $A7,$A7,$A6,$A6,$A6,$A6,$A7,$A8
+A523: A9 AA AE B2 02 06 0A 0E  FCB    $A9,$AA,$AE,$B2,$02,$06,$0A,$0E
+A52B: 12 16 1A 1E 22 26 2A 2E  FCB    $12,$16,$1A,$1E,$22,$26,$2A,$2E
+A533: 32 36 3A 3E 42 46 4A 4E  FCB    $32,$36,$3A,$3E,$42,$46,$4A,$4E
+A53B: 52 56 5A 5E 62 66 6A 6E  FCB    $52,$56,$5A,$5E,$62,$66,$6A,$6E
+A543: 72 76 7A 7E 82 86 8A 8E  FCB    $72,$76,$7A,$7E,$82,$86,$8A,$8E
+A54B: 92 96 9A 9E A2 A6 A9 AB  FCB    $92,$96,$9A,$9E,$A2,$A6,$A9,$AB
+A553: AB AB AB AC AC AC AC AD  FCB    $AB,$AB,$AB,$AC,$AC,$AC,$AC,$AD
+A55B: AD AD AD AE AE AE AE AF  FCB    $AD,$AD,$AD,$AE,$AE,$AE,$AE,$AF
+A563: AF AF AF B0 B0 B0 B0 B1  FCB    $AF,$AF,$AF,$B0,$B0,$B0,$B0,$B1
+A56B: B1 B1 B2 B2 B2 F0 A4 4B  FCB    $B1,$B1,$B2,$B2,$B2,$F0,$A4,$4B
+
+; Path streams of gp2-8 from here on; they jump back to path_C442 and
+; path_CAC1.
+; Referenced from: $F6AE task_bonus_sequence
+path_A573:
 A573: 2A 26 22 1F 1C 19 16 14  FCB    $2A,$26,$22,$1F,$1C,$19,$16,$14
 A57B: 11 0F 0D 0B 09 07 05 04  FCB    $11,$0F,$0D,$0B,$09,$07,$05,$04
 A583: 03 02 B3 B1 AE AC AB A9  FCB    $03,$02,$B3,$B1,$AE,$AC,$AB,$A9
@@ -362,8 +476,9 @@ A953: 24 24 23 23 23 22 22 22  FCB    $24,$24,$23,$23,$23,$22,$22,$22
 A95B: 21 21 21 20 20 20 1F 1F  FCB    $21,$21,$21,$20,$20,$20,$1F,$1F
 A963: 1F 1E 1E 1E FF CA C1     FCB    $1F,$1E,$1E,$1E,$FF,$CA,$C1
 
-; Referenced from: $B2FA sub_B242
-dat_A96A:
+; formation_home octant table (heading towards the target).
+; Referenced from: $B2FA formation_home
+home_octants_a:
 A96A: A9 7C A9 8E A9 97 A9 A0  FCB    $A9,$7C,$A9,$8E,$A9,$97,$A9,$A0
 A972: A9 A9 A9 B2 A9 BB A9 C4  FCB    $A9,$A9,$A9,$B2,$A9,$BB,$A9,$C4
 A97A: A9 CD 00 2D 00 2D 00 2D  FCB    $A9,$CD,$00,$2D,$00,$2D,$00,$2D
@@ -379,8 +494,9 @@ A9C2: 18 1A 00 04 08 0B 0F 12  FCB    $18,$1A,$00,$04,$08,$0B,$0F,$12
 A9CA: 14 16 18 00 03 07 0A 0D  FCB    $14,$16,$18,$00,$03,$07,$0A,$0D
 A9D2: 10 12 14 16              FCB    $10,$12,$14,$16
 
-; Referenced from: $B2DF sub_B242
-dat_A9D6:
+; formation_home octant table.
+; Referenced from: $B2DF formation_home
+home_octants_b:
 A9D6: A9 E8 A9 F1 A9 FA AA 03  FCB    $A9,$E8,$A9,$F1,$A9,$FA,$AA,$03
 A9DE: AA 0C AA 15 AA 1E AA 27  FCB    $AA,$0C,$AA,$15,$AA,$1E,$AA,$27
 A9E6: AA 30 2D 2D 2D 2D 2D 2D  FCB    $AA,$30,$2D,$2D,$2D,$2D,$2D,$2D
@@ -395,8 +511,9 @@ AA26: 3F 5A 56 52 4E 4B 48 45  FCB    $3F,$5A,$56,$52,$4E,$4B,$48,$45
 AA2E: 43 41 5A 56 53 4F 4C 4A  FCB    $43,$41,$5A,$56,$53,$4F,$4C,$4A
 AA36: 47 45 43                 FCB    $47,$45,$43
 
-; Referenced from: $B30F sub_B242
-dat_AA39:
+; formation_home octant table.
+; Referenced from: $B30F formation_home
+home_octants_c:
 AA39: AA 4B AA 54 AA 5D AA 66  FCB    $AA,$4B,$AA,$54,$AA,$5D,$AA,$66
 AA41: AA 6F AA 78 AA 81 AA 8A  FCB    $AA,$6F,$AA,$78,$AA,$81,$AA,$8A
 AA49: AA 93 87 87 87 87 87 87  FCB    $AA,$93,$87,$87,$87,$87,$87,$87
@@ -411,8 +528,9 @@ AA89: 74 5A 5E 62 65 69 6C 6E  FCB    $74,$5A,$5E,$62,$65,$69,$6C,$6E
 AA91: 70 72 5A 5D 61 64 67 6A  FCB    $70,$72,$5A,$5D,$61,$64,$67,$6A
 AA99: 6C 6E 70                 FCB    $6C,$6E,$70
 
-; Referenced from: $B31C sub_B242
-dat_AA9C:
+; formation_home octant table.
+; Referenced from: $B31C formation_home
+home_octants_d:
 AA9C: AA AE AA B7 AA C0 AA C9  FCB    $AA,$AE,$AA,$B7,$AA,$C0,$AA,$C9
 AAA4: AA D2 AA DB AA E4 AA ED  FCB    $AA,$D2,$AA,$DB,$AA,$E4,$AA,$ED
 AAAC: AA F6 87 87 87 87 87 87  FCB    $AA,$F6,$87,$87,$87,$87,$87,$87
@@ -427,101 +545,196 @@ AAEC: 99 00 B0 AC A8 A5 A2 9F  FCB    $99,$00,$B0,$AC,$A8,$A5,$A2,$9F
 AAF4: 9D 9B 00 B0 AD A9 A6 A4  FCB    $9D,$9B,$00,$B0,$AD,$A9,$A6,$A4
 AAFC: A1 9F 9D                 FCB    $A1,$9F,$9D
 
-; Referenced from: $B178 sub_B163
-dat_AAFF:
-AAFF: 08 7F 00 26 08 7F 04 26  FCB    $08,$7F,$00,$26,$08,$7F,$04,$26
-AB07: 08 7F 09 26 08 7F 0D 26  FCB    $08,$7F,$09,$26,$08,$7F,$0D,$26
-AB0F: 08 7E 12 25 08 7E 16 25  FCB    $08,$7E,$12,$25,$08,$7E,$16,$25
-AB17: 08 7D 1B 25 08 7C 1F 25  FCB    $08,$7D,$1B,$25,$08,$7C,$1F,$25
-AB1F: 08 7B 23 25 08 79 27 25  FCB    $08,$7B,$23,$25,$08,$79,$27,$25
-AB27: 08 78 2C 25 08 76 30 24  FCB    $08,$78,$2C,$25,$08,$76,$30,$24
-AB2F: 08 74 34 24 08 73 38 24  FCB    $08,$74,$34,$24,$08,$73,$38,$24
-AB37: 08 71 3C 24 08 6E 40 24  FCB    $08,$71,$3C,$24,$08,$6E,$40,$24
-AB3F: 08 6C 44 24 08 6A 47 24  FCB    $08,$6C,$44,$24,$08,$6A,$47,$24
-AB47: 08 67 4B 24 08 64 4E 23  FCB    $08,$67,$4B,$24,$08,$64,$4E,$23
-AB4F: 08 62 52 23 08 5F 55 23  FCB    $08,$62,$52,$23,$08,$5F,$55,$23
-AB57: 08 5C 59 23 08 59 5C 23  FCB    $08,$5C,$59,$23,$08,$59,$5C,$23
-AB5F: 08 55 5F 23 08 52 62 23  FCB    $08,$55,$5F,$23,$08,$52,$62,$23
-AB67: 08 4E 64 22 08 4B 67 22  FCB    $08,$4E,$64,$22,$08,$4B,$67,$22
-AB6F: 08 47 6A 22 08 44 6C 22  FCB    $08,$47,$6A,$22,$08,$44,$6C,$22
-AB77: 08 40 6E 22 08 3C 71 22  FCB    $08,$40,$6E,$22,$08,$3C,$71,$22
-AB7F: 08 38 73 22 08 34 74 22  FCB    $08,$38,$73,$22,$08,$34,$74,$22
-AB87: 08 30 76 21 08 2C 78 21  FCB    $08,$30,$76,$21,$08,$2C,$78,$21
-AB8F: 08 27 79 21 08 23 7B 21  FCB    $08,$27,$79,$21,$08,$23,$7B,$21
-AB97: 08 1F 7C 21 08 1B 7D 21  FCB    $08,$1F,$7C,$21,$08,$1B,$7D,$21
-AB9F: 08 16 7E 21 08 12 7E 00  FCB    $08,$16,$7E,$21,$08,$12,$7E,$00
-ABA7: 08 0D 7F 00 08 09 7F 00  FCB    $08,$0D,$7F,$00,$08,$09,$7F,$00
-ABAF: 08 04 7F 00 08 00 7F 00  FCB    $08,$04,$7F,$00,$08,$00,$7F,$00
-ABB7: 88 04 7F 00 88 09 7F 00  FCB    $88,$04,$7F,$00,$88,$09,$7F,$00
-ABBF: 88 0D 7F 00 88 12 7E 01  FCB    $88,$0D,$7F,$00,$88,$12,$7E,$01
-ABC7: 88 16 7E 01 88 1B 7D 01  FCB    $88,$16,$7E,$01,$88,$1B,$7D,$01
-ABCF: 88 1F 7C 01 88 23 7B 01  FCB    $88,$1F,$7C,$01,$88,$23,$7B,$01
-ABD7: 88 27 79 01 88 2C 78 01  FCB    $88,$27,$79,$01,$88,$2C,$78,$01
-ABDF: 88 30 76 02 88 34 74 02  FCB    $88,$30,$76,$02,$88,$34,$74,$02
-ABE7: 88 38 73 02 88 3C 71 02  FCB    $88,$38,$73,$02,$88,$3C,$71,$02
-ABEF: 88 40 6E 02 88 44 6C 02  FCB    $88,$40,$6E,$02,$88,$44,$6C,$02
-ABF7: 88 47 6A 02 88 4B 67 02  FCB    $88,$47,$6A,$02,$88,$4B,$67,$02
-ABFF: 88 4E 64 03 88 52 62 03  FCB    $88,$4E,$64,$03,$88,$52,$62,$03
-AC07: 88 55 5F 03 88 59 5C 03  FCB    $88,$55,$5F,$03,$88,$59,$5C,$03
-AC0F: 88 5C 59 03 88 5F 55 03  FCB    $88,$5C,$59,$03,$88,$5F,$55,$03
-AC17: 88 62 52 03 88 64 4E 04  FCB    $88,$62,$52,$03,$88,$64,$4E,$04
-AC1F: 88 67 4B 04 88 6A 47 04  FCB    $88,$67,$4B,$04,$88,$6A,$47,$04
-AC27: 88 6C 44 04 88 6E 40 04  FCB    $88,$6C,$44,$04,$88,$6E,$40,$04
-AC2F: 88 71 3C 04 88 73 38 04  FCB    $88,$71,$3C,$04,$88,$73,$38,$04
-AC37: 88 74 34 04 88 76 30 05  FCB    $88,$74,$34,$04,$88,$76,$30,$05
-AC3F: 88 78 2C 05 88 79 27 05  FCB    $88,$78,$2C,$05,$88,$79,$27,$05
-AC47: 88 7B 23 05 88 7C 1F 05  FCB    $88,$7B,$23,$05,$88,$7C,$1F,$05
-AC4F: 88 7D 1B 05 88 7E 16 05  FCB    $88,$7D,$1B,$05,$88,$7E,$16,$05
-AC57: 88 7E 12 06 88 7F 0D 06  FCB    $88,$7E,$12,$06,$88,$7F,$0D,$06
-AC5F: 88 7F 09 06 88 7F 04 06  FCB    $88,$7F,$09,$06,$88,$7F,$04,$06
-AC67: 88 7F 00 06 80 7F 04 06  FCB    $88,$7F,$00,$06,$80,$7F,$04,$06
-AC6F: 80 7F 09 06 80 7F 0D 06  FCB    $80,$7F,$09,$06,$80,$7F,$0D,$06
-AC77: 80 7E 12 07 80 7E 16 07  FCB    $80,$7E,$12,$07,$80,$7E,$16,$07
-AC7F: 80 7D 1B 07 80 7C 1F 07  FCB    $80,$7D,$1B,$07,$80,$7C,$1F,$07
-AC87: 80 7B 23 07 80 79 27 07  FCB    $80,$7B,$23,$07,$80,$79,$27,$07
-AC8F: 80 78 2C 07 80 76 30 08  FCB    $80,$78,$2C,$07,$80,$76,$30,$08
-AC97: 80 74 34 08 80 73 38 08  FCB    $80,$74,$34,$08,$80,$73,$38,$08
-AC9F: 80 71 3C 08 80 6E 40 08  FCB    $80,$71,$3C,$08,$80,$6E,$40,$08
-ACA7: 80 6C 44 08 80 6A 47 08  FCB    $80,$6C,$44,$08,$80,$6A,$47,$08
-ACAF: 80 67 4B 08 80 64 4E 09  FCB    $80,$67,$4B,$08,$80,$64,$4E,$09
-ACB7: 80 62 52 09 80 5F 55 09  FCB    $80,$62,$52,$09,$80,$5F,$55,$09
-ACBF: 80 5C 59 09 80 59 5C 09  FCB    $80,$5C,$59,$09,$80,$59,$5C,$09
-ACC7: 80 55 5F 09 80 52 62 09  FCB    $80,$55,$5F,$09,$80,$52,$62,$09
-ACCF: 80 4E 64 0A 80 4B 67 0A  FCB    $80,$4E,$64,$0A,$80,$4B,$67,$0A
-ACD7: 80 47 6A 0A 80 44 6C 0A  FCB    $80,$47,$6A,$0A,$80,$44,$6C,$0A
-ACDF: 80 40 6E 0A 80 3C 71 0A  FCB    $80,$40,$6E,$0A,$80,$3C,$71,$0A
-ACE7: 80 38 73 0A 80 34 74 0A  FCB    $80,$38,$73,$0A,$80,$34,$74,$0A
-ACEF: 80 30 76 0B 80 2C 78 0B  FCB    $80,$30,$76,$0B,$80,$2C,$78,$0B
-ACF7: 80 27 79 0B 80 23 7B 0B  FCB    $80,$27,$79,$0B,$80,$23,$7B,$0B
-ACFF: 80 1F 7C 0B 80 1B 7D 0B  FCB    $80,$1F,$7C,$0B,$80,$1B,$7D,$0B
-AD07: 80 16 7E 0B 80 12 7E 10  FCB    $80,$16,$7E,$0B,$80,$12,$7E,$10
-AD0F: 80 0D 7F 10 80 09 7F 10  FCB    $80,$0D,$7F,$10,$80,$09,$7F,$10
-AD17: 80 04 7F 10 80 00 7F 10  FCB    $80,$04,$7F,$10,$80,$00,$7F,$10
-AD1F: 00 04 7F 10 00 09 7F 10  FCB    $00,$04,$7F,$10,$00,$09,$7F,$10
-AD27: 00 0D 7F 10 00 12 7E 2B  FCB    $00,$0D,$7F,$10,$00,$12,$7E,$2B
-AD2F: 00 16 7E 2B 00 1B 7D 2B  FCB    $00,$16,$7E,$2B,$00,$1B,$7D,$2B
-AD37: 00 1F 7C 2B 00 23 7B 2B  FCB    $00,$1F,$7C,$2B,$00,$23,$7B,$2B
-AD3F: 00 27 79 2B 00 2C 78 2B  FCB    $00,$27,$79,$2B,$00,$2C,$78,$2B
-AD47: 00 30 76 2A 00 34 74 2A  FCB    $00,$30,$76,$2A,$00,$34,$74,$2A
-AD4F: 00 38 73 2A 00 3C 71 2A  FCB    $00,$38,$73,$2A,$00,$3C,$71,$2A
-AD57: 00 40 6E 2A 00 44 6C 2A  FCB    $00,$40,$6E,$2A,$00,$44,$6C,$2A
-AD5F: 00 47 6A 2A 00 4B 67 2A  FCB    $00,$47,$6A,$2A,$00,$4B,$67,$2A
-AD67: 00 4E 64 29 00 52 62 29  FCB    $00,$4E,$64,$29,$00,$52,$62,$29
-AD6F: 00 55 5F 29 00 59 5C 29  FCB    $00,$55,$5F,$29,$00,$59,$5C,$29
-AD77: 00 5C 59 29 00 5F 55 29  FCB    $00,$5C,$59,$29,$00,$5F,$55,$29
-AD7F: 00 62 52 29 00 64 4E 28  FCB    $00,$62,$52,$29,$00,$64,$4E,$28
-AD87: 00 67 4B 28 00 6A 47 28  FCB    $00,$67,$4B,$28,$00,$6A,$47,$28
-AD8F: 00 6C 44 28 00 6E 40 28  FCB    $00,$6C,$44,$28,$00,$6E,$40,$28
-AD97: 00 71 3C 28 00 73 38 28  FCB    $00,$71,$3C,$28,$00,$73,$38,$28
-AD9F: 00 74 34 28 00 76 30 27  FCB    $00,$74,$34,$28,$00,$76,$30,$27
-ADA7: 00 78 2C 27 00 79 27 27  FCB    $00,$78,$2C,$27,$00,$79,$27,$27
-ADAF: 00 7B 23 27 00 7C 1F 27  FCB    $00,$7B,$23,$27,$00,$7C,$1F,$27
-ADB7: 00 7D 1B 27 00 7E 16 27  FCB    $00,$7D,$1B,$27,$00,$7E,$16,$27
-ADBF: 00 7E 12 26 00 7F 0D 26  FCB    $00,$7E,$12,$26,$00,$7F,$0D,$26
-ADC7: 00 7F 09 26 00 7F 04 26  FCB    $00,$7F,$09,$26,$00,$7F,$04,$26
+; Heading table: 180 entries x 4 bytes, indexed by a path heading byte: 0 sign
+; bits (b7 subtract on axis 1, b3 on axis 2), 1-2 speed on axis 1/2 (MUL by
+; [$1098]/8), 3 picture (low nibble frame, b4-5 flip).
+; Referenced from: $B178 formation_move_sprite
+heading_table:
+AAFF: 08 7F 00 26              FCB    $08,$7F,$00,$26
+AB03: 08 7F 04 26              FCB    $08,$7F,$04,$26
+AB07: 08 7F 09 26              FCB    $08,$7F,$09,$26
+AB0B: 08 7F 0D 26              FCB    $08,$7F,$0D,$26
+AB0F: 08 7E 12 25              FCB    $08,$7E,$12,$25
+AB13: 08 7E 16 25              FCB    $08,$7E,$16,$25
+AB17: 08 7D 1B 25              FCB    $08,$7D,$1B,$25
+AB1B: 08 7C 1F 25              FCB    $08,$7C,$1F,$25
+AB1F: 08 7B 23 25              FCB    $08,$7B,$23,$25
+AB23: 08 79 27 25              FCB    $08,$79,$27,$25
+AB27: 08 78 2C 25              FCB    $08,$78,$2C,$25
+AB2B: 08 76 30 24              FCB    $08,$76,$30,$24
+AB2F: 08 74 34 24              FCB    $08,$74,$34,$24
+AB33: 08 73 38 24              FCB    $08,$73,$38,$24
+AB37: 08 71 3C 24              FCB    $08,$71,$3C,$24
+AB3B: 08 6E 40 24              FCB    $08,$6E,$40,$24
+AB3F: 08 6C 44 24              FCB    $08,$6C,$44,$24
+AB43: 08 6A 47 24              FCB    $08,$6A,$47,$24
+AB47: 08 67 4B 24              FCB    $08,$67,$4B,$24
+AB4B: 08 64 4E 23              FCB    $08,$64,$4E,$23
+AB4F: 08 62 52 23              FCB    $08,$62,$52,$23
+AB53: 08 5F 55 23              FCB    $08,$5F,$55,$23
+AB57: 08 5C 59 23              FCB    $08,$5C,$59,$23
+AB5B: 08 59 5C 23              FCB    $08,$59,$5C,$23
+AB5F: 08 55 5F 23              FCB    $08,$55,$5F,$23
+AB63: 08 52 62 23              FCB    $08,$52,$62,$23
+AB67: 08 4E 64 22              FCB    $08,$4E,$64,$22
+AB6B: 08 4B 67 22              FCB    $08,$4B,$67,$22
+AB6F: 08 47 6A 22              FCB    $08,$47,$6A,$22
+AB73: 08 44 6C 22              FCB    $08,$44,$6C,$22
+AB77: 08 40 6E 22              FCB    $08,$40,$6E,$22
+AB7B: 08 3C 71 22              FCB    $08,$3C,$71,$22
+AB7F: 08 38 73 22              FCB    $08,$38,$73,$22
+AB83: 08 34 74 22              FCB    $08,$34,$74,$22
+AB87: 08 30 76 21              FCB    $08,$30,$76,$21
+AB8B: 08 2C 78 21              FCB    $08,$2C,$78,$21
+AB8F: 08 27 79 21              FCB    $08,$27,$79,$21
+AB93: 08 23 7B 21              FCB    $08,$23,$7B,$21
+AB97: 08 1F 7C 21              FCB    $08,$1F,$7C,$21
+AB9B: 08 1B 7D 21              FCB    $08,$1B,$7D,$21
+AB9F: 08 16 7E 21              FCB    $08,$16,$7E,$21
+ABA3: 08 12 7E 00              FCB    $08,$12,$7E,$00
+ABA7: 08 0D 7F 00              FCB    $08,$0D,$7F,$00
+ABAB: 08 09 7F 00              FCB    $08,$09,$7F,$00
+ABAF: 08 04 7F 00              FCB    $08,$04,$7F,$00
+ABB3: 08 00 7F 00              FCB    $08,$00,$7F,$00
+ABB7: 88 04 7F 00              FCB    $88,$04,$7F,$00
+ABBB: 88 09 7F 00              FCB    $88,$09,$7F,$00
+ABBF: 88 0D 7F 00              FCB    $88,$0D,$7F,$00
+ABC3: 88 12 7E 01              FCB    $88,$12,$7E,$01
+ABC7: 88 16 7E 01              FCB    $88,$16,$7E,$01
+ABCB: 88 1B 7D 01              FCB    $88,$1B,$7D,$01
+ABCF: 88 1F 7C 01              FCB    $88,$1F,$7C,$01
+ABD3: 88 23 7B 01              FCB    $88,$23,$7B,$01
+ABD7: 88 27 79 01              FCB    $88,$27,$79,$01
+ABDB: 88 2C 78 01              FCB    $88,$2C,$78,$01
+ABDF: 88 30 76 02              FCB    $88,$30,$76,$02
+ABE3: 88 34 74 02              FCB    $88,$34,$74,$02
+ABE7: 88 38 73 02              FCB    $88,$38,$73,$02
+ABEB: 88 3C 71 02              FCB    $88,$3C,$71,$02
+ABEF: 88 40 6E 02              FCB    $88,$40,$6E,$02
+ABF3: 88 44 6C 02              FCB    $88,$44,$6C,$02
+ABF7: 88 47 6A 02              FCB    $88,$47,$6A,$02
+ABFB: 88 4B 67 02              FCB    $88,$4B,$67,$02
+ABFF: 88 4E 64 03              FCB    $88,$4E,$64,$03
+AC03: 88 52 62 03              FCB    $88,$52,$62,$03
+AC07: 88 55 5F 03              FCB    $88,$55,$5F,$03
+AC0B: 88 59 5C 03              FCB    $88,$59,$5C,$03
+AC0F: 88 5C 59 03              FCB    $88,$5C,$59,$03
+AC13: 88 5F 55 03              FCB    $88,$5F,$55,$03
+AC17: 88 62 52 03              FCB    $88,$62,$52,$03
+AC1B: 88 64 4E 04              FCB    $88,$64,$4E,$04
+AC1F: 88 67 4B 04              FCB    $88,$67,$4B,$04
+AC23: 88 6A 47 04              FCB    $88,$6A,$47,$04
+AC27: 88 6C 44 04              FCB    $88,$6C,$44,$04
+AC2B: 88 6E 40 04              FCB    $88,$6E,$40,$04
+AC2F: 88 71 3C 04              FCB    $88,$71,$3C,$04
+AC33: 88 73 38 04              FCB    $88,$73,$38,$04
+AC37: 88 74 34 04              FCB    $88,$74,$34,$04
+AC3B: 88 76 30 05              FCB    $88,$76,$30,$05
+AC3F: 88 78 2C 05              FCB    $88,$78,$2C,$05
+AC43: 88 79 27 05              FCB    $88,$79,$27,$05
+AC47: 88 7B 23 05              FCB    $88,$7B,$23,$05
+AC4B: 88 7C 1F 05              FCB    $88,$7C,$1F,$05
+AC4F: 88 7D 1B 05              FCB    $88,$7D,$1B,$05
+AC53: 88 7E 16 05              FCB    $88,$7E,$16,$05
+AC57: 88 7E 12 06              FCB    $88,$7E,$12,$06
+AC5B: 88 7F 0D 06              FCB    $88,$7F,$0D,$06
+AC5F: 88 7F 09 06              FCB    $88,$7F,$09,$06
+AC63: 88 7F 04 06              FCB    $88,$7F,$04,$06
+AC67: 88 7F 00 06              FCB    $88,$7F,$00,$06
+AC6B: 80 7F 04 06              FCB    $80,$7F,$04,$06
+AC6F: 80 7F 09 06              FCB    $80,$7F,$09,$06
+AC73: 80 7F 0D 06              FCB    $80,$7F,$0D,$06
+AC77: 80 7E 12 07              FCB    $80,$7E,$12,$07
+AC7B: 80 7E 16 07              FCB    $80,$7E,$16,$07
+AC7F: 80 7D 1B 07              FCB    $80,$7D,$1B,$07
+AC83: 80 7C 1F 07              FCB    $80,$7C,$1F,$07
+AC87: 80 7B 23 07              FCB    $80,$7B,$23,$07
+AC8B: 80 79 27 07              FCB    $80,$79,$27,$07
+AC8F: 80 78 2C 07              FCB    $80,$78,$2C,$07
+AC93: 80 76 30 08              FCB    $80,$76,$30,$08
+AC97: 80 74 34 08              FCB    $80,$74,$34,$08
+AC9B: 80 73 38 08              FCB    $80,$73,$38,$08
+AC9F: 80 71 3C 08              FCB    $80,$71,$3C,$08
+ACA3: 80 6E 40 08              FCB    $80,$6E,$40,$08
+ACA7: 80 6C 44 08              FCB    $80,$6C,$44,$08
+ACAB: 80 6A 47 08              FCB    $80,$6A,$47,$08
+ACAF: 80 67 4B 08              FCB    $80,$67,$4B,$08
+ACB3: 80 64 4E 09              FCB    $80,$64,$4E,$09
+ACB7: 80 62 52 09              FCB    $80,$62,$52,$09
+ACBB: 80 5F 55 09              FCB    $80,$5F,$55,$09
+ACBF: 80 5C 59 09              FCB    $80,$5C,$59,$09
+ACC3: 80 59 5C 09              FCB    $80,$59,$5C,$09
+ACC7: 80 55 5F 09              FCB    $80,$55,$5F,$09
+ACCB: 80 52 62 09              FCB    $80,$52,$62,$09
+ACCF: 80 4E 64 0A              FCB    $80,$4E,$64,$0A
+ACD3: 80 4B 67 0A              FCB    $80,$4B,$67,$0A
+ACD7: 80 47 6A 0A              FCB    $80,$47,$6A,$0A
+ACDB: 80 44 6C 0A              FCB    $80,$44,$6C,$0A
+ACDF: 80 40 6E 0A              FCB    $80,$40,$6E,$0A
+ACE3: 80 3C 71 0A              FCB    $80,$3C,$71,$0A
+ACE7: 80 38 73 0A              FCB    $80,$38,$73,$0A
+ACEB: 80 34 74 0A              FCB    $80,$34,$74,$0A
+ACEF: 80 30 76 0B              FCB    $80,$30,$76,$0B
+ACF3: 80 2C 78 0B              FCB    $80,$2C,$78,$0B
+ACF7: 80 27 79 0B              FCB    $80,$27,$79,$0B
+ACFB: 80 23 7B 0B              FCB    $80,$23,$7B,$0B
+ACFF: 80 1F 7C 0B              FCB    $80,$1F,$7C,$0B
+AD03: 80 1B 7D 0B              FCB    $80,$1B,$7D,$0B
+AD07: 80 16 7E 0B              FCB    $80,$16,$7E,$0B
+AD0B: 80 12 7E 10              FCB    $80,$12,$7E,$10
+AD0F: 80 0D 7F 10              FCB    $80,$0D,$7F,$10
+AD13: 80 09 7F 10              FCB    $80,$09,$7F,$10
+AD17: 80 04 7F 10              FCB    $80,$04,$7F,$10
+AD1B: 80 00 7F 10              FCB    $80,$00,$7F,$10
+AD1F: 00 04 7F 10              FCB    $00,$04,$7F,$10
+AD23: 00 09 7F 10              FCB    $00,$09,$7F,$10
+AD27: 00 0D 7F 10              FCB    $00,$0D,$7F,$10
+AD2B: 00 12 7E 2B              FCB    $00,$12,$7E,$2B
+AD2F: 00 16 7E 2B              FCB    $00,$16,$7E,$2B
+AD33: 00 1B 7D 2B              FCB    $00,$1B,$7D,$2B
+AD37: 00 1F 7C 2B              FCB    $00,$1F,$7C,$2B
+AD3B: 00 23 7B 2B              FCB    $00,$23,$7B,$2B
+AD3F: 00 27 79 2B              FCB    $00,$27,$79,$2B
+AD43: 00 2C 78 2B              FCB    $00,$2C,$78,$2B
+AD47: 00 30 76 2A              FCB    $00,$30,$76,$2A
+AD4B: 00 34 74 2A              FCB    $00,$34,$74,$2A
+AD4F: 00 38 73 2A              FCB    $00,$38,$73,$2A
+AD53: 00 3C 71 2A              FCB    $00,$3C,$71,$2A
+AD57: 00 40 6E 2A              FCB    $00,$40,$6E,$2A
+AD5B: 00 44 6C 2A              FCB    $00,$44,$6C,$2A
+AD5F: 00 47 6A 2A              FCB    $00,$47,$6A,$2A
+AD63: 00 4B 67 2A              FCB    $00,$4B,$67,$2A
+AD67: 00 4E 64 29              FCB    $00,$4E,$64,$29
+AD6B: 00 52 62 29              FCB    $00,$52,$62,$29
+AD6F: 00 55 5F 29              FCB    $00,$55,$5F,$29
+AD73: 00 59 5C 29              FCB    $00,$59,$5C,$29
+AD77: 00 5C 59 29              FCB    $00,$5C,$59,$29
+AD7B: 00 5F 55 29              FCB    $00,$5F,$55,$29
+AD7F: 00 62 52 29              FCB    $00,$62,$52,$29
+AD83: 00 64 4E 28              FCB    $00,$64,$4E,$28
+AD87: 00 67 4B 28              FCB    $00,$67,$4B,$28
+AD8B: 00 6A 47 28              FCB    $00,$6A,$47,$28
+AD8F: 00 6C 44 28              FCB    $00,$6C,$44,$28
+AD93: 00 6E 40 28              FCB    $00,$6E,$40,$28
+AD97: 00 71 3C 28              FCB    $00,$71,$3C,$28
+AD9B: 00 73 38 28              FCB    $00,$73,$38,$28
+AD9F: 00 74 34 28              FCB    $00,$74,$34,$28
+ADA3: 00 76 30 27              FCB    $00,$76,$30,$27
+ADA7: 00 78 2C 27              FCB    $00,$78,$2C,$27
+ADAB: 00 79 27 27              FCB    $00,$79,$27,$27
+ADAF: 00 7B 23 27              FCB    $00,$7B,$23,$27
+ADB3: 00 7C 1F 27              FCB    $00,$7C,$1F,$27
+ADB7: 00 7D 1B 27              FCB    $00,$7D,$1B,$27
+ADBB: 00 7E 16 27              FCB    $00,$7E,$16,$27
+ADBF: 00 7E 12 26              FCB    $00,$7E,$12,$26
+ADC3: 00 7F 0D 26              FCB    $00,$7F,$0D,$26
+ADC7: 00 7F 09 26              FCB    $00,$7F,$09,$26
+ADCB: 00 7F 04 26              FCB    $00,$7F,$04,$26
 
-; Referenced from: $BF64 task_formation_init, $E458 sub_E3DA
-dat_ADCF:
+; Formation block path: 4-byte steps (hi|lo nibbles, dy, dx, direction bits),
+; $FF restarts (formation_move).
+; Referenced from: $BF64 task_formation_init, $E458 formation_move
+formation_path:
 ADCF: 00 C3 C7 60 00 C3 C7 60  FCB    $00,$C3,$C7,$60,$00,$C3,$C7,$60
 ADD7: 00 BB B8 60 00 BB B8 60  FCB    $00,$BB,$B8,$60,$00,$BB,$B8,$60
 ADDF: 00 C2 B5 60 00 C2 B5 60  FCB    $00,$C2,$B5,$60,$00,$C2,$B5,$60
@@ -597,16 +810,23 @@ B007: 00 BD BA 60 00 BD BA 60  FCB    $00,$BD,$BA,$60,$00,$BD,$BA,$60
 B00F: FF 00 FF 00 FF           FCB    $FF,$00,$FF,$00,$FF
 
 ;------------------------------------------------------------------------------
-; sub_B014  ($B014)
+; task_formation_move  ($B014) ; JS: sub_B014
+; -> src/game/sub/gp2_8_formation.js
+; Formation mover task: for every slot with b1 in formation_flags,
+; point the slot pointers $1084-$10CB at its data, set its sprite
+; up on the first visit (b7), then step its path ($B0D4) or home in
+; on its formation position ($B242). Rewinds formation_ptr at $188D.
+; QUIRK: unbounded scan: from a formation_ptr past the table it wraps through
+; the address space (the Round Advance corruption).
 ; Jumped to from: $B0B6, $B0C3, $B0CA, $B0D1
 ; Table entry at: $E127, $E137, $E14F, $E171
 ;------------------------------------------------------------------------------
-sub_B014:
+task_formation_move:
 B014: 9E 86           LDX    <formation_ptr  ; [$1086]
 
 lB016:
 B016: A6 80           LDA    ,X+
-B018: 0C 96           INC    <$96            ; [$1096]
+B018: 0C 96           INC    <formation_slot ; [$1096]
 B01A: 84 02           ANDA   #$02
 B01C: 26 13           BNE    lB031
 B01E: 8C 18 8D        CMPX   #$188D
@@ -614,14 +834,14 @@ B021: 26 F3           BNE    lB016
 B023: 8E 18 60        LDX    #formation_flags ; [#$1860]
 B026: 9F 86           STX    <formation_ptr  ; [$1086]
 B028: 86 FF           LDA    #$FF
-B02A: 97 96           STA    <$96            ; [$1096]
+B02A: 97 96           STA    <formation_slot ; [$1096]
 B02C: 0C 7A           INC    <sub_task       ; [$107A]
 B02E: 7E E0 EC        JMP    task_dispatch_sub
 
 lB031:
 B031: 9F 86           STX    <formation_ptr  ; [$1086]
-B033: 96 96           LDA    <$96            ; [$1096]
-B035: D6 96           LDB    <$96            ; [$1096]
+B033: 96 96           LDA    <formation_slot ; [$1096]
+B035: D6 96           LDB    <formation_slot ; [$1096]
 B037: 58              ASLB
 B038: 8E 0E 30        LDX    #sprite_shadow_1+48 ; [#$0E30]
 B03B: 30 85           LEAX   B,X
@@ -666,7 +886,10 @@ B093: 9E 86           LDX    <formation_ptr  ; [$1086]
 B095: A6 1F           LDA    -$1,X
 B097: 84 80           ANDA   #$80
 B099: 26 15           BNE    lB0B0
-B09B: A6 1F           LDA    -$1,X
+B09B: A6 1F           LDA    -$1,X           ; QUIRK: from a stale
+                                             ; formation_ptr (Round Advance
+                                             ; into mode 7) this adds $80 to
+                                             ; game RAM
 B09D: 8B 80           ADDA   #$80
 B09F: A7 1F           STA    -$1,X
 B0A1: 8E 1B 00        LDX    #$1B00
@@ -679,26 +902,30 @@ lB0B0:
 B0B0: 9E 86           LDX    <formation_ptr  ; [$1086]
 B0B2: A6 1F           LDA    -$1,X
 B0B4: 84 40           ANDA   #$40
-B0B6: 10 26 FF 5A     LBNE   sub_B014
+B0B6: 10 26 FF 5A     LBNE   task_formation_move
 B0BA: A6 1F           LDA    -$1,X
 B0BC: 84 20           ANDA   #$20
 B0BE: 26 06           BNE    lB0C6
-B0C0: BD B0 D4        JSR    sub_B0D4
-B0C3: 7E B0 14        JMP    sub_B014
+B0C0: BD B0 D4        JSR    formation_path_step
+B0C3: 7E B0 14        JMP    task_formation_move
 
 lB0C6:
 B0C6: A6 1F           LDA    -$1,X
 B0C8: 84 10           ANDA   #$10
-B0CA: 10 26 FF 46     LBNE   sub_B014
-B0CE: BD B2 42        JSR    sub_B242
-B0D1: 7E B0 14        JMP    sub_B014
+B0CA: 10 26 FF 46     LBNE   task_formation_move
+B0CE: BD B2 42        JSR    formation_home
+B0D1: 7E B0 14        JMP    task_formation_move
 
 ;------------------------------------------------------------------------------
-; sub_B0D4  ($B0D4)
-; Called from: $B0C0 sub_B014
+; formation_path_step  ($B0D4) ; JS: sub_B0D4
+; -> src/game/sub/gp2_8_formation.js
+; Step a slot along its path: counter [$1090] minus speed [$10AD];
+; at 0 the path pointer advances: $F0 end, $FF/$FE new heading +
+; jump, else a heading.
+; Called from: $B0C0 task_formation_move
 ; Jumped to from: $B152
 ;------------------------------------------------------------------------------
-sub_B0D4:
+formation_path_step:
 B0D4: A6 9F 10 90     LDA    [$1090]
 B0D8: A1 9F 10 AD     CMPA   [$10AD]
 B0DC: 25 1D           BCS    lB0FB
@@ -708,8 +935,8 @@ B0E6: A6 9F 10 AD     LDA    [$10AD]
 B0EA: 97 98           STA    <$98            ; [$1098]
 B0EC: A6 9F 10 99     LDA    [$1099]
 B0F0: A7 9F 10 AD     STA    [$10AD]
-B0F4: BD B1 63        JSR    sub_B163
-B0F7: BD B2 0D        JSR    sub_B20D
+B0F4: BD B1 63        JSR    formation_move_sprite
+B0F7: BD B2 0D        JSR    formation_set_picture
 B0FA: 39              RTS
 
 lB0FB:
@@ -719,7 +946,7 @@ B103: A7 9F 10 AD     STA    [$10AD]
 B107: A6 9F 10 90     LDA    [$1090]
 B10B: 27 04           BEQ    lB111
 B10D: 97 98           STA    <$98            ; [$1098]
-B10F: 8D 52           BSR    sub_B163
+B10F: 8D 52           BSR    formation_move_sprite
 
 lB111:
 B111: 86 28           LDA    #$28
@@ -742,7 +969,8 @@ B139: 6F 9F 10 A2     CLR    [$10A2]
 lB13D:
 B13D: A6 1F           LDA    -$1,X
 B13F: A7 9F 10 92     STA    [$1092]
-B143: AE 01           LDX    $1,X
+B143: AE 01           LDX    $1,X            ; big-endian word right after the
+                                             ; command byte
 B145: AF 9F 10 8C     STX    [$108C]
 B149: 9E 86           LDX    <formation_ptr  ; [$1086]
 B14B: A6 1F           LDA    -$1,X
@@ -751,7 +979,7 @@ B14F: A7 1F           STA    -$1,X
 B151: 39              RTS
 
 lB152:
-B152: 7E B0 D4        JMP    sub_B0D4
+B152: 7E B0 D4        JMP    formation_path_step
 
 lB155:
 B155: 86 01           LDA    #$01
@@ -765,22 +993,28 @@ B160: A7 1F           STA    -$1,X
 B162: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_B163  ($B163)
-; Called from: $B0F4 sub_B0D4, $B10F sub_B0D4, $B37E sub_B242
+; formation_move_sprite  ($B163) ; JS: sub_B163
+; -> src/game/sub/gp2_8_formation.js
+; Move by <$98 units along heading A (heading_table + 4*A: dy, dx, bits).
+; QUIRK: headings are not range-checked ($B173).
+; Called from: $B0F4 formation_path_step, $B10F formation_path_step, $B37E
+; formation_home
 ;------------------------------------------------------------------------------
-sub_B163:
+formation_move_sprite:
 B163: A6 9F 10 92     LDA    [$1092]
 B167: 9E 86           LDX    <formation_ptr  ; [$1086]
 B169: E6 1F           LDB    -$1,X
 B16B: C4 20           ANDB   #$20
 B16D: 26 06           BNE    lB175
 B16F: AE 9F 10 8C     LDX    [$108C]
-B173: A6 84           LDA    ,X
+B173: A6 84           LDA    ,X              ; QUIRK: no range check: a heading
+                                             ; >= $B4 would read past
+                                             ; heading_table
 
 lB175:
 B175: C6 04           LDB    #$04
 B177: 3D              MUL
-B178: 8E AA FF        LDX    #dat_AAFF
+B178: 8E AA FF        LDX    #heading_table
 B17B: 30 8B           LEAX   D,X
 B17D: EC 01           LDD    $1,X
 B17F: DD 9E           STD    <$9E            ; [$109E]
@@ -853,10 +1087,13 @@ B208: E7 9F 10 A6     STB    [$10A6]
 B20C: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_B20D  ($B20D)
-; Called from: $B0F7 sub_B0D4, $B381 sub_B242
+; formation_set_picture  ($B20D) ; JS: sub_B20D
+; -> src/game/sub/gp2_8_formation.js
+; Picture from byte 3 of heading entry X: low nibble into [$1084], whole byte
+; to [$10CB], bits 4-5 = flip bits of [$10A4].
+; Called from: $B0F7 formation_path_step, $B381 formation_home
 ;------------------------------------------------------------------------------
-sub_B20D:
+formation_set_picture:
 B20D: A6 9F 10 84     LDA    [$1084]
 B211: 84 F0           ANDA   #$F0
 B213: A7 9F 10 84     STA    [$1084]
@@ -879,10 +1116,13 @@ B23D: E7 9F 10 A4     STB    [$10A4]
 B241: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_B242  ($B242)
-; Called from: $B0CE sub_B014
+; formation_home  ($B242) ; JS: sub_B242
+; -> src/game/sub/gp2_8_formation.js
+; Turn towards the formation position (octant tables home_octants_a-d) or
+; arrive within 4 units.
+; Called from: $B0CE task_formation_move
 ;------------------------------------------------------------------------------
-sub_B242:
+formation_home:
 B242: EC 9F 10 8E     LDD    [$108E]
 B246: 80 04           SUBA   #$04
 B248: A1 9F 10 A0     CMPA   [$10A0]
@@ -896,9 +1136,9 @@ B25C: 24 5A           BCC    lB2B8
 B25E: CB 08           ADDB   #$08
 B260: E1 9F 10 A2     CMPB   [$10A2]
 B264: 25 52           BCS    lB2B8
-B266: B6 11 2A        LDA    $112A
+B266: B6 11 2A        LDA    ready_active    ; [$112A]
 B269: 26 04           BNE    lB26F
-B26B: 96 F8           LDA    <$F8            ; [$10F8]
+B26B: 96 F8           LDA    <refill_request ; [$10F8]
 B26D: 26 11           BNE    lB280
 
 lB26F:
@@ -954,7 +1194,7 @@ B2D1: E1 9F 10 94     CMPB   [$1094]
 B2D5: 25 28           BCS    lB2FF
 B2D7: EC 9F 10 A0     LDD    [$10A0]
 B2DB: A3 9F 10 8E     SUBD   [$108E]
-B2DF: 8E A9 D6        LDX    #dat_A9D6
+B2DF: 8E A9 D6        LDX    #home_octants_b
 B2E2: 20 3B           BRA    lB31F
 
 lB2E4:
@@ -964,7 +1204,7 @@ B2EA: A6 9F 10 8E     LDA    [$108E]
 B2EE: A0 9F 10 A0     SUBA   [$10A0]
 B2F2: E6 9F 10 A2     LDB    [$10A2]
 B2F6: E0 9F 10 94     SUBB   [$1094]
-B2FA: 8E A9 6A        LDX    #dat_A96A
+B2FA: 8E A9 6A        LDX    #home_octants_a
 B2FD: 20 20           BRA    lB31F
 
 lB2FF:
@@ -972,13 +1212,13 @@ B2FF: A6 9F 10 A0     LDA    [$10A0]
 B303: A0 9F 10 8E     SUBA   [$108E]
 B307: E6 9F 10 8E     LDB    [$108E]
 B30B: E0 9F 10 A2     SUBB   [$10A2]
-B30F: 8E AA 39        LDX    #dat_AA39
+B30F: 8E AA 39        LDX    #home_octants_c
 B312: 20 0B           BRA    lB31F
 
 lB314:
 B314: EC 9F 10 8E     LDD    [$108E]
 B318: A3 9F 10 A0     SUBD   [$10A0]
-B31C: 8E AA 9C        LDX    #dat_AA9C
+B31C: 8E AA 9C        LDX    #home_octants_d
 
 lB31F:
 B31F: 44              LSRA
@@ -1032,15 +1272,20 @@ B374: A7 9F 10 92     STA    [$1092]
 lB378:
 B378: A6 9F 10 AD     LDA    [$10AD]
 B37C: 97 98           STA    <$98            ; [$1098]
-B37E: BD B1 63        JSR    sub_B163
-B381: BD B2 0D        JSR    sub_B20D
+B37E: BD B1 63        JSR    formation_move_sprite
+B381: BD B2 0D        JSR    formation_set_picture
 B384: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_B385  ($B385)
+; task_attack_timer  ($B385) ; JS: sub_B385
+; -> src/game/sub/gp2_8_formation.js
+; Mode 5: unless $10D6, every 64th frame step $1129 (max $1F); its range picks
+; a count from stage_params ($1036-$1039); enough moving slots -> $112A = $55
+; (formation attacks allowed), else 0.
+; QUIRK: unbounded scan from formation_ptr, as task_formation_move.
 ; Table entry at: $E145
 ;------------------------------------------------------------------------------
-sub_B385:
+task_attack_timer:
 B385: 96 D6           LDA    <$D6            ; [$10D6]
 B387: 26 40           BNE    lB3C9
 B389: 7C 11 28        INC    $1128
@@ -1062,7 +1307,7 @@ B3A8: 5C              INCB
 B3A9: 7A 11 29        DEC    $1129
 
 lB3AC:
-B3AC: 8E 10 36        LDX    #$1036
+B3AC: 8E 10 36        LDX    #stage_params   ; [#$1036]
 B3AF: E6 85           LDB    B,X
 B3B1: 8E 18 60        LDX    #formation_flags ; [#$1860]
 
@@ -1075,21 +1320,24 @@ B3BD: 27 F5           BEQ    lB3B4
 B3BF: 5A              DECB
 B3C0: 26 F2           BNE    lB3B4
 B3C2: 86 55           LDA    #$55
-B3C4: B7 11 2A        STA    $112A
+B3C4: B7 11 2A        STA    ready_active    ; [$112A]
 B3C7: 20 03           BRA    lB3CC
 
 lB3C9:
-B3C9: 7F 11 2A        CLR    $112A
+B3C9: 7F 11 2A        CLR    ready_active    ; [$112A]
 
 lB3CC:
 B3CC: 0C 7A           INC    <sub_task       ; [$107A]
 B3CE: 7E E0 EC        JMP    task_dispatch_sub
 
 ;------------------------------------------------------------------------------
-; sub_B3D1  ($B3D1)
+; task_effect  ($B3D1) ; JS: sub_B3D1
+; -> src/game/sub/gp2_8_fighter.js
+; Mode 5: when $10CF is set, $101A = $FF and run power-up effect handler
+; tbl_B3E6[$1070] (A = 2 * effect, signed JMP [A,X]).
 ; Table entry at: $E159, $E16D
 ;------------------------------------------------------------------------------
-sub_B3D1:
+task_effect:
 B3D1: 96 CF           LDA    <$CF            ; [$10CF]
 B3D3: 27 0C           BEQ    lB3E1
 B3D5: 86 FF           LDA    #$FF
@@ -1097,31 +1345,36 @@ B3D7: 97 1A           STA    <$1A            ; [$101A]
 B3D9: 96 70           LDA    <$70            ; [$1070]
 B3DB: 48              ASLA
 B3DC: 8E B3 E6        LDX    #tbl_B3E6
-B3DF: 6E 96           JMP    [A,X]           ; [table tbl_B3E6]
+B3DF: 6E 96           JMP    [A,X]           ; tbl_B3E6 is ROM data [table
+                                             ; tbl_B3E6]
 
 lB3E1:
 B3E1: 0C 7A           INC    <sub_task       ; [$107A]
 B3E3: 7E E0 EC        JMP    task_dispatch_sub
 
-; Referenced from: $B3DC sub_B3D1
+; Referenced from: $B3DC task_effect
 tbl_B3E6:
-B3E6: B5 A1                    FDB    sub_B5A1 ; [0] $B5A1
-B3E8: B3 F2                    FDB    sub_B3F2 ; [1] $B3F2
-B3EA: B8 60                    FDB    sub_B860 ; [2] $B860
-B3EC: B8 60                    FDB    sub_B860 ; [3] $B860
-B3EE: B8 60                    FDB    sub_B860 ; [4] $B860
-B3F0: B8 60                    FDB    sub_B860 ; [5] $B860
+B3E6: B5 A1                    FDB    effect_rising ; [0] $B5A1
+B3E8: B3 F2                    FDB    effect_sequence ; [1] $B3F2
+B3EA: B8 60                    FDB    effect_setup ; [2] $B860
+B3EC: B8 60                    FDB    effect_setup ; [3] $B860
+B3EE: B8 60                    FDB    effect_setup ; [4] $B860
+B3F0: B8 60                    FDB    effect_setup ; [5] $B860
 
 ;------------------------------------------------------------------------------
-; sub_B3F2  ($B3F2)
+; effect_sequence  ($B3F2) ; JS: sub_B3F2
+; -> src/game/sub/gp2_8_fighter.js
+; Effect 1: a sequence stepped by $10D0 once a frame: six sprites spread along
+; the ship, switched on one by one, then moved; animates them with
+; effect_animate.
 ; Table entry at: $B3E8
 ;------------------------------------------------------------------------------
-sub_B3F2:
+effect_sequence:
 B3F2: 86 01           LDA    #$01
 B3F4: B7 08 52        STA    $0852
-B3F7: 0F D9           CLR    <$D9            ; [$10D9]
+B3F7: 0F D9           CLR    <player_frozen  ; [$10D9]
 B3F9: 0F E9           CLR    <$E9            ; [$10E9]
-B3FB: 8D 64           BSR    sub_B461
+B3FB: 8D 64           BSR    effect_animate
 B3FD: 96 D0           LDA    <$D0            ; [$10D0]
 B3FF: 84 80           ANDA   #$80
 B401: 26 33           BNE    lB436
@@ -1161,10 +1414,13 @@ B45A: 10 27 01 10     LBEQ   lB56E
 B45E: 7E B5 86        JMP    lB586
 
 ;------------------------------------------------------------------------------
-; sub_B461  ($B461)
-; Called from: $B3FB sub_B3F2
+; effect_animate  ($B461) ; JS: sub_B461
+; -> src/game/sub/gp2_8_fighter.js
+; Animate the six effect sprites $0E92-$0E9D: on even frames six code/colour
+; words from dat_B483, frame (frame_counter & $0C) / 4.
+; Called from: $B3FB effect_sequence
 ;------------------------------------------------------------------------------
-sub_B461:
+effect_animate:
 B461: 8E 0E 92        LDX    #$0E92
 B464: 96 16           LDA    <frame_counter  ; [$1016]
 B466: 84 01           ANDA   #$01
@@ -1172,7 +1428,7 @@ B468: 27 01           BEQ    lB46B
 B46A: 39              RTS
 
 lB46B:
-B46B: CE B4 83        LDU    #dat_B483
+B46B: CE B4 83        LDU    #effect_pictures
 B46E: 96 16           LDA    <frame_counter  ; [$1016]
 B470: 84 0C           ANDA   #$0C
 B472: 44              LSRA
@@ -1188,8 +1444,9 @@ B47D: 8C 0E 9E        CMPX   #$0E9E
 B480: 26 F7           BNE    lB479
 B482: 39              RTS
 
-; Referenced from: $B46B sub_B461
-dat_B483:
+; effect_animate: code/colour words, 4 frames of 6.
+; Referenced from: $B46B effect_animate
+effect_pictures:
 B483: 10 13 11 13 12 13 10 13  FCB    $10,$13,$11,$13,$12,$13,$10,$13
 B48B: 11 13 12 13 14 13 15 13  FCB    $11,$13,$12,$13,$14,$13,$15,$13
 B493: 16 13 14 13 15 13 16 13  FCB    $16,$13,$14,$13,$15,$13,$16,$13
@@ -1343,11 +1600,14 @@ B59C: 26 ED           BNE    lB58B
 B59E: 7E B5 22        JMP    lB522
 
 ;------------------------------------------------------------------------------
-; sub_B5A1  ($B5A1)
+; effect_rising  ($B5A1) ; JS: sub_B5A1
+; -> src/game/sub/gp2_8_fighter.js
+; Effect 0: six rising sprites at player_y - 8, picture lists dat_B653[$10D0];
+; $1069 counts to 480, which ends the effect.
 ; Table entry at: $B3E6
 ;------------------------------------------------------------------------------
-sub_B5A1:
-B5A1: 0F D9           CLR    <$D9            ; [$10D9]
+effect_rising:
+B5A1: 0F D9           CLR    <player_frozen  ; [$10D9]
 B5A3: 8E 16 92        LDX    #$1692
 B5A6: B6 16 00        LDA    player_y        ; [$1600]
 B5A9: 80 08           SUBA   #$08
@@ -1364,13 +1624,13 @@ B5BD: 96 16           LDA    <frame_counter  ; [$1016]
 B5BF: 84 03           ANDA   #$03
 B5C1: 81 02           CMPA   #$02
 B5C3: 26 2B           BNE    lB5F0
-B5C5: 97 DA           STA    <$DA            ; [$10DA]
+B5C5: 97 DA           STA    <capture_substate ; [$10DA]
 B5C7: 96 D0           LDA    <$D0            ; [$10D0]
 B5C9: 81 17           CMPA   #$17
 B5CB: 27 69           BEQ    lB636
 B5CD: 0C D0           INC    <$D0            ; [$10D0]
 B5CF: 48              ASLA
-B5D0: 8E B6 53        LDX    #dat_B653
+B5D0: 8E B6 53        LDX    #effect0_pictures
 B5D3: AE 86           LDX    A,X
 B5D5: CE 0E 92        LDU    #$0E92
 
@@ -1399,7 +1659,7 @@ B606: 7F 1E C9        CLR    $1EC9
 B609: 7F 1E CB        CLR    $1ECB
 B60C: 7F 1E CD        CLR    $1ECD
 B60F: 86 01           LDA    #$01
-B611: 97 D9           STA    <$D9            ; [$10D9]
+B611: 97 D9           STA    <player_frozen  ; [$10D9]
 B613: 8E 1E 93        LDX    #$1E93
 
 lB616:
@@ -1408,7 +1668,7 @@ B618: 8C 1E A3        CMPX   #$1EA3
 B61B: 26 F9           BNE    lB616
 B61D: 0F CF           CLR    <$CF            ; [$10CF]
 B61F: 0F D0           CLR    <$D0            ; [$10D0]
-B621: 0A DA           DEC    <$DA            ; [$10DA]
+B621: 0A DA           DEC    <capture_substate ; [$10DA]
 B623: 7F 08 51        CLR    $0851
 B626: 7F 08 71        CLR    $0871
 B629: 7F 1E 8B        CLR    $1E8B
@@ -1438,8 +1698,9 @@ B64C: 8C 0E A1        CMPX   #$0EA1
 B64F: 26 F9           BNE    lB64A
 B651: 20 9D           BRA    lB5F0
 
-; Referenced from: $B5D0 sub_B5A1
-dat_B653:
+; effect_rising: pointers to (code, colour, X, flags) lists ended by $FF.
+; Referenced from: $B5D0 effect_rising
+effect0_pictures:
 B653: B6 81 B6 82 B6 83 B6 88  FCB    $B6,$81,$B6,$82,$B6,$83,$B6,$88
 B65B: B6 91 B6 A2 B6 B3 B6 C8  FCB    $B6,$91,$B6,$A2,$B6,$B3,$B6,$C8
 B663: B6 E1 B6 FA B7 0B B7 1C  FCB    $B6,$E1,$B6,$FA,$B7,$0B,$B7,$1C
@@ -1508,11 +1769,15 @@ B853: 01 2A F8 80 00 2A E8 80  FCB    $01,$2A,$F8,$80,$00,$2A,$E8,$80
 B85B: 09 2A EC 00 FF           FCB    $09,$2A,$EC,$00,$FF
 
 ;------------------------------------------------------------------------------
-; sub_B860  ($B860)
+; effect_setup  ($B860) ; JS: sub_B860
+; -> src/game/sub/gp2_8_fighter.js
+; Effects 2-5 (A = 2 * effect): one-shot set-ups: A = 6 formation speed $10
+; (and stage $1E/$2D extras), 8 $1114 = $32, 10 $1177 = 1, else the fighter
+; upgrade (player_step 3, speed 1, shot speed + 1).
 ; Table entry at: $B3EA, $B3EC, $B3EE, $B3F0
 ;------------------------------------------------------------------------------
-sub_B860:
-B860: 0F D9           CLR    <$D9            ; [$10D9]
+effect_setup:
+B860: 0F D9           CLR    <player_frozen  ; [$10D9]
 B862: 7F 11 11        CLR    $1111
 B865: 0F E9           CLR    <$E9            ; [$10E9]
 B867: 0F CF           CLR    <$CF            ; [$10CF]
@@ -1597,7 +1862,7 @@ B8FE: 20 A4           BRA    lB8A4
 
 lB900:
 B900: 86 32           LDA    #$32
-B902: B7 11 14        STA    $1114
+B902: B7 11 14        STA    bonus_obj_count ; [$1114]
 B905: 20 9D           BRA    lB8A4
 
 lB907:
@@ -1607,12 +1872,13 @@ B90C: 20 96           BRA    lB8A4
 
 ;------------------------------------------------------------------------------
 ; task_animate_objects  ($B90E)
+; -> src/game/sub/gp2_8_objects.js
 ; Run the state machines of the four objects in $111D-$1120
 ; (sprites $0EE2, $0EEC, $0EF6, $0F00) through object_states.
 ; Table entry at: $E165
 ;------------------------------------------------------------------------------
 task_animate_objects:
-B90E: 10 8E 11 1D     LDY    #$111D
+B90E: 10 8E 11 1D     LDY    #object_state   ; [#$111D]
 B912: CE BB 1A        LDU    #object_sprites
 
 lB915:
@@ -1630,15 +1896,23 @@ B925: 10 8C 11 21     CMPY   #$1121
 B929: 26 EA           BNE    lB915
 
 ;------------------------------------------------------------------------------
-; sub_B92B  ($B92B)
+; objects_task_end  ($B92B) ; JS: sub_B92B
+; -> src/game/sub/gp2_8_objects.js
+; INC <sub_task / JMP task_dispatch_sub: tail of task_animate_objects, also
+; object state 0 (only for a state byte of $80).
+; QUIRK: as object state 0 (state byte $80) it leaves the object loop with PSHS
+; U and the BSR return on the stack.
 ; Table entry at: $BB22
 ;------------------------------------------------------------------------------
-sub_B92B:
+objects_task_end:
 B92B: 0C 7A           INC    <sub_task       ; [$107A]
 B92D: 7E E0 EC        JMP    task_dispatch_sub
 
 ;------------------------------------------------------------------------------
 ; object_state_call  ($B930)
+; -> src/game/sub/gp2_8_objects.js
+; Jump to object_states[A]: ASLA / LDX #object_states / JMP [A,X] (8-bit shift,
+; signed offset). In: A state, U sprite entry, Y state byte.
 ; Called from: $B91D task_animate_objects
 ;------------------------------------------------------------------------------
 object_state_call:
@@ -1648,17 +1922,20 @@ B934: 6E 96           JMP    [A,X]           ; [table object_states]
 
 ;------------------------------------------------------------------------------
 ; object_spawn_random  ($B936)
-; State 1: place the object at a pseudo-random position. The sub has
-; no random number generator: Y is the byte of its own reset code
-; at $E000 + frame_counter (the ROM used as a noise table, clamped
-; to $20-$CF: below $20 -> $90, $D0 and up -> $60), and X is
-; frame_counter | $B0.
+; -> src/game/sub/gp2_8_objects.js
+; Object state 1: place the object at a pseudo-random position. The sub has no
+; RNG: Y is the byte at $E000 + (signed) frame_counter, i.e. its own reset code
+; for $00-$7F and $DF80-$DFFF (fill, checksum) for $80-$FF, clamped to $20-$CF
+; (below $20 -> $90, $D0 and up -> $60); X = frame_counter | $B0.
 ; Table entry at: $BB24
 ;------------------------------------------------------------------------------
 object_spawn_random:
 B936: 8E E0 00        LDX    #reset_sub      ; ROM bytes as noise
-B939: 96 16           LDA    <frame_counter  ; index = frame counter [$1016]
-B93B: A6 86           LDA    A,X
+B939: 96 16           LDA    <frame_counter  ; index = frame counter (signed,
+                                             ; see $B93B) [$1016]
+B93B: A6 86           LDA    A,X             ; QUIRK: signed offset:
+                                             ; frame_counter $80-$FF reads
+                                             ; $DF80-$DFFF, not $E080-$E0FF
 B93D: 81 20           CMPA   #$20
 B93F: 24 04           BCC    lB945
 B941: 86 90           LDA    #$90
@@ -1684,44 +1961,54 @@ B967: B7 08 4F        STA    $084F
 B96A: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_B96B  ($B96B)
+; obj_state2  ($B96B) ; JS: sub_B96B
+; -> src/game/sub/gp2_8_objects.js
+; Object state 2: picture $4C07, next state. In: U sprite entry, Y state byte.
 ; Table entry at: $BB26
 ;------------------------------------------------------------------------------
-sub_B96B:
+obj_state2:
 B96B: CC 4C 07        LDD    #$4C07
 B96E: ED C4           STD    ,U
 B970: 6C A4           INC    ,Y
 B972: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_B973  ($B973)
+; obj_state3  ($B973) ; JS: sub_B973
+; -> src/game/sub/gp2_8_objects.js
+; Object state 3: picture $4C06, next state.
 ; Table entry at: $BB28
 ;------------------------------------------------------------------------------
-sub_B973:
+obj_state3:
 B973: CC 4C 06        LDD    #$4C06
 B976: ED C4           STD    ,U
 B978: 6C A4           INC    ,Y
 B97A: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_B97B  ($B97B)
+; obj_state4  ($B97B) ; JS: sub_B97B
+; -> src/game/sub/gp2_8_objects.js
+; Object state 4: picture $4807, next state.
 ; Table entry at: $BB2A
 ;------------------------------------------------------------------------------
-sub_B97B:
+obj_state4:
 B97B: CC 48 07        LDD    #$4807
 B97E: ED C4           STD    ,U
 B980: 6C A4           INC    ,Y
 B982: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_B983  ($B983)
+; obj_state5  ($B983) ; JS: sub_B983
+; -> src/game/sub/gp2_8_objects.js
+; Object state 5: picture $5406, position + $0808 (one 16-bit add), flags
+; $4080, next state.
 ; Table entry at: $BB2C
 ;------------------------------------------------------------------------------
-sub_B983:
+obj_state5:
 B983: CC 54 06        LDD    #$5406
 B986: ED C4           STD    ,U
 B988: EC C9 08 00     LDD    $0800,U
-B98C: C3 08 08        ADDD   #$0808
+B98C: C3 08 08        ADDD   #$0808          ; QUIRK: one 16-bit add: X's carry
+                                             ; goes into Y
 B98F: ED C9 08 00     STD    $0800,U
 B993: CC 40 80        LDD    #$4080
 B996: ED C9 10 00     STD    $1000,U
@@ -1729,50 +2016,61 @@ B99A: 6C A4           INC    ,Y
 B99C: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_B99D  ($B99D)
+; obj_state6  ($B99D) ; JS: sub_B99D
+; -> src/game/sub/gp2_8_objects.js
+; Object state 6: picture $5506, next state.
 ; Table entry at: $BB2E
 ;------------------------------------------------------------------------------
-sub_B99D:
+obj_state6:
 B99D: CC 55 06        LDD    #$5506
 B9A0: ED C4           STD    ,U
 B9A2: 6C A4           INC    ,Y
 B9A4: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_B9A5  ($B9A5)
+; obj_state7  ($B9A5) ; JS: sub_B9A5
+; -> src/game/sub/gp2_8_objects.js
+; Object state 7: picture $5606, next state.
 ; Table entry at: $BB30
 ;------------------------------------------------------------------------------
-sub_B9A5:
+obj_state7:
 B9A5: CC 56 06        LDD    #$5606
 B9A8: ED C4           STD    ,U
 B9AA: 6C A4           INC    ,Y
 B9AC: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_B9AD  ($B9AD)
+; obj_state8  ($B9AD) ; JS: sub_B9AD
+; -> src/game/sub/gp2_8_objects.js
+; Object state 8: picture $5706, next state.
 ; Table entry at: $BB32
 ;------------------------------------------------------------------------------
-sub_B9AD:
+obj_state8:
 B9AD: CC 57 06        LDD    #$5706
 B9B0: ED C4           STD    ,U
 B9B2: 6C A4           INC    ,Y
 B9B4: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_B9B5  ($B9B5)
+; obj_state9  ($B9B5) ; JS: sub_B9B5
+; -> src/game/sub/gp2_8_objects.js
+; Object state 9: picture $500A, next state.
 ; Table entry at: $BB34
 ;------------------------------------------------------------------------------
-sub_B9B5:
+obj_state9:
 B9B5: CC 50 0A        LDD    #$500A
 B9B8: ED C4           STD    ,U
 B9BA: 6C A4           INC    ,Y
 B9BC: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_B9BD  ($B9BD)
+; obj_blink  ($B9BD) ; JS: sub_B9BD
+; -> src/game/sub/gp2_8_objects.js
+; Object state 10: blink (code at $B9C5, shared with $BA3E); next state every
+; 64th frame.
 ; Table entry at: $BB36
 ;------------------------------------------------------------------------------
-sub_B9BD:
+obj_blink:
 B9BD: 96 16           LDA    <frame_counter  ; [$1016]
 B9BF: 84 3F           ANDA   #$3F
 B9C1: 26 02           BNE    lB9C5
@@ -1796,10 +2094,13 @@ lB9E1:
 B9E1: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_B9E2  ($B9E2)
+; obj_pick_side  ($B9E2) ; JS: sub_B9E2
+; -> src/game/sub/gp2_8_objects.js
+; Object state 11: next state 12 if the object is above the player's row (Y <
+; player_y), else 13.
 ; Table entry at: $BB38
 ;------------------------------------------------------------------------------
-sub_B9E2:
+obj_pick_side:
 B9E2: A6 C9 08 00     LDA    $0800,U
 B9E6: B1 16 00        CMPA   player_y        ; [$1600]
 B9E9: 25 02           BCS    lB9ED
@@ -1810,10 +2111,13 @@ B9ED: 6C A4           INC    ,Y
 B9EF: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_B9F0  ($B9F0)
+; obj_move_down  ($B9F0) ; JS: sub_B9F0
+; -> src/game/sub/gp2_8_objects.js
+; Object state 12: two steps down towards player_y, X + 3; explodes on reaching
+; player_y or past X bit 8.
 ; Table entry at: $BB3A
 ;------------------------------------------------------------------------------
-sub_B9F0:
+obj_move_down:
 B9F0: C6 02           LDB    #$02
 B9F2: A6 C9 08 00     LDA    $0800,U
 
@@ -1835,10 +2139,12 @@ lBA16:
 BA16: 20 26           BRA    lBA3E
 
 ;------------------------------------------------------------------------------
-; sub_BA18  ($BA18)
+; obj_move_up  ($BA18) ; JS: sub_BA18
+; -> src/game/sub/gp2_8_objects.js
+; Object state 13: as state 12 but moving up, X + 2.
 ; Table entry at: $BB3C
 ;------------------------------------------------------------------------------
-sub_BA18:
+obj_move_up:
 BA18: C6 02           LDB    #$02
 BA1A: A6 C9 08 00     LDA    $0800,U
 
@@ -1890,11 +2196,14 @@ BA8B: A7 A4           STA    ,Y
 BA8D: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_BA8E  ($BA8E)
+; obj_explode  ($BA8E) ; JS: sub_BA8E
+; -> src/game/sub/gp2_8_objects.js
+; Object state 14: four fragments fly apart (picture dat_BB48[frame & 3]);
+; cleared ($BB03) when the first leaves X/2 $50-$B7.
 ; Table entry at: $BB3E
 ;------------------------------------------------------------------------------
-sub_BA8E:
-BA8E: 8E BB 48        LDX    #dat_BB48
+obj_explode:
+BA8E: 8E BB 48        LDX    #fragment_pictures
 BA91: 96 16           LDA    <frame_counter  ; [$1016]
 BA93: 84 03           ANDA   #$03
 BA95: 48              ASLA
@@ -1953,35 +2262,39 @@ BB1A: 0E E2 0E EC 0E F6 0F 00  FCB    $0E,$E2,$0E,$EC,$0E,$F6,$0F,$00
 
 ; Referenced from: $B931 object_state_call
 object_states:
-BB22: B9 2B                    FDB    sub_B92B ; [0] $B92B
+BB22: B9 2B                    FDB    objects_task_end ; [0] $B92B
 BB24: B9 36                    FDB    object_spawn_random ; [1] $B936
-BB26: B9 6B                    FDB    sub_B96B ; [2] $B96B
-BB28: B9 73                    FDB    sub_B973 ; [3] $B973
-BB2A: B9 7B                    FDB    sub_B97B ; [4] $B97B
-BB2C: B9 83                    FDB    sub_B983 ; [5] $B983
-BB2E: B9 9D                    FDB    sub_B99D ; [6] $B99D
-BB30: B9 A5                    FDB    sub_B9A5 ; [7] $B9A5
-BB32: B9 AD                    FDB    sub_B9AD ; [8] $B9AD
-BB34: B9 B5                    FDB    sub_B9B5 ; [9] $B9B5
-BB36: B9 BD                    FDB    sub_B9BD ; [10] $B9BD
-BB38: B9 E2                    FDB    sub_B9E2 ; [11] $B9E2
-BB3A: B9 F0                    FDB    sub_B9F0 ; [12] $B9F0
-BB3C: BA 18                    FDB    sub_BA18 ; [13] $BA18
-BB3E: BA 8E                    FDB    sub_BA8E ; [14] $BA8E
+BB26: B9 6B                    FDB    obj_state2 ; [2] $B96B
+BB28: B9 73                    FDB    obj_state3 ; [3] $B973
+BB2A: B9 7B                    FDB    obj_state4 ; [4] $B97B
+BB2C: B9 83                    FDB    obj_state5 ; [5] $B983
+BB2E: B9 9D                    FDB    obj_state6 ; [6] $B99D
+BB30: B9 A5                    FDB    obj_state7 ; [7] $B9A5
+BB32: B9 AD                    FDB    obj_state8 ; [8] $B9AD
+BB34: B9 B5                    FDB    obj_state9 ; [9] $B9B5
+BB36: B9 BD                    FDB    obj_blink ; [10] $B9BD
+BB38: B9 E2                    FDB    obj_pick_side ; [11] $B9E2
+BB3A: B9 F0                    FDB    obj_move_down ; [12] $B9F0
+BB3C: BA 18                    FDB    obj_move_up ; [13] $BA18
+BB3E: BA 8E                    FDB    obj_explode ; [14] $BA8E
 
-; Referenced from: $B9CA sub_B9BD
+; Referenced from: $B9CA obj_blink
 dat_BB40:
 BB40: 50 0A 51 0A 50 0A 52 0A  FCB    $50,$0A,$51,$0A,$50,$0A,$52,$0A
 
-; Referenced from: $BA8E sub_BA8E
-dat_BB48:
+; obj_explode fragment pictures by frame & 3.
+; Referenced from: $BA8E obj_explode
+fragment_pictures:
 BB48: 53 0A 53 0C 53 0D 53 0A  FCB    $53,$0A,$53,$0C,$53,$0D,$53,$0A
 
 ;------------------------------------------------------------------------------
-; sub_BB50  ($BB50)
+; task_launch_objects  ($BB50) ; JS: sub_BB50
+; -> src/game/sub/gp2_8_objects.js
+; Mode 5: while $1122, every $2D frames start the next object of dat_BB8E
+; (state 1) if idle; count $1123 once all are out.
 ; Table entry at: $E163
 ;------------------------------------------------------------------------------
-sub_BB50:
+task_launch_objects:
 BB50: B6 11 22        LDA    $1122
 BB53: 27 2A           BEQ    lBB7F
 BB55: B6 11 19        LDA    $1119
@@ -1993,7 +2306,8 @@ BB62: 86 01           LDA    #$01
 BB64: B7 11 23        STA    $1123
 BB67: 86 2D           LDA    #$2D
 BB69: B7 11 1B        STA    $111B
-BB6C: 8E BB 8E        LDX    #dat_BB8E
+BB6C: 8E BB 8E        LDX    #object_launch_order ; the state byte's address
+                                             ; from dat_BB8E
 BB6F: B6 11 1A        LDA    $111A
 BB72: 84 03           ANDA   #$03
 BB74: 48              ASLA
@@ -2013,16 +2327,23 @@ BB87: 27 F6           BEQ    lBB7F
 BB89: 7C 11 23        INC    $1123
 BB8C: 20 F1           BRA    lBB7F
 
-; Referenced from: $BB6C sub_BB50
-dat_BB8E:
+; task_launch_objects: state byte addresses in launch order.
+; Referenced from: $BB6C task_launch_objects
+object_launch_order:
 BB8E: 11 1D 11 1E 11 1F 11 20  FCB    $11,$1D,$11,$1E,$11,$1F,$11,$20
 
 ;------------------------------------------------------------------------------
-; sub_BB96  ($BB96)
+; task_challenge_seq  ($BB96) ; JS: sub_BB96
+; -> src/game/sub/gp2_8_bonus.js
+; Mode 7 challenging-stage sequencer, stepped by challenge_step: set-up, 22
+; animation frames of dat_F0C1, pick the wave size (dat_BCB4/BCC0), release one
+; bonus object every 8 frames. CWAIs once.
+; QUIRK: step $17 searches dat_BCB4 for the stage with no end marker; a stage
+; not in the list runs on through memory.
 ; Table entry at: $E173
 ;------------------------------------------------------------------------------
-sub_BB96:
-BB96: B6 11 5A        LDA    $115A
+task_challenge_seq:
+BB96: B6 11 5A        LDA    challenge_step  ; [$115A]
 BB99: 27 11           BEQ    lBBAC
 BB9B: 48              ASLA
 BB9C: 81 2E           CMPA   #$2E
@@ -2037,15 +2358,15 @@ lBBAC:
 BBAC: 86 01           LDA    #$01
 BBAE: B7 11 5F        STA    $115F
 BBB1: 86 01           LDA    #$01
-BBB3: B7 11 3A        STA    $113A
-BBB6: B7 11 3B        STA    $113B
-BBB9: B7 11 3C        STA    $113C
-BBBC: B7 11 3D        STA    $113D
-BBBF: B7 11 3E        STA    $113E
+BBB3: B7 11 3A        STA    bonus_free      ; [$113A]
+BBB6: B7 11 3B        STA    bonus_free+1    ; [$113B]
+BBB9: B7 11 3C        STA    bonus_free+2    ; [$113C]
+BBBC: B7 11 3D        STA    bonus_free+3    ; [$113D]
+BBBF: B7 11 3E        STA    bonus_free+4    ; [$113E]
 BBC2: 96 35           LDA    <stage          ; [$1035]
 BBC4: 84 07           ANDA   #$07
 BBC6: 48              ASLA
-BBC7: 8E BC A4        LDX    #dat_BCA4
+BBC7: 8E BC A4        LDX    #challenge_start_pos
 BBCA: EC 86           LDD    A,X
 BBCC: FD 17 1E        STD    $171E
 BBCF: CC 40 80        LDD    #$4080
@@ -2054,11 +2375,11 @@ BBD5: CC 40 10        LDD    #$4010
 
 lBBD8:
 BBD8: FD 0F 1E        STD    $0F1E
-BBDB: 7C 11 5A        INC    $115A
+BBDB: 7C 11 5A        INC    challenge_step  ; [$115A]
 BBDE: 7E BC 35        JMP    lBC35
 
 lBBE1:
-BBE1: 8E F0 C1        LDX    #dat_F0C1
+BBE1: 8E F0 C1        LDX    #flyin_frames
 BBE4: 80 02           SUBA   #$02
 BBE6: EC 86           LDD    A,X
 BBE8: 26 EE           BNE    lBBD8
@@ -2066,7 +2387,7 @@ BBEA: 7F 1F 1F        CLR    $1F1F
 BBED: 20 E9           BRA    lBBD8
 
 lBBEF:
-BBEF: 8E BC B4        LDX    #dat_BCB4
+BBEF: 8E BC B4        LDX    #challenge_wave_stages
 BBF2: 5F              CLRB
 BBF3: 96 35           LDA    <stage          ; [$1035]
 
@@ -2077,14 +2398,14 @@ BBF9: 5C              INCB
 BBFA: 20 F9           BRA    lBBF5
 
 lBBFC:
-BBFC: 8E BC C0        LDX    #dat_BCC0
+BBFC: 8E BC C0        LDX    #challenge_wave_sizes
 BBFF: 58              ASLB
 BC00: AE 85           LDX    B,X
-BC02: B6 11 5B        LDA    $115B
-BC05: 7C 11 5B        INC    $115B
+BC02: B6 11 5B        LDA    results_delay   ; [$115B]
+BC05: 7C 11 5B        INC    results_delay   ; [$115B]
 BC08: A6 86           LDA    A,X
 BC0A: B7 11 5C        STA    $115C
-BC0D: 7C 11 5A        INC    $115A
+BC0D: 7C 11 5A        INC    challenge_step  ; [$115A]
 BC10: 7E BC 35        JMP    lBC35
 
 lBC13:
@@ -2094,13 +2415,14 @@ BC18: 7C 11 5D        INC    $115D
 BC1B: B6 11 5D        LDA    $115D
 BC1E: 84 07           ANDA   #$07
 BC20: 26 13           BNE    lBC35
-BC22: B6 11 5C        LDA    $115C
+BC22: B6 11 5C        LDA    $115C           ; the state byte's address from
+                                             ; dat_BCE7
 BC25: 48              ASLA
 BC26: 8E BC E7        LDX    #dat_BCE7
 BC29: 6C 96           INC    [A,X]
 BC2B: 7A 11 5C        DEC    $115C
 BC2E: 26 05           BNE    lBC35
-BC30: 7C 11 5A        INC    $115A
+BC30: 7C 11 5A        INC    challenge_step  ; [$115A]
 BC33: 20 00           BRA    lBC35
 
 lBC35:
@@ -2108,37 +2430,37 @@ BC35: 0C 7A           INC    <sub_task       ; [$107A]
 BC37: 7E E0 EC        JMP    task_dispatch_sub
 
 lBC3A:
-BC3A: B6 11 3A        LDA    $113A
-BC3D: B4 11 3B        ANDA   $113B
-BC40: B4 11 3C        ANDA   $113C
-BC43: B4 11 3D        ANDA   $113D
-BC46: B4 11 3E        ANDA   $113E
+BC3A: B6 11 3A        LDA    bonus_free      ; [$113A]
+BC3D: B4 11 3B        ANDA   bonus_free+1    ; [$113B]
+BC40: B4 11 3C        ANDA   bonus_free+2    ; [$113C]
+BC43: B4 11 3D        ANDA   bonus_free+3    ; [$113D]
+BC46: B4 11 3E        ANDA   bonus_free+4    ; [$113E]
 BC49: 84 01           ANDA   #$01
 BC4B: 27 E8           BEQ    lBC35
-BC4D: 7F 11 5A        CLR    $115A
-BC50: 7F 11 32        CLR    $1132
-BC53: 7F 11 33        CLR    $1133
-BC56: 7F 11 34        CLR    $1134
-BC59: 7F 11 35        CLR    $1135
-BC5C: 7F 11 36        CLR    $1136
-BC5F: 7F 11 3A        CLR    $113A
-BC62: 7F 11 3B        CLR    $113B
-BC65: 7F 11 3C        CLR    $113C
-BC68: 7F 11 3D        CLR    $113D
-BC6B: 7F 11 3E        CLR    $113E
+BC4D: 7F 11 5A        CLR    challenge_step  ; [$115A]
+BC50: 7F 11 32        CLR    bonus_state     ; [$1132]
+BC53: 7F 11 33        CLR    bonus_state+1   ; [$1133]
+BC56: 7F 11 34        CLR    bonus_state+2   ; [$1134]
+BC59: 7F 11 35        CLR    bonus_state+3   ; [$1135]
+BC5C: 7F 11 36        CLR    bonus_state+4   ; [$1136]
+BC5F: 7F 11 3A        CLR    bonus_free      ; [$113A]
+BC62: 7F 11 3B        CLR    bonus_free+1    ; [$113B]
+BC65: 7F 11 3C        CLR    bonus_free+2    ; [$113C]
+BC68: 7F 11 3D        CLR    bonus_free+3    ; [$113D]
+BC6B: 7F 11 3E        CLR    bonus_free+4    ; [$113E]
 BC6E: 7F 11 42        CLR    $1142
 BC71: 7F 11 43        CLR    $1143
 BC74: 7F 11 44        CLR    $1144
 BC77: 7F 11 45        CLR    $1145
 BC7A: 7F 11 46        CLR    $1146
-BC7D: B6 11 5B        LDA    $115B
+BC7D: B6 11 5B        LDA    results_delay   ; [$115B]
 BC80: 81 03           CMPA   #$03
 BC82: 26 1A           BNE    lBC9E
-BC84: 7F 11 5B        CLR    $115B
+BC84: 7F 11 5B        CLR    results_delay   ; [$115B]
 BC87: 7F 11 5C        CLR    $115C
 BC8A: 7F 11 5D        CLR    $115D
-BC8D: 3C EF           CWAI   #$EF
-BC8F: 7F 11 08        CLR    $1108
+BC8D: 3C EF           CWAI   #$EF            ; wait for vblank
+BC8F: 7F 11 08        CLR    effect_request  ; [$1108]
 BC92: 7F 11 5F        CLR    $115F
 BC95: 0C 2F           INC    <game_mode      ; [$102F]
 BC97: 0F 30           CLR    <main_task      ; [$1030]
@@ -2149,43 +2471,50 @@ lBC9E:
 BC9E: 7F 11 5D        CLR    $115D
 BCA1: 7E BC 35        JMP    lBC35
 
-; Referenced from: $BBC7 sub_BB96
-dat_BCA4:
+; task_challenge_seq: start position by stage & 7.
+; Referenced from: $BBC7 task_challenge_seq
+challenge_start_pos:
 BCA4: 20 70 20 70 20 B0 20 70  FCB    $20,$70,$20,$70,$20,$B0,$20,$70
 BCAC: 20 B0 20 70 20 70 20 B0  FCB    $20,$B0,$20,$70,$20,$70,$20,$B0
 
-; Referenced from: $BBEF sub_BB96
-dat_BCB4:
+; task_challenge_seq: stage list (no end marker).
+; Referenced from: $BBEF task_challenge_seq
+challenge_wave_stages:
 BCB4: 02 07 0C 11 16 1B 20 25  FCB    $02,$07,$0C,$11,$16,$1B,$20,$25
 BCBC: 2A 2F 34 39              FCB    $2A,$2F,$34,$39
 
-; Referenced from: $BBFC sub_BB96
-dat_BCC0:
+; task_challenge_seq: wave sizes.
+; Referenced from: $BBFC task_challenge_seq
+challenge_wave_sizes:
 BCC0: BC D8 BC D8 BC D8 BC DB  FCB    $BC,$D8,$BC,$D8,$BC,$D8,$BC,$DB
 BCC8: BC DB BC E1 BC DB BC DE  FCB    $BC,$DB,$BC,$E1,$BC,$DB,$BC,$DE
 BCD0: BC D8 BC D8 BC DB BC DB  FCB    $BC,$D8,$BC,$D8,$BC,$DB,$BC,$DB
 BCD8: 03 04 05 02 03 04 01 02  FCB    $03,$04,$05,$02,$03,$04,$01,$02
 BCE0: 03 01 01 05 01 01 01     FCB    $03,$01,$01,$05,$01,$01,$01
 
-; Referenced from: $BC26 sub_BB96
+; Referenced from: $BC26 task_challenge_seq
 dat_BCE7:
 BCE7: 00 00 11 32 11 33 11 34  FCB    $00,$00,$11,$32,$11,$33,$11,$34
 BCEF: 11 35 11 36              FCB    $11,$35,$11,$36
 
 ;------------------------------------------------------------------------------
-; sub_BCF3  ($BCF3)
+; task_bonus_objects  ($BCF3) ; JS: sub_BCF3
+; -> src/game/sub/gp2_8_bonus.js
+; Mode 7: run the handler of every bonus object with a non-zero bonus_state
+; ($1132-$1136) with X = its bonus_free flag and U = its sprite entry
+; ($0E30+2k).
 ; Table entry at: $E175
 ;------------------------------------------------------------------------------
-sub_BCF3:
+task_bonus_objects:
 BCF3: CE 0E 30        LDU    #sprite_shadow_1+48 ; [#$0E30]
-BCF6: 8E 11 3A        LDX    #$113A
-BCF9: 10 8E 11 32     LDY    #$1132
+BCF6: 8E 11 3A        LDX    #bonus_free     ; [#$113A]
+BCF9: 10 8E 11 32     LDY    #bonus_state    ; [#$1132]
 
 lBCFD:
 BCFD: A6 A4           LDA    ,Y
 BCFF: 27 06           BEQ    lBD07
 BD01: 34 20           PSHS   Y
-BD03: 8D 13           BSR    sub_BD18
+BD03: 8D 13           BSR    bonus_state_call
 BD05: 35 20           PULS   Y
 
 lBD07:
@@ -2198,20 +2527,25 @@ BD13: 0C 7A           INC    <sub_task       ; [$107A]
 BD15: 7E E0 EC        JMP    task_dispatch_sub
 
 ;------------------------------------------------------------------------------
-; sub_BD18  ($BD18)
-; Called from: $BD03 sub_BCF3
+; bonus_state_call  ($BD18) ; JS: sub_BD18
+; -> src/game/sub/gp2_8_bonus.js
+; Jump to tbl_BEDD[state - 1] (DECA / ASLA / JMP [A,Y], signed).
+; Called from: $BD03 task_bonus_objects
 ;------------------------------------------------------------------------------
-sub_BD18:
+bonus_state_call:
 BD18: 10 8E BE DD     LDY    #tbl_BEDD
 BD1C: 4A              DECA
 BD1D: 48              ASLA
 BD1E: 6E B6           JMP    [A,Y]           ; [table tbl_BEDD]
 
 ;------------------------------------------------------------------------------
-; sub_BD20  ($BD20)
+; bonus_launch  ($BD20) ; JS: sub_BD20
+; -> src/game/sub/gp2_8_bonus.js
+; Bonus state 1: launch from $171E with path dat_BEAD[stage & 7], speed $28,
+; state 2.
 ; Table entry at: $BEDD
 ;------------------------------------------------------------------------------
-sub_BD20:
+bonus_launch:
 BD20: 6F 84           CLR    ,X
 BD22: 86 82           LDA    #$82
 BD24: A7 89 07 26     STA    TILE_ATTR+$326,X ; [$0726]
@@ -2224,7 +2558,7 @@ BD36: A7 C9 10 01     STA    $1001,U
 BD3A: 96 35           LDA    <stage          ; [$1035]
 BD3C: 84 07           ANDA   #$07
 BD3E: 48              ASLA
-BD3F: 10 8E BE AD     LDY    #dat_BEAD
+BD3F: 10 8E BE AD     LDY    #bonus_paths
 BD43: EC A6           LDD    A,Y
 BD45: ED C9 09 D0     STD    $09D0,U
 BD49: 86 28           LDA    #$28
@@ -2234,10 +2568,14 @@ BD51: 6F C9 03 1A     CLR    TILE_RAM+$31A,U ; [$031A]
 BD55: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_BD56  ($BD56)
+; bonus_fly  ($BD56) ; JS: sub_BD56
+; -> src/game/sub/gp2_8_bonus.js
+; Bonus state 2: fly; off screen -> done (state 4); path ended -> back to the
+; start point, count a pass ($1162/$1164), state 3, next path
+; dat_BEBD/dat_BECD.
 ; Table entry at: $BEDF
 ;------------------------------------------------------------------------------
-sub_BD56:
+bonus_fly:
 BD56: A6 C9 08 00     LDA    $0800,U
 BD5A: 81 E0           CMPA   #$E0
 BD5C: 25 21           BCS    lBD7F
@@ -2262,7 +2600,7 @@ BD7B: 27 14           BEQ    lBD91
 BD7D: 20 DF           BRA    lBD5E
 
 lBD7F:
-BD7F: A6 C9 08 01     LDA    $0801,U
+BD7F: A6 C9 08 01     LDA    $0801,U         ; 9-bit X / 2
 BD83: E6 C9 10 01     LDB    $1001,U
 BD87: 54              LSRB
 BD88: 46              RORA
@@ -2275,19 +2613,19 @@ lBD91:
 BD91: A6 89 07 26     LDA    TILE_ATTR+$326,X ; [$0726]
 BD95: 84 01           ANDA   #$01
 BD97: 27 D3           BEQ    lBD6C
-BD99: FC 11 09        LDD    $1109
+BD99: FC 11 09        LDD    effect_pos      ; [$1109]
 BD9C: ED C9 08 00     STD    $0800,U
-BDA0: B6 11 0B        LDA    $110B
+BDA0: B6 11 0B        LDA    effect_flags    ; [$110B]
 BDA3: A7 C9 10 01     STA    $1001,U
 BDA7: 86 82           LDA    #$82
 BDA9: A7 89 07 26     STA    TILE_ATTR+$326,X ; [$0726]
 BDAD: 86 01           LDA    #$01
 BDAF: A7 C9 03 1B     STA    TILE_RAM+$31B,U ; [$031B]
-BDB3: B6 11 62        LDA    $1162
+BDB3: B6 11 62        LDA    results_hits_left ; [$1162]
 BDB6: 8B 01           ADDA   #$01
 BDB8: 19              DAA
-BDB9: B7 11 62        STA    $1162
-BDBC: 7C 11 64        INC    $1164
+BDB9: B7 11 62        STA    results_hits_left ; [$1162]
+BDBC: 7C 11 64        INC    results_count   ; [$1164]
 BDBF: 6C 18           INC    -$8,X
 BDC1: 6C C9 03 1A     INC    TILE_RAM+$31A,U ; [$031A]
 BDC5: 7C 08 4A        INC    $084A
@@ -2308,7 +2646,7 @@ BDE2: E7 C9 10 01     STB    $1001,U
 BDE6: 96 35           LDA    <stage          ; [$1035]
 BDE8: 84 07           ANDA   #$07
 BDEA: 48              ASLA
-BDEB: 10 8E BE BD     LDY    #dat_BEBD
+BDEB: 10 8E BE BD     LDY    #bonus_return_paths_a
 BDEF: EC A6           LDD    A,Y
 BDF1: ED C9 09 D0     STD    $09D0,U
 BDF5: 10 8E BE 71     LDY    #dat_BE71
@@ -2338,7 +2676,7 @@ BE21: E7 C9 10 01     STB    $1001,U
 BE25: 96 35           LDA    <stage          ; [$1035]
 BE27: 84 07           ANDA   #$07
 BE29: 48              ASLA
-BE2A: 10 8E BE CD     LDY    #dat_BECD
+BE2A: 10 8E BE CD     LDY    #bonus_return_paths_b
 BE2E: EC A6           LDD    A,Y
 BE30: ED C9 09 D0     STD    $09D0,U
 BE34: 10 8E BE 71     LDY    #dat_BE71
@@ -2354,15 +2692,18 @@ lBE4D:
 BE4D: 20 BF           BRA    lBE0E
 
 ;------------------------------------------------------------------------------
-; sub_BE4F  ($BE4F)
+; bonus_hold  ($BE4F) ; JS: sub_BE4F
+; -> src/game/sub/gp2_8_bonus.js
+; Bonus state 3: hold at the start point $1109/$110B for U+$31B frames, then
+; state 2.
 ; Table entry at: $BEE1
 ;------------------------------------------------------------------------------
-sub_BE4F:
+bonus_hold:
 BE4F: 86 82           LDA    #$82
 BE51: A7 89 07 26     STA    TILE_ATTR+$326,X ; [$0726]
-BE55: FC 11 09        LDD    $1109
+BE55: FC 11 09        LDD    effect_pos      ; [$1109]
 BE58: ED C9 08 00     STD    $0800,U
-BE5C: B6 11 0B        LDA    $110B
+BE5C: B6 11 0B        LDA    effect_flags    ; [$110B]
 BE5F: A7 C9 10 01     STA    $1001,U
 BE63: 6A C9 03 1B     DEC    TILE_RAM+$31B,U ; [$031B]
 BE67: 26 02           BNE    lBE6B
@@ -2372,15 +2713,17 @@ lBE6B:
 BE6B: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_BE6C  ($BE6C)
+; bonus_done  ($BE6C) ; JS: sub_BE6C
+; -> src/game/sub/gp2_8_bonus.js
+; Bonus state 4: bonus_free flag = 1.
 ; Table entry at: $BEE3
 ;------------------------------------------------------------------------------
-sub_BE6C:
+bonus_done:
 BE6C: 86 01           LDA    #$01
 BE6E: A7 84           STA    ,X
 BE70: 39              RTS
 
-; Referenced from: $BDF5 sub_BD56, $BE34 sub_BD56
+; Referenced from: $BDF5 bonus_fly, $BE34 bonus_fly
 dat_BE71:
 BE71: 18 20 20 28 28 28 30 40  FCB    $18,$20,$20,$28,$28,$28,$30,$40
 BE79: 50 50 60 60 60 60 60 60  FCB    $50,$50,$60,$60,$60,$60,$60,$60
@@ -2391,33 +2734,40 @@ BE99: 98 98 98 98 98 98 98 98  FCB    $98,$98,$98,$98,$98,$98,$98,$98
 BEA1: 98 98 98 98 98 98 98 98  FCB    $98,$98,$98,$98,$98,$98,$98,$98
 BEA9: 98 98 98 98              FCB    $98,$98,$98,$98
 
-; Referenced from: $BD3F sub_BD20
-dat_BEAD:
+; bonus_launch: path pointer by stage & 7 (path_XXXX or $FEEC).
+; Referenced from: $BD3F bonus_launch
+bonus_paths:
 BEAD: FE EC FE EC DB 50 FE EC  FCB    $FE,$EC,$FE,$EC,$DB,$50,$FE,$EC
 BEB5: DB 50 FE EC FE EC DB 50  FCB    $DB,$50,$FE,$EC,$FE,$EC,$DB,$50
 
-; Referenced from: $BDEB sub_BD56
-dat_BEBD:
+; bonus_fly: next path pointer by stage & 7.
+; Referenced from: $BDEB bonus_fly
+bonus_return_paths_a:
 BEBD: D9 36 D9 36 D9 36 D9 36  FCB    $D9,$36,$D9,$36,$D9,$36,$D9,$36
 BEC5: D9 36 D9 36 D9 36 D9 36  FCB    $D9,$36,$D9,$36,$D9,$36,$D9,$36
 
-; Referenced from: $BE2A sub_BD56
-dat_BECD:
+; bonus_fly: next path pointer (other side) by stage & 7.
+; Referenced from: $BE2A bonus_fly
+bonus_return_paths_b:
 BECD: DA 09 DA 09 DA 09 DA 09  FCB    $DA,$09,$DA,$09,$DA,$09,$DA,$09
 BED5: DA 09 DA 09 DA 09 DA 09  FCB    $DA,$09,$DA,$09,$DA,$09,$DA,$09
 
-; Referenced from: $BD18 sub_BD18
+; Referenced from: $BD18 bonus_state_call
 tbl_BEDD:
-BEDD: BD 20                    FDB    sub_BD20 ; [0] $BD20
-BEDF: BD 56                    FDB    sub_BD56 ; [1] $BD56
-BEE1: BE 4F                    FDB    sub_BE4F ; [2] $BE4F
-BEE3: BE 6C                    FDB    sub_BE6C ; [3] $BE6C
+BEDD: BD 20                    FDB    bonus_launch ; [0] $BD20
+BEDF: BD 56                    FDB    bonus_fly ; [1] $BD56
+BEE1: BE 4F                    FDB    bonus_hold ; [2] $BE4F
+BEE3: BE 6C                    FDB    bonus_done ; [3] $BE6C
 
 ;------------------------------------------------------------------------------
-; sub_BEE5  ($BEE5)
+; task_bonus_colours  ($BEE5) ; JS: sub_BEE5
+; -> src/game/sub/gp2_8_bonus.js
+; Mode 7: for each non-zero entry of $114A-$1158 sprite $0E30+2k gets code
+; dat_BF27[$115E] and flags dat_BF40[$115E]; $115E steps and wraps at the 0
+; terminator.
 ; Table entry at: $E177
 ;------------------------------------------------------------------------------
-sub_BEE5:
+task_bonus_colours:
 BEE5: 8E 11 48        LDX    #$1148
 BEE8: CE 0E 2E        LDU    #sprite_shadow_1+46 ; [#$0E2E]
 
@@ -2428,11 +2778,11 @@ BEEF: 8C 11 5A        CMPX   #$115A
 BEF2: 27 1E           BEQ    lBF12
 BEF4: A6 84           LDA    ,X
 BEF6: 27 F3           BEQ    lBEEB
-BEF8: 10 8E BF 27     LDY    #dat_BF27
+BEF8: 10 8E BF 27     LDY    #bonus_colour_codes
 BEFC: B6 11 5E        LDA    $115E
 BEFF: A6 A6           LDA    A,Y
 BF01: A7 C4           STA    ,U
-BF03: 10 8E BF 40     LDY    #dat_BF40
+BF03: 10 8E BF 40     LDY    #bonus_colour_flags
 BF07: B6 11 5E        LDA    $115E
 BF0A: A6 A6           LDA    A,Y
 BF0C: A7 C9 10 00     STA    $1000,U
@@ -2440,7 +2790,7 @@ BF10: 20 D9           BRA    lBEEB
 
 lBF12:
 BF12: 7C 11 5E        INC    $115E
-BF15: 8E BF 27        LDX    #dat_BF27
+BF15: 8E BF 27        LDX    #bonus_colour_codes
 BF18: B6 11 5E        LDA    $115E
 BF1B: A6 86           LDA    A,X
 BF1D: 26 03           BNE    lBF22
@@ -2450,22 +2800,25 @@ lBF22:
 BF22: 0C 7A           INC    <sub_task       ; [$107A]
 BF24: 7E E0 EC        JMP    task_dispatch_sub
 
-; Referenced from: $BEF8 sub_BEE5, $BF15 sub_BEE5
-dat_BF27:
+; task_bonus_colours: sprite codes, 0 ends.
+; Referenced from: $BEF8 task_bonus_colours, $BF15 task_bonus_colours
+bonus_colour_codes:
 ;   "QRSTUVWXYZ.P.ZYXWVUTSRQP"
 BF27: 51 52 53 54 55 56 57 58  FCB    $51,$52,$53,$54,$55,$56,$57,$58
 BF2F: 59 5A 5B 50 5B 5A 59 58  FCB    $59,$5A,$5B,$50,$5B,$5A,$59,$58
 BF37: 57 56 55 54 53 52 51 50  FCB    $57,$56,$55,$54,$53,$52,$51,$50
 BF3F: 00                       FCB    $00
 
-; Referenced from: $BF03 sub_BEE5
-dat_BF40:
+; task_bonus_colours: sprite flags.
+; Referenced from: $BF03 task_bonus_colours
+bonus_colour_flags:
 BF40: 02 02 02 02 02 02 02 02  FCB    $02,$02,$02,$02,$02,$02,$02,$02
 BF48: 02 02 02 01 00 00 00 00  FCB    $02,$02,$02,$01,$00,$00,$00,$00
 BF50: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
 
 ;------------------------------------------------------------------------------
 ; task_formation_init  ($BF58)
+; -> src/game/sub/gp2_8_formation.js
 ; Mode 0 task: mark all 44 formation slots occupied and load the
 ; formation pointers.
 ; Table entry at: $E10F
@@ -2480,18 +2833,18 @@ BF5F: A7 80           STA    ,X+
 BF61: 5A              DECB
 BF62: 26 FB           BNE    lBF5F
 BF64: CC AD CF        LDD    #$ADCF
-BF67: DD 82           STD    <$82            ; [$1082]
+BF67: DD 82           STD    <formation_path_ptr ; [$1082]
 BF69: 7F 0E 88        CLR    $0E88
 BF6C: 7F 0E 89        CLR    $0E89
 BF6F: CC 28 A8        LDD    #$28A8
-BF72: FD 16 88        STD    $1688
-BF75: 0F AC           CLR    <$AC            ; [$10AC]
+BF72: FD 16 88        STD    formation_y     ; [$1688]
+BF75: 0F AC           CLR    <formation_started ; [$10AC]
 BF77: 7F 11 22        CLR    $1122
 BF7A: 7F 11 1A        CLR    $111A
-BF7D: 0F 18           CLR    <$18            ; [$1018]
+BF7D: 0F 18           CLR    <seq_step       ; [$1018]
 BF7F: 86 01           LDA    #$01
 BF81: B7 11 1B        STA    $111B
-BF84: 3C EF           CWAI   #$EF
+BF84: 3C EF           CWAI   #$EF            ; wait for vblank
 BF86: 0F 7A           CLR    <sub_task       ; [$107A]
 BF88: 7E E0 EC        JMP    task_dispatch_sub
 
@@ -2520,8 +2873,13 @@ BFF0: FF FF FF FF FF FF FF FF  FCB    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
                                              ; [fill $FF x 16]
 BFF8: FF FF FF FF FF FF FF FF  FCB    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
 
-; Referenced from: $E01A reset_sub, $F10B sub_F0ED, $F5F0 sub_F5A5
-dat_C000:
+; Path stream: 230 headings (heading_table indexes),
+; then FF = jump to $A44B.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+; Referenced from: $E01A reset_sub, $F10B reset_formation_rows, $F5F0
+; task_stage_entry_seq
+path_C000:
 C000: 30 34 38 3B 3E 41 44 46  FCB    $30,$34,$38,$3B,$3E,$41,$44,$46
 C008: 49 4B 4D 4F 51 53 55 56  FCB    $49,$4B,$4D,$4F,$51,$53,$55,$56
 C010: 57 58 5B 5D 60 62 63 65  FCB    $57,$58,$5B,$5D,$60,$62,$63,$65
@@ -2550,11 +2908,15 @@ C0C0: 06 06 07 08 08 08 09 09  FCB    $06,$06,$07,$08,$08,$08,$09,$09
 C0C8: 09 09 0A 0A 0B 0C 0D 0E  FCB    $09,$09,$0A,$0A,$0B,$0C,$0D,$0E
 C0D0: 0F 10 11 12 13 14 15 16  FCB    $0F,$10,$11,$12,$13,$14,$15,$16
 C0D8: 17 1A 1D 1F 21 24 27 29  FCB    $17,$1A,$1D,$1F,$21,$24,$27,$29
-C0E0: 2B 2E 2F 31 34 37 FF A4  FCB    $2B,$2E,$2F,$31,$34,$37,$FF,$A4
-C0E8: 4B                       FCB    $4B
+C0E0: 2B 2E 2F 31 34 37        FCB    $2B,$2E,$2F,$31,$34,$37
+C0E6: FF A4 4B                 FCB    $FF,$A4,$4B ; FF: jump to $A44B
 
-; Referenced from: $F0FE sub_F0ED
-dat_C0E9:
+; Path stream: 196 headings (heading_table indexes),
+; then FE = jump to $C0E9 (loops), axis 2 reset.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+; Referenced from: $F0FE reset_formation_rows
+path_C0E9:
 C0E9: 31 39 41 47 48 54 58 5E  FCB    $31,$39,$41,$47,$48,$54,$58,$5E
 C0F1: 64 64 6C 6E 71 73 78 79  FCB    $64,$64,$6C,$6E,$71,$73,$78,$79
 C0F9: 7F 7F 81 84 87 87 88 88  FCB    $7F,$7F,$81,$84,$87,$87,$88,$88
@@ -2579,135 +2941,183 @@ C189: 73 72 72 71 71 71 71 70  FCB    $73,$72,$72,$71,$71,$71,$71,$70
 C191: 70 70 70 6F 6F 6F 6F 6F  FCB    $70,$70,$70,$6F,$6F,$6F,$6F,$6F
 C199: 6E 6E 6E 6E 6E 6E 6D 6D  FCB    $6E,$6E,$6E,$6E,$6E,$6E,$6D,$6D
 C1A1: 6D 6D 6D 6D 6D 6C 6C 6C  FCB    $6D,$6D,$6D,$6D,$6D,$6C,$6C,$6C
-C1A9: 6C 6C 6C 6C FE C0 E9 31  FCB    $6C,$6C,$6C,$6C,$FE,$C0,$E9,$31
-C1B1: 39 41 47 48 54 58 5E 64  FCB    $39,$41,$47,$48,$54,$58,$5E,$64
-C1B9: 64 6C 6E 71 73 78 79 7F  FCB    $64,$6C,$6E,$71,$73,$78,$79,$7F
-C1C1: 7F 81 84 87 87 88 88 88  FCB    $7F,$81,$84,$87,$87,$88,$88,$88
-C1C9: 8A 8A 8A 8A 8A 8A 8D 8D  FCB    $8A,$8A,$8A,$8A,$8A,$8A,$8D,$8D
-C1D1: 8E 8F 90 90 90 93 95 95  FCB    $8E,$8F,$90,$90,$90,$93,$95,$95
-C1D9: 96 96 97 97 98 9D 9F A2  FCB    $96,$96,$97,$97,$98,$9D,$9F,$A2
-C1E1: A2 A5 AB AB B1 00 04 06  FCB    $A2,$A5,$AB,$AB,$B1,$00,$04,$06
-C1E9: 0A 0C 15 17 19 1F 22 28  FCB    $0A,$0C,$15,$17,$19,$1F,$22,$28
-C1F1: 2A 2B 2D 34 36 3D 42 47  FCB    $2A,$2B,$2D,$34,$36,$3D,$42,$47
-C1F9: 4A 4E 50 55 58 5A 5E 64  FCB    $4A,$4E,$50,$55,$58,$5A,$5E,$64
-C201: 66 6A 6E 73 77 7B 7F 84  FCB    $66,$6A,$6E,$73,$77,$7B,$7F,$84
-C209: 84 84 88 90 91 94 95 99  FCB    $84,$84,$88,$90,$91,$94,$95,$99
-C211: 9A 9A 9B 9B 9C 9C 9D 9D  FCB    $9A,$9A,$9B,$9B,$9C,$9C,$9D,$9D
-C219: 9D 9E 9E 9F A0 9F 9D 9D  FCB    $9D,$9E,$9E,$9F,$A0,$9F,$9D,$9D
-C221: 9C 9C 9C 9B 9B 9A 99 99  FCB    $9C,$9C,$9C,$9B,$9B,$9A,$99,$99
-C229: 98 95 92 90 8E 8D 8B 89  FCB    $98,$95,$92,$90,$8E,$8D,$8B,$89
-C231: 88 87 85 83 81 7F 7D 7B  FCB    $88,$87,$85,$83,$81,$7F,$7D,$7B
-C239: 79 77 75 72 6F 6C 68 64  FCB    $79,$77,$75,$72,$6F,$6C,$68,$64
-C241: 5F 5A 55 50 4C 48 45 42  FCB    $5F,$5A,$55,$50,$4C,$48,$45,$42
-C249: 3F 3D 3B 39 37 35 33 31  FCB    $3F,$3D,$3B,$39,$37,$35,$33,$31
-C251: 2F 2D 2B 29 27 25 23 21  FCB    $2F,$2D,$2B,$29,$27,$25,$23,$21
-C259: 1F 1D 1B 18 15 12 0E 0A  FCB    $1F,$1D,$1B,$18,$15,$12,$0E,$0A
-C261: 05 00 AF AA A6 A2 9F 9C  FCB    $05,$00,$AF,$AA,$A6,$A2,$9F,$9C
-C269: 99 97 95 93 91 8F 8D 8B  FCB    $99,$97,$95,$93,$91,$8F,$8D,$8B
-C271: 89 87 87 87 87 86 86 86  FCB    $89,$87,$87,$87,$87,$86,$86,$86
-C279: 85 85 85 84 84 84 83 83  FCB    $85,$85,$85,$84,$84,$84,$83,$83
-C281: 83 82 82 81 81 80 80 7F  FCB    $83,$82,$82,$81,$81,$80,$80,$7F
-C289: 7F 7E 7E 7D 7D 7C 7C 7C  FCB    $7F,$7E,$7E,$7D,$7D,$7C,$7C,$7C
-C291: 7B 7B 7B 7B 7A 7A 7A 7A  FCB    $7B,$7B,$7B,$7B,$7A,$7A,$7A,$7A
-C299: 79 79 79 79 79 78 78 78  FCB    $79,$79,$79,$79,$79,$78,$78,$78
-C2A1: 77 77 77 77 77 77 77 FE  FCB    $77,$77,$77,$77,$77,$77,$77,$FE
-C2A9: C3 A6 31 39 41 47 48 54  FCB    $C3,$A6,$31,$39,$41,$47,$48,$54
-C2B1: 58 5E 64 64 6C 6E 71 73  FCB    $58,$5E,$64,$64,$6C,$6E,$71,$73
-C2B9: 78 79 7F 7F 81 84 87 87  FCB    $78,$79,$7F,$7F,$81,$84,$87,$87
-C2C1: 88 88 88 8A 8A 8A 8A 8A  FCB    $88,$88,$88,$8A,$8A,$8A,$8A,$8A
-C2C9: 8A 8D 8D 8E 8F 90 90 90  FCB    $8A,$8D,$8D,$8E,$8F,$90,$90,$90
-C2D1: 93 95 95 96 96 97 97 98  FCB    $93,$95,$95,$96,$96,$97,$97,$98
-C2D9: 9D 9F A2 A2 A5 AB AB B1  FCB    $9D,$9F,$A2,$A2,$A5,$AB,$AB,$B1
-C2E1: 00 04 06 0A 0C 15 17 19  FCB    $00,$04,$06,$0A,$0C,$15,$17,$19
-C2E9: 1F 22 28 2A 2B 2D 34 36  FCB    $1F,$22,$28,$2A,$2B,$2D,$34,$36
-C2F1: 3D 42 47 4A 4E 50 55 58  FCB    $3D,$42,$47,$4A,$4E,$50,$55,$58
-C2F9: 5A 5E 64 66 6A 6E 73 77  FCB    $5A,$5E,$64,$66,$6A,$6E,$73,$77
-C301: 7B 7F 84 84 84 88 90 91  FCB    $7B,$7F,$84,$84,$84,$88,$90,$91
-C309: 94 95 99 9A 9A 9B 9B 9C  FCB    $94,$95,$99,$9A,$9A,$9B,$9B,$9C
-C311: 9C 9D 9D 9D 9E 9E 9F A0  FCB    $9C,$9D,$9D,$9D,$9E,$9E,$9F,$A0
-C319: 9F 9D 9D 9C 9C 9C 9B 9B  FCB    $9F,$9D,$9D,$9C,$9C,$9C,$9B,$9B
-C321: 9A 99 99 98 95 92 90 8E  FCB    $9A,$99,$99,$98,$95,$92,$90,$8E
-C329: 8D 8B 89 88 87 89 8B 8D  FCB    $8D,$8B,$89,$88,$87,$89,$8B,$8D
-C331: 8F 91 93 95 97 99 9C 9F  FCB    $8F,$91,$93,$95,$97,$99,$9C,$9F
-C339: A2 A6 AA AF 00 05 0A 0E  FCB    $A2,$A6,$AA,$AF,$00,$05,$0A,$0E
-C341: 12 15 18 1B 1D 1F 21 23  FCB    $12,$15,$18,$1B,$1D,$1F,$21,$23
-C349: 25 27 29 2B 2D 2F 31 33  FCB    $25,$27,$29,$2B,$2D,$2F,$31,$33
-C351: 35 37 39 3B 3D 3F 42 45  FCB    $35,$37,$39,$3B,$3D,$3F,$42,$45
-C359: 48 4C 50 55 5A 5F 64 68  FCB    $48,$4C,$50,$55,$5A,$5F,$64,$68
-C361: 6C 6F 72 75 77 79 7B 7D  FCB    $6C,$6F,$72,$75,$77,$79,$7B,$7D
-C369: 7F 81 83 85 87 87 87 87  FCB    $7F,$81,$83,$85,$87,$87,$87,$87
-C371: 88 88 88 89 89 89 8A 8A  FCB    $88,$88,$88,$89,$89,$89,$8A,$8A
-C379: 8A 8B 8B 8B 8C 8C 8D 8D  FCB    $8A,$8B,$8B,$8B,$8C,$8C,$8D,$8D
-C381: 8E 8E 8F 8F 90 90 91 91  FCB    $8E,$8E,$8F,$8F,$90,$90,$91,$91
-C389: 92 92 92 93 93 93 93 94  FCB    $92,$92,$92,$93,$93,$93,$93,$94
-C391: 94 94 94 95 95 95 95 95  FCB    $94,$94,$94,$95,$95,$95,$95,$95
-C399: 96 96 96 97 97 97 97 97  FCB    $96,$96,$96,$97,$97,$97,$97,$97
-C3A1: 97 97 FE C3 A6 33 3A 42  FCB    $97,$97,$FE,$C3,$A6,$33,$3A,$42
-C3A9: 46 4D 51 57 5D 5E 66 6B  FCB    $46,$4D,$51,$57,$5D,$5E,$66,$6B
-C3B1: 71 73 79 7C 7E 84 87 8A  FCB    $71,$73,$79,$7C,$7E,$84,$87,$8A
-C3B9: 8B 90 91 96 95 95 97 98  FCB    $8B,$90,$91,$96,$95,$95,$97,$98
-C3C1: 99 9B 9C 9D 9E 9F A0 A1  FCB    $99,$9B,$9C,$9D,$9E,$9F,$A0,$A1
-C3C9: A2 A4 A6 A9 A8 A7 A6 A5  FCB    $A2,$A4,$A6,$A9,$A8,$A7,$A6,$A5
-C3D1: A4 A3 A2 A1 9E 9B 99 97  FCB    $A4,$A3,$A2,$A1,$9E,$9B,$99,$97
-C3D9: 94 90 8C 88 84 81 7D 79  FCB    $94,$90,$8C,$88,$84,$81,$7D,$79
-C3E1: 75 71 6D 69 66 63 5F 60  FCB    $75,$71,$6D,$69,$66,$63,$5F,$60
-C3E9: 63 64 66 6B 6C 6E 71 75  FCB    $63,$64,$66,$6B,$6C,$6E,$71,$75
-C3F1: 78 7C 7F 82 87 8C 91 95  FCB    $78,$7C,$7F,$82,$87,$8C,$91,$95
-C3F9: 99 9D A0 A4 A8 AB AB A8  FCB    $99,$9D,$A0,$A4,$A8,$AB,$AB,$A8
-C401: A7 A6 A5 A2 9F 9D 9B 98  FCB    $A7,$A6,$A5,$A2,$9F,$9D,$9B,$98
-C409: 97 95 91 8E 8B 88 85 82  FCB    $97,$95,$91,$8E,$8B,$88,$85,$82
-C411: 7F 7B 77 7D 7A 77 75 74  FCB    $7F,$7B,$77,$7D,$7A,$77,$75,$74
-C419: 73 72 71 71 70 70 6E 6E  FCB    $73,$72,$71,$71,$70,$70,$6E,$6E
-C421: 6E 63 63 61 61 63 63 64  FCB    $6E,$63,$63,$61,$61,$63,$63,$64
-C429: 64 65 66 66 67 68 6A 6B  FCB    $64,$65,$66,$66,$67,$68,$6A,$6B
-C431: 6C 6D 6E 6E 6F 70 70 71  FCB    $6C,$6D,$6E,$6E,$6F,$70,$70,$71
-C439: 72 72 74 76 76 76 FE C3  FCB    $72,$72,$74,$76,$76,$76,$FE,$C3
-C441: A6 34 39 3C 46 4D 4E 57  FCB    $A6,$34,$39,$3C,$46,$4D,$4E,$57
-C449: 5B 63 64 6E 76 79 7A 80  FCB    $5B,$63,$64,$6E,$76,$79,$7A,$80
-C451: 81 82 85 87 87 8A 8B 8E  FCB    $81,$82,$85,$87,$87,$8A,$8B,$8E
-C459: 8E 91 91 93 93 95 95 96  FCB    $8E,$91,$91,$93,$93,$95,$95,$96
-C461: 97 97 97 97 97 97 98 98  FCB    $97,$97,$97,$97,$97,$97,$98,$98
-C469: 98 98 98 98 99 99 99 99  FCB    $98,$98,$98,$98,$99,$99,$99,$99
-C471: 99 99 9A 9A 9A 9A 9A 9B  FCB    $99,$99,$9A,$9A,$9A,$9A,$9A,$9B
-C479: 9B 9C 9C 9E 9E 9E 9E A0  FCB    $9B,$9C,$9C,$9E,$9E,$9E,$9E,$A0
-C481: A2 AB AB 08 14 24 33 39  FCB    $A2,$AB,$AB,$08,$14,$24,$33,$39
-C489: 3F 41 4E 51 52 57 5D 64  FCB    $3F,$41,$4E,$51,$52,$57,$5D,$64
-C491: 66 6C 6D 6F 70 73 73 76  FCB    $66,$6C,$6D,$6F,$70,$73,$73,$76
-C499: 78 79 7A 7F 7F 7F 81 85  FCB    $78,$79,$7A,$7F,$7F,$7F,$81,$85
-C4A1: 85 87 87 88 88 88 8A 8C  FCB    $85,$87,$87,$88,$88,$88,$8A,$8C
-C4A9: 90 90 91 92 93 93 95 96  FCB    $90,$90,$91,$92,$93,$93,$95,$96
-C4B1: 96 97 97 97 97 99 99 9A  FCB    $96,$97,$97,$97,$97,$99,$99,$9A
-C4B9: 9A 9A 9B 9B 9C 9C 9C 9D  FCB    $9A,$9A,$9B,$9B,$9C,$9C,$9C,$9D
-C4C1: 9D 9D 9D 9E 9E 9E 9E 9E  FCB    $9D,$9D,$9D,$9E,$9E,$9E,$9E,$9E
-C4C9: 9F 9F 9F 9F A0 A0 A0 A1  FCB    $9F,$9F,$9F,$9F,$A0,$A0,$A0,$A1
-C4D1: A1 A1 A2 A2 A2 A2 A2 FE  FCB    $A1,$A1,$A2,$A2,$A2,$A2,$A2,$FE
-C4D9: C4 42 3B 3B 44 4A 4C 51  FCB    $C4,$42,$3B,$3B,$44,$4A,$4C,$51
-C4E1: 58 61 62 6B 6D 70 7A 7C  FCB    $58,$61,$62,$6B,$6D,$70,$7A,$7C
-C4E9: 82 82 87 88 8B 8E 8F 90  FCB    $82,$82,$87,$88,$8B,$8E,$8F,$90
-C4F1: 91 95 96 9A 9C 9C 9F A0  FCB    $91,$95,$96,$9A,$9C,$9C,$9F,$A0
-C4F9: A0 A2 A2 A2 A5 A6 A6 A7  FCB    $A0,$A2,$A2,$A2,$A5,$A6,$A6,$A7
-C501: A8 A8 A9 A9 A9 A9 A9 AB  FCB    $A8,$A8,$A9,$A9,$A9,$A9,$A9,$AB
-C509: AB AC AC AD AF AC AC AC  FCB    $AB,$AC,$AC,$AD,$AF,$AC,$AC,$AC
-C511: AB AB A9 A9 A8 A7 A6 A0  FCB    $AB,$AB,$A9,$A9,$A8,$A7,$A6,$A0
-C519: 9C 99 95 8D 88 84 7E 77  FCB    $9C,$99,$95,$8D,$88,$84,$7E,$77
-C521: 71 6F 6C 6A 68 66 63 62  FCB    $71,$6F,$6C,$6A,$68,$66,$63,$62
-C529: 61 60 5E 5E 5F 60 5E 5E  FCB    $61,$60,$5E,$5E,$5F,$60,$5E,$5E
-C531: 5B 5D 5E 5B 5E 5E 5D 5F  FCB    $5B,$5D,$5E,$5B,$5E,$5E,$5D,$5F
-C539: 61 5F 5E 60 60 62 64 6A  FCB    $61,$5F,$5E,$60,$60,$62,$64,$6A
-C541: 6A 6C 71 72 7A 7C 85 93  FCB    $6A,$6C,$71,$72,$7A,$7C,$85,$93
-C549: 93 97 9A 9E A2 A5 A7 A8  FCB    $93,$97,$9A,$9E,$A2,$A5,$A7,$A8
-C551: AB AC AC AD AD AE AE AF  FCB    $AB,$AC,$AC,$AD,$AD,$AE,$AE,$AF
-C559: AE AD AC AB AA AA AA AA  FCB    $AE,$AD,$AC,$AB,$AA,$AA,$AA,$AA
-C561: A9 A9 A9 A9 A9 A8 A8 A8  FCB    $A9,$A9,$A9,$A9,$A9,$A8,$A8,$A8
-C569: A7 A7 A7 A6 A6 A6 A5 A5  FCB    $A7,$A7,$A7,$A6,$A6,$A6,$A5,$A5
-C571: A5 A4 A4 A4 A3 A3 A3 A2  FCB    $A5,$A4,$A4,$A4,$A3,$A3,$A3,$A2
-C579: A2 A2 A1 A1 A1 A0 A0 A0  FCB    $A2,$A2,$A1,$A1,$A1,$A0,$A0,$A0
-C581: 9F 9F 9F 9E 9E 9E 9D 9D  FCB    $9F,$9F,$9F,$9E,$9E,$9E,$9D,$9D
-C589: 9D 9C 9C 9C 9B 9B 9B 9A  FCB    $9D,$9C,$9C,$9C,$9B,$9B,$9B,$9A
-C591: 9A 9A 99 99 99 98 98 98  FCB    $9A,$9A,$99,$99,$99,$98,$98,$98
-C599: 97 97 97 96 96 96 95 95  FCB    $97,$97,$97,$96,$96,$96,$95,$95
-C5A1: 95 94 94 94 93 93 93 92  FCB    $95,$94,$94,$94,$93,$93,$93,$92
-C5A9: 92 92 91 91 91 FE C4 DB  FCB    $92,$92,$91,$91,$91,$FE,$C4,$DB
+C1A9: 6C 6C 6C 6C              FCB    $6C,$6C,$6C,$6C
+C1AD: FE C0 E9                 FCB    $FE,$C0,$E9 ; FE: jump + clear axis 2 to
+                                             ; $C0E9
+
+; Path stream: 248 headings (heading_table indexes),
+; then FE = jump to $C3A6, axis 2 reset.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_C1B0:
+C1B0: 31 39 41 47 48 54 58 5E  FCB    $31,$39,$41,$47,$48,$54,$58,$5E
+C1B8: 64 64 6C 6E 71 73 78 79  FCB    $64,$64,$6C,$6E,$71,$73,$78,$79
+C1C0: 7F 7F 81 84 87 87 88 88  FCB    $7F,$7F,$81,$84,$87,$87,$88,$88
+C1C8: 88 8A 8A 8A 8A 8A 8A 8D  FCB    $88,$8A,$8A,$8A,$8A,$8A,$8A,$8D
+C1D0: 8D 8E 8F 90 90 90 93 95  FCB    $8D,$8E,$8F,$90,$90,$90,$93,$95
+C1D8: 95 96 96 97 97 98 9D 9F  FCB    $95,$96,$96,$97,$97,$98,$9D,$9F
+C1E0: A2 A2 A5 AB AB B1 00 04  FCB    $A2,$A2,$A5,$AB,$AB,$B1,$00,$04
+C1E8: 06 0A 0C 15 17 19 1F 22  FCB    $06,$0A,$0C,$15,$17,$19,$1F,$22
+C1F0: 28 2A 2B 2D 34 36 3D 42  FCB    $28,$2A,$2B,$2D,$34,$36,$3D,$42
+C1F8: 47 4A 4E 50 55 58 5A 5E  FCB    $47,$4A,$4E,$50,$55,$58,$5A,$5E
+C200: 64 66 6A 6E 73 77 7B 7F  FCB    $64,$66,$6A,$6E,$73,$77,$7B,$7F
+C208: 84 84 84 88 90 91 94 95  FCB    $84,$84,$84,$88,$90,$91,$94,$95
+C210: 99 9A 9A 9B 9B 9C 9C 9D  FCB    $99,$9A,$9A,$9B,$9B,$9C,$9C,$9D
+C218: 9D 9D 9E 9E 9F A0 9F 9D  FCB    $9D,$9D,$9E,$9E,$9F,$A0,$9F,$9D
+C220: 9D 9C 9C 9C 9B 9B 9A 99  FCB    $9D,$9C,$9C,$9C,$9B,$9B,$9A,$99
+C228: 99 98 95 92 90 8E 8D 8B  FCB    $99,$98,$95,$92,$90,$8E,$8D,$8B
+C230: 89 88 87 85 83 81 7F 7D  FCB    $89,$88,$87,$85,$83,$81,$7F,$7D
+C238: 7B 79 77 75 72 6F 6C 68  FCB    $7B,$79,$77,$75,$72,$6F,$6C,$68
+C240: 64 5F 5A 55 50 4C 48 45  FCB    $64,$5F,$5A,$55,$50,$4C,$48,$45
+C248: 42 3F 3D 3B 39 37 35 33  FCB    $42,$3F,$3D,$3B,$39,$37,$35,$33
+C250: 31 2F 2D 2B 29 27 25 23  FCB    $31,$2F,$2D,$2B,$29,$27,$25,$23
+C258: 21 1F 1D 1B 18 15 12 0E  FCB    $21,$1F,$1D,$1B,$18,$15,$12,$0E
+C260: 0A 05 00 AF AA A6 A2 9F  FCB    $0A,$05,$00,$AF,$AA,$A6,$A2,$9F
+C268: 9C 99 97 95 93 91 8F 8D  FCB    $9C,$99,$97,$95,$93,$91,$8F,$8D
+C270: 8B 89 87 87 87 87 86 86  FCB    $8B,$89,$87,$87,$87,$87,$86,$86
+C278: 86 85 85 85 84 84 84 83  FCB    $86,$85,$85,$85,$84,$84,$84,$83
+C280: 83 83 82 82 81 81 80 80  FCB    $83,$83,$82,$82,$81,$81,$80,$80
+C288: 7F 7F 7E 7E 7D 7D 7C 7C  FCB    $7F,$7F,$7E,$7E,$7D,$7D,$7C,$7C
+C290: 7C 7B 7B 7B 7B 7A 7A 7A  FCB    $7C,$7B,$7B,$7B,$7B,$7A,$7A,$7A
+C298: 7A 79 79 79 79 79 78 78  FCB    $7A,$79,$79,$79,$79,$79,$78,$78
+C2A0: 78 77 77 77 77 77 77 77  FCB    $78,$77,$77,$77,$77,$77,$77,$77
+C2A8: FE C3 A6                 FCB    $FE,$C3,$A6 ; FE: jump + clear axis 2 to
+                                             ; $C3A6
+
+; Path stream: 248 headings (heading_table indexes),
+; then FE = jump to $C3A6, axis 2 reset.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_C2AB:
+C2AB: 31 39 41 47 48 54 58 5E  FCB    $31,$39,$41,$47,$48,$54,$58,$5E
+C2B3: 64 64 6C 6E 71 73 78 79  FCB    $64,$64,$6C,$6E,$71,$73,$78,$79
+C2BB: 7F 7F 81 84 87 87 88 88  FCB    $7F,$7F,$81,$84,$87,$87,$88,$88
+C2C3: 88 8A 8A 8A 8A 8A 8A 8D  FCB    $88,$8A,$8A,$8A,$8A,$8A,$8A,$8D
+C2CB: 8D 8E 8F 90 90 90 93 95  FCB    $8D,$8E,$8F,$90,$90,$90,$93,$95
+C2D3: 95 96 96 97 97 98 9D 9F  FCB    $95,$96,$96,$97,$97,$98,$9D,$9F
+C2DB: A2 A2 A5 AB AB B1 00 04  FCB    $A2,$A2,$A5,$AB,$AB,$B1,$00,$04
+C2E3: 06 0A 0C 15 17 19 1F 22  FCB    $06,$0A,$0C,$15,$17,$19,$1F,$22
+C2EB: 28 2A 2B 2D 34 36 3D 42  FCB    $28,$2A,$2B,$2D,$34,$36,$3D,$42
+C2F3: 47 4A 4E 50 55 58 5A 5E  FCB    $47,$4A,$4E,$50,$55,$58,$5A,$5E
+C2FB: 64 66 6A 6E 73 77 7B 7F  FCB    $64,$66,$6A,$6E,$73,$77,$7B,$7F
+C303: 84 84 84 88 90 91 94 95  FCB    $84,$84,$84,$88,$90,$91,$94,$95
+C30B: 99 9A 9A 9B 9B 9C 9C 9D  FCB    $99,$9A,$9A,$9B,$9B,$9C,$9C,$9D
+C313: 9D 9D 9E 9E 9F A0 9F 9D  FCB    $9D,$9D,$9E,$9E,$9F,$A0,$9F,$9D
+C31B: 9D 9C 9C 9C 9B 9B 9A 99  FCB    $9D,$9C,$9C,$9C,$9B,$9B,$9A,$99
+C323: 99 98 95 92 90 8E 8D 8B  FCB    $99,$98,$95,$92,$90,$8E,$8D,$8B
+C32B: 89 88 87 89 8B 8D 8F 91  FCB    $89,$88,$87,$89,$8B,$8D,$8F,$91
+C333: 93 95 97 99 9C 9F A2 A6  FCB    $93,$95,$97,$99,$9C,$9F,$A2,$A6
+C33B: AA AF 00 05 0A 0E 12 15  FCB    $AA,$AF,$00,$05,$0A,$0E,$12,$15
+C343: 18 1B 1D 1F 21 23 25 27  FCB    $18,$1B,$1D,$1F,$21,$23,$25,$27
+C34B: 29 2B 2D 2F 31 33 35 37  FCB    $29,$2B,$2D,$2F,$31,$33,$35,$37
+C353: 39 3B 3D 3F 42 45 48 4C  FCB    $39,$3B,$3D,$3F,$42,$45,$48,$4C
+C35B: 50 55 5A 5F 64 68 6C 6F  FCB    $50,$55,$5A,$5F,$64,$68,$6C,$6F
+C363: 72 75 77 79 7B 7D 7F 81  FCB    $72,$75,$77,$79,$7B,$7D,$7F,$81
+C36B: 83 85 87 87 87 87 88 88  FCB    $83,$85,$87,$87,$87,$87,$88,$88
+C373: 88 89 89 89 8A 8A 8A 8B  FCB    $88,$89,$89,$89,$8A,$8A,$8A,$8B
+C37B: 8B 8B 8C 8C 8D 8D 8E 8E  FCB    $8B,$8B,$8C,$8C,$8D,$8D,$8E,$8E
+C383: 8F 8F 90 90 91 91 92 92  FCB    $8F,$8F,$90,$90,$91,$91,$92,$92
+C38B: 92 93 93 93 93 94 94 94  FCB    $92,$93,$93,$93,$93,$94,$94,$94
+C393: 94 95 95 95 95 95 96 96  FCB    $94,$95,$95,$95,$95,$95,$96,$96
+C39B: 96 97 97 97 97 97 97 97  FCB    $96,$97,$97,$97,$97,$97,$97,$97
+C3A3: FE C3 A6                 FCB    $FE,$C3,$A6 ; FE: jump + clear axis 2 to
+                                             ; $C3A6
+
+; Path stream: 153 headings (heading_table indexes),
+; then FE = jump to $C3A6 (loops), axis 2 reset.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_C3A6:
+C3A6: 33 3A 42 46 4D 51 57 5D  FCB    $33,$3A,$42,$46,$4D,$51,$57,$5D
+C3AE: 5E 66 6B 71 73 79 7C 7E  FCB    $5E,$66,$6B,$71,$73,$79,$7C,$7E
+C3B6: 84 87 8A 8B 90 91 96 95  FCB    $84,$87,$8A,$8B,$90,$91,$96,$95
+C3BE: 95 97 98 99 9B 9C 9D 9E  FCB    $95,$97,$98,$99,$9B,$9C,$9D,$9E
+C3C6: 9F A0 A1 A2 A4 A6 A9 A8  FCB    $9F,$A0,$A1,$A2,$A4,$A6,$A9,$A8
+C3CE: A7 A6 A5 A4 A3 A2 A1 9E  FCB    $A7,$A6,$A5,$A4,$A3,$A2,$A1,$9E
+C3D6: 9B 99 97 94 90 8C 88 84  FCB    $9B,$99,$97,$94,$90,$8C,$88,$84
+C3DE: 81 7D 79 75 71 6D 69 66  FCB    $81,$7D,$79,$75,$71,$6D,$69,$66
+C3E6: 63 5F 60 63 64 66 6B 6C  FCB    $63,$5F,$60,$63,$64,$66,$6B,$6C
+C3EE: 6E 71 75 78 7C 7F 82 87  FCB    $6E,$71,$75,$78,$7C,$7F,$82,$87
+C3F6: 8C 91 95 99 9D A0 A4 A8  FCB    $8C,$91,$95,$99,$9D,$A0,$A4,$A8
+C3FE: AB AB A8 A7 A6 A5 A2 9F  FCB    $AB,$AB,$A8,$A7,$A6,$A5,$A2,$9F
+C406: 9D 9B 98 97 95 91 8E 8B  FCB    $9D,$9B,$98,$97,$95,$91,$8E,$8B
+C40E: 88 85 82 7F 7B 77 7D 7A  FCB    $88,$85,$82,$7F,$7B,$77,$7D,$7A
+C416: 77 75 74 73 72 71 71 70  FCB    $77,$75,$74,$73,$72,$71,$71,$70
+C41E: 70 6E 6E 6E 63 63 61 61  FCB    $70,$6E,$6E,$6E,$63,$63,$61,$61
+C426: 63 63 64 64 65 66 66 67  FCB    $63,$63,$64,$64,$65,$66,$66,$67
+C42E: 68 6A 6B 6C 6D 6E 6E 6F  FCB    $68,$6A,$6B,$6C,$6D,$6E,$6E,$6F
+C436: 70 70 71 72 72 74 76 76  FCB    $70,$70,$71,$72,$72,$74,$76,$76
+C43E: 76                       FCB    $76
+C43F: FE C3 A6                 FCB    $FE,$C3,$A6 ; FE: jump + clear axis 2 to
+                                             ; $C3A6
+
+; Path stream: 150 headings (heading_table indexes),
+; then FE = jump to $C442 (loops), axis 2 reset.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_C442:
+C442: 34 39 3C 46 4D 4E 57 5B  FCB    $34,$39,$3C,$46,$4D,$4E,$57,$5B
+C44A: 63 64 6E 76 79 7A 80 81  FCB    $63,$64,$6E,$76,$79,$7A,$80,$81
+C452: 82 85 87 87 8A 8B 8E 8E  FCB    $82,$85,$87,$87,$8A,$8B,$8E,$8E
+C45A: 91 91 93 93 95 95 96 97  FCB    $91,$91,$93,$93,$95,$95,$96,$97
+C462: 97 97 97 97 97 98 98 98  FCB    $97,$97,$97,$97,$97,$98,$98,$98
+C46A: 98 98 98 99 99 99 99 99  FCB    $98,$98,$98,$99,$99,$99,$99,$99
+C472: 99 9A 9A 9A 9A 9A 9B 9B  FCB    $99,$9A,$9A,$9A,$9A,$9A,$9B,$9B
+C47A: 9C 9C 9E 9E 9E 9E A0 A2  FCB    $9C,$9C,$9E,$9E,$9E,$9E,$A0,$A2
+C482: AB AB 08 14 24 33 39 3F  FCB    $AB,$AB,$08,$14,$24,$33,$39,$3F
+C48A: 41 4E 51 52 57 5D 64 66  FCB    $41,$4E,$51,$52,$57,$5D,$64,$66
+C492: 6C 6D 6F 70 73 73 76 78  FCB    $6C,$6D,$6F,$70,$73,$73,$76,$78
+C49A: 79 7A 7F 7F 7F 81 85 85  FCB    $79,$7A,$7F,$7F,$7F,$81,$85,$85
+C4A2: 87 87 88 88 88 8A 8C 90  FCB    $87,$87,$88,$88,$88,$8A,$8C,$90
+C4AA: 90 91 92 93 93 95 96 96  FCB    $90,$91,$92,$93,$93,$95,$96,$96
+C4B2: 97 97 97 97 99 99 9A 9A  FCB    $97,$97,$97,$97,$99,$99,$9A,$9A
+C4BA: 9A 9B 9B 9C 9C 9C 9D 9D  FCB    $9A,$9B,$9B,$9C,$9C,$9C,$9D,$9D
+C4C2: 9D 9D 9E 9E 9E 9E 9E 9F  FCB    $9D,$9D,$9E,$9E,$9E,$9E,$9E,$9F
+C4CA: 9F 9F 9F A0 A0 A0 A1 A1  FCB    $9F,$9F,$9F,$A0,$A0,$A0,$A1,$A1
+C4D2: A1 A2 A2 A2 A2 A2        FCB    $A1,$A2,$A2,$A2,$A2,$A2
+C4D8: FE C4 42                 FCB    $FE,$C4,$42 ; FE: jump + clear axis 2 to
+                                             ; $C442
+
+; Path stream: 211 headings (heading_table indexes),
+; then FE = jump to $C4DB (loops), axis 2 reset.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_C4DB:
+C4DB: 3B 3B 44 4A 4C 51 58 61  FCB    $3B,$3B,$44,$4A,$4C,$51,$58,$61
+C4E3: 62 6B 6D 70 7A 7C 82 82  FCB    $62,$6B,$6D,$70,$7A,$7C,$82,$82
+C4EB: 87 88 8B 8E 8F 90 91 95  FCB    $87,$88,$8B,$8E,$8F,$90,$91,$95
+C4F3: 96 9A 9C 9C 9F A0 A0 A2  FCB    $96,$9A,$9C,$9C,$9F,$A0,$A0,$A2
+C4FB: A2 A2 A5 A6 A6 A7 A8 A8  FCB    $A2,$A2,$A5,$A6,$A6,$A7,$A8,$A8
+C503: A9 A9 A9 A9 A9 AB AB AC  FCB    $A9,$A9,$A9,$A9,$A9,$AB,$AB,$AC
+C50B: AC AD AF AC AC AC AB AB  FCB    $AC,$AD,$AF,$AC,$AC,$AC,$AB,$AB
+C513: A9 A9 A8 A7 A6 A0 9C 99  FCB    $A9,$A9,$A8,$A7,$A6,$A0,$9C,$99
+C51B: 95 8D 88 84 7E 77 71 6F  FCB    $95,$8D,$88,$84,$7E,$77,$71,$6F
+C523: 6C 6A 68 66 63 62 61 60  FCB    $6C,$6A,$68,$66,$63,$62,$61,$60
+C52B: 5E 5E 5F 60 5E 5E 5B 5D  FCB    $5E,$5E,$5F,$60,$5E,$5E,$5B,$5D
+C533: 5E 5B 5E 5E 5D 5F 61 5F  FCB    $5E,$5B,$5E,$5E,$5D,$5F,$61,$5F
+C53B: 5E 60 60 62 64 6A 6A 6C  FCB    $5E,$60,$60,$62,$64,$6A,$6A,$6C
+C543: 71 72 7A 7C 85 93 93 97  FCB    $71,$72,$7A,$7C,$85,$93,$93,$97
+C54B: 9A 9E A2 A5 A7 A8 AB AC  FCB    $9A,$9E,$A2,$A5,$A7,$A8,$AB,$AC
+C553: AC AD AD AE AE AF AE AD  FCB    $AC,$AD,$AD,$AE,$AE,$AF,$AE,$AD
+C55B: AC AB AA AA AA AA A9 A9  FCB    $AC,$AB,$AA,$AA,$AA,$AA,$A9,$A9
+C563: A9 A9 A9 A8 A8 A8 A7 A7  FCB    $A9,$A9,$A9,$A8,$A8,$A8,$A7,$A7
+C56B: A7 A6 A6 A6 A5 A5 A5 A4  FCB    $A7,$A6,$A6,$A6,$A5,$A5,$A5,$A4
+C573: A4 A4 A3 A3 A3 A2 A2 A2  FCB    $A4,$A4,$A3,$A3,$A3,$A2,$A2,$A2
+C57B: A1 A1 A1 A0 A0 A0 9F 9F  FCB    $A1,$A1,$A1,$A0,$A0,$A0,$9F,$9F
+C583: 9F 9E 9E 9E 9D 9D 9D 9C  FCB    $9F,$9E,$9E,$9E,$9D,$9D,$9D,$9C
+C58B: 9C 9C 9B 9B 9B 9A 9A 9A  FCB    $9C,$9C,$9B,$9B,$9B,$9A,$9A,$9A
+C593: 99 99 99 98 98 98 97 97  FCB    $99,$99,$99,$98,$98,$98,$97,$97
+C59B: 97 96 96 96 95 95 95 94  FCB    $97,$96,$96,$96,$95,$95,$95,$94
+C5A3: 94 94 93 93 93 92 92 92  FCB    $94,$94,$93,$93,$93,$92,$92,$92
+C5AB: 91 91 91                 FCB    $91,$91,$91
+C5AE: FE C4 DB                 FCB    $FE,$C4,$DB ; FE: jump + clear axis 2 to
+                                             ; $C4DB
+
+; Path stream: 203 headings (heading_table indexes),
+; then FE = jump to $C5B1 (loops), axis 2 reset.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_C5B1:
 C5B1: 30 37 3E 45 4C 53 5A 61  FCB    $30,$37,$3E,$45,$4C,$53,$5A,$61
 C5B9: 67 6C 6F 71 73 75 78 7A  FCB    $67,$6C,$6F,$71,$73,$75,$78,$7A
 C5C1: 7C 7E 7F 81 83 84 84 85  FCB    $7C,$7E,$7F,$81,$83,$84,$84,$85
@@ -2733,43 +3143,59 @@ C659: 80 7F 7E 7D 7C 7B 7A 79  FCB    $80,$7F,$7E,$7D,$7C,$7B,$7A,$79
 C661: 78 78 77 77 77 76 76 75  FCB    $78,$78,$77,$77,$77,$76,$76,$75
 C669: 75 74 74 73 73 72 72 71  FCB    $75,$74,$74,$73,$73,$72,$72,$71
 C671: 71 70 70 6F 6F 6E 6E 6E  FCB    $71,$70,$70,$6F,$6F,$6E,$6E,$6E
-C679: 6E 6E 6E FE C5 B1 30 37  FCB    $6E,$6E,$6E,$FE,$C5,$B1,$30,$37
-C681: 3E 45 4C 53 5A 61 67 6C  FCB    $3E,$45,$4C,$53,$5A,$61,$67,$6C
-C689: 6F 71 73 75 78 7A 7C 7E  FCB    $6F,$71,$73,$75,$78,$7A,$7C,$7E
-C691: 7F 80 81 82 82 83 83 84  FCB    $7F,$80,$81,$82,$82,$83,$83,$84
-C699: 84 85 86 87 88 89 8A 8B  FCB    $84,$85,$86,$87,$88,$89,$8A,$8B
-C6A1: 8C 8D 8E 8F 90 90 91 91  FCB    $8C,$8D,$8E,$8F,$90,$90,$91,$91
-C6A9: 92 94 96 96 97 98 98 99  FCB    $92,$94,$96,$96,$97,$98,$98,$99
-C6B1: 99 99 9A 9A 9B 9B 9B 9C  FCB    $99,$99,$9A,$9A,$9B,$9B,$9B,$9C
-C6B9: 9C 9C 9C 9D 9D 9D 9D 9E  FCB    $9C,$9C,$9C,$9D,$9D,$9D,$9D,$9E
-C6C1: 9E 9E 9F 9F 9F A0 A0 A0  FCB    $9E,$9E,$9F,$9F,$9F,$A0,$A0,$A0
-C6C9: A2 A3 A3 A4 A5 A6 A7 A8  FCB    $A2,$A3,$A3,$A4,$A5,$A6,$A7,$A8
-C6D1: A7 A6 A4 A3 A1 9E 9A 99  FCB    $A7,$A6,$A4,$A3,$A1,$9E,$9A,$99
-C6D9: 97 95 93 91 8F 8D 8B 89  FCB    $97,$95,$93,$91,$8F,$8D,$8B,$89
-C6E1: 87 84 81 7F 7D 7B 79 77  FCB    $87,$84,$81,$7F,$7D,$7B,$79,$77
-C6E9: 75 73 71 6E 6C 6A 68 66  FCB    $75,$73,$71,$6E,$6C,$6A,$68,$66
-C6F1: 64 62 60 5D 5A 57 54 52  FCB    $64,$62,$60,$5D,$5A,$57,$54,$52
-C6F9: 50 4E 4C 4A 48 46 44 41  FCB    $50,$4E,$4C,$4A,$48,$46,$44,$41
-C701: 3F 3D 3B 39 37 35 33 30  FCB    $3F,$3D,$3B,$39,$37,$35,$33,$30
-C709: 2D 2A 27 25 23 21 1F 1D  FCB    $2D,$2A,$27,$25,$23,$21,$1F,$1D
-C711: 1B 19 17 14 12 10 0E 0C  FCB    $1B,$19,$17,$14,$12,$10,$0E,$0C
-C719: 0A 08 06 03 00 B1 AE AC  FCB    $0A,$08,$06,$03,$00,$B1,$AE,$AC
-C721: AA A8 A6 A4 A2 A0 9E 9B  FCB    $AA,$A8,$A6,$A4,$A2,$A0,$9E,$9B
-C729: 99 97 95 93 91 8F 8D 8A  FCB    $99,$97,$95,$93,$91,$8F,$8D,$8A
-C731: 87 86 84 82 80 7E 7B 78  FCB    $87,$86,$84,$82,$80,$7E,$7B,$78
-C739: 75 72 6F 6C 69 66 63 60  FCB    $75,$72,$6F,$6C,$69,$66,$63,$60
-C741: 5D 59 56 53 4F 4C 4A 47  FCB    $5D,$59,$56,$53,$4F,$4C,$4A,$47
-C749: 44 42 40 3E 3C 3A 38 36  FCB    $44,$42,$40,$3E,$3C,$3A,$38,$36
-C751: 35 34 32 30 2D 2B 29 26  FCB    $35,$34,$32,$30,$2D,$2B,$29,$26
-C759: 24 21 1F 1D 1A 17 15 14  FCB    $24,$21,$1F,$1D,$1A,$17,$15,$14
-C761: 12 10 0E 0C 0A 08 05 03  FCB    $12,$10,$0E,$0C,$0A,$08,$05,$03
-C769: 00 B1 B0 AE AC AA A8 A6  FCB    $00,$B1,$B0,$AE,$AC,$AA,$A8,$A6
-C771: A3 A1 9E 9C 99 96 93 91  FCB    $A3,$A1,$9E,$9C,$99,$96,$93,$91
-C779: 8E 8C 8A 88 86 85 84 82  FCB    $8E,$8C,$8A,$88,$86,$85,$84,$82
-C781: 80 7F 7E 7D 7C 7B 7A 79  FCB    $80,$7F,$7E,$7D,$7C,$7B,$7A,$79
-C789: 78 78 77 77 77 76 76 75  FCB    $78,$78,$77,$77,$77,$76,$76,$75
-C791: 75 74 74 73 73 72 72 71  FCB    $75,$74,$74,$73,$73,$72,$72,$71
-C799: 71 70 70 6F 6F FE C6 7F  FCB    $71,$70,$70,$6F,$6F,$FE,$C6,$7F
+C679: 6E 6E 6E                 FCB    $6E,$6E,$6E
+C67C: FE C5 B1                 FCB    $FE,$C5,$B1 ; FE: jump + clear axis 2 to
+                                             ; $C5B1
+
+; Path stream: 287 headings (heading_table indexes),
+; then FE = jump to $C67F (loops), axis 2 reset.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_C67F:
+C67F: 30 37 3E 45 4C 53 5A 61  FCB    $30,$37,$3E,$45,$4C,$53,$5A,$61
+C687: 67 6C 6F 71 73 75 78 7A  FCB    $67,$6C,$6F,$71,$73,$75,$78,$7A
+C68F: 7C 7E 7F 80 81 82 82 83  FCB    $7C,$7E,$7F,$80,$81,$82,$82,$83
+C697: 83 84 84 85 86 87 88 89  FCB    $83,$84,$84,$85,$86,$87,$88,$89
+C69F: 8A 8B 8C 8D 8E 8F 90 90  FCB    $8A,$8B,$8C,$8D,$8E,$8F,$90,$90
+C6A7: 91 91 92 94 96 96 97 98  FCB    $91,$91,$92,$94,$96,$96,$97,$98
+C6AF: 98 99 99 99 9A 9A 9B 9B  FCB    $98,$99,$99,$99,$9A,$9A,$9B,$9B
+C6B7: 9B 9C 9C 9C 9C 9D 9D 9D  FCB    $9B,$9C,$9C,$9C,$9C,$9D,$9D,$9D
+C6BF: 9D 9E 9E 9E 9F 9F 9F A0  FCB    $9D,$9E,$9E,$9E,$9F,$9F,$9F,$A0
+C6C7: A0 A0 A2 A3 A3 A4 A5 A6  FCB    $A0,$A0,$A2,$A3,$A3,$A4,$A5,$A6
+C6CF: A7 A8 A7 A6 A4 A3 A1 9E  FCB    $A7,$A8,$A7,$A6,$A4,$A3,$A1,$9E
+C6D7: 9A 99 97 95 93 91 8F 8D  FCB    $9A,$99,$97,$95,$93,$91,$8F,$8D
+C6DF: 8B 89 87 84 81 7F 7D 7B  FCB    $8B,$89,$87,$84,$81,$7F,$7D,$7B
+C6E7: 79 77 75 73 71 6E 6C 6A  FCB    $79,$77,$75,$73,$71,$6E,$6C,$6A
+C6EF: 68 66 64 62 60 5D 5A 57  FCB    $68,$66,$64,$62,$60,$5D,$5A,$57
+C6F7: 54 52 50 4E 4C 4A 48 46  FCB    $54,$52,$50,$4E,$4C,$4A,$48,$46
+C6FF: 44 41 3F 3D 3B 39 37 35  FCB    $44,$41,$3F,$3D,$3B,$39,$37,$35
+C707: 33 30 2D 2A 27 25 23 21  FCB    $33,$30,$2D,$2A,$27,$25,$23,$21
+C70F: 1F 1D 1B 19 17 14 12 10  FCB    $1F,$1D,$1B,$19,$17,$14,$12,$10
+C717: 0E 0C 0A 08 06 03 00 B1  FCB    $0E,$0C,$0A,$08,$06,$03,$00,$B1
+C71F: AE AC AA A8 A6 A4 A2 A0  FCB    $AE,$AC,$AA,$A8,$A6,$A4,$A2,$A0
+C727: 9E 9B 99 97 95 93 91 8F  FCB    $9E,$9B,$99,$97,$95,$93,$91,$8F
+C72F: 8D 8A 87 86 84 82 80 7E  FCB    $8D,$8A,$87,$86,$84,$82,$80,$7E
+C737: 7B 78 75 72 6F 6C 69 66  FCB    $7B,$78,$75,$72,$6F,$6C,$69,$66
+C73F: 63 60 5D 59 56 53 4F 4C  FCB    $63,$60,$5D,$59,$56,$53,$4F,$4C
+C747: 4A 47 44 42 40 3E 3C 3A  FCB    $4A,$47,$44,$42,$40,$3E,$3C,$3A
+C74F: 38 36 35 34 32 30 2D 2B  FCB    $38,$36,$35,$34,$32,$30,$2D,$2B
+C757: 29 26 24 21 1F 1D 1A 17  FCB    $29,$26,$24,$21,$1F,$1D,$1A,$17
+C75F: 15 14 12 10 0E 0C 0A 08  FCB    $15,$14,$12,$10,$0E,$0C,$0A,$08
+C767: 05 03 00 B1 B0 AE AC AA  FCB    $05,$03,$00,$B1,$B0,$AE,$AC,$AA
+C76F: A8 A6 A3 A1 9E 9C 99 96  FCB    $A8,$A6,$A3,$A1,$9E,$9C,$99,$96
+C777: 93 91 8E 8C 8A 88 86 85  FCB    $93,$91,$8E,$8C,$8A,$88,$86,$85
+C77F: 84 82 80 7F 7E 7D 7C 7B  FCB    $84,$82,$80,$7F,$7E,$7D,$7C,$7B
+C787: 7A 79 78 78 77 77 77 76  FCB    $7A,$79,$78,$78,$77,$77,$77,$76
+C78F: 76 75 75 74 74 73 73 72  FCB    $76,$75,$75,$74,$74,$73,$73,$72
+C797: 72 71 71 70 70 6F 6F     FCB    $72,$71,$71,$70,$70,$6F,$6F
+C79E: FE C6 7F                 FCB    $FE,$C6,$7F ; FE: jump + clear axis 2 to
+                                             ; $C67F
+
+; Path stream: 248 headings (heading_table indexes),
+; then FE = jump to $CAC1, axis 2 reset.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_C7A1:
 C7A1: 29 21 19 13 12 06 02 B0  FCB    $29,$21,$19,$13,$12,$06,$02,$B0
 C7A9: AA AA A2 A0 9D 9B 96 95  FCB    $AA,$AA,$A2,$A0,$9D,$9B,$96,$95
 C7B1: 8F 8F 8D 8A 87 87 86 86  FCB    $8F,$8F,$8D,$8A,$87,$87,$86,$86
@@ -2801,75 +3227,106 @@ C879: 8F 8F 90 90 91 91 92 92  FCB    $8F,$8F,$90,$90,$91,$91,$92,$92
 C881: 92 93 93 93 93 94 94 94  FCB    $92,$93,$93,$93,$93,$94,$94,$94
 C889: 94 95 95 95 95 95 96 96  FCB    $94,$95,$95,$95,$95,$95,$96,$96
 C891: 96 97 97 97 97 97 97 97  FCB    $96,$97,$97,$97,$97,$97,$97,$97
-C899: FE CA C1 84 84 84 84 84  FCB    $FE,$CA,$C1,$84,$84,$84,$84,$84
-C8A1: 84 84 84 84 84 84 84 83  FCB    $84,$84,$84,$84,$84,$84,$84,$83
-C8A9: 83 83 83 83 83 83 83 82  FCB    $83,$83,$83,$83,$83,$83,$83,$82
-C8B1: 82 82 82 82 82 82 82 82  FCB    $82,$82,$82,$82,$82,$82,$82,$82
-C8B9: 82 82 81 81 81 81 81 81  FCB    $82,$82,$81,$81,$81,$81,$81,$81
-C8C1: 81 81 81 80 7F 7F 7F 7A  FCB    $81,$81,$81,$80,$7F,$7F,$7F,$7A
-C8C9: 7A 79 71 6E 66 5F 55 48  FCB    $7A,$79,$71,$6E,$66,$5F,$55,$48
-C8D1: 44 40 3F 39 37 37 36 34  FCB    $44,$40,$3F,$39,$37,$37,$36,$34
-C8D9: 31 30 2E 2E 2E 2E 2D 2D  FCB    $31,$30,$2E,$2E,$2E,$2E,$2D,$2D
-C8E1: 2D 2D 2D 2D 2E 2E 2E 2E  FCB    $2D,$2D,$2D,$2D,$2E,$2E,$2E,$2E
-C8E9: 30 31 34 36 37 37 39 3F  FCB    $30,$31,$34,$36,$37,$37,$39,$3F
-C8F1: 40 44 48 55 5F 6C 70 74  FCB    $40,$44,$48,$55,$5F,$6C,$70,$74
-C8F9: 75 7B 7D 7D 7E 80 83 84  FCB    $75,$7B,$7D,$7D,$7E,$80,$83,$84
-C901: 86 86 86 86 87 87 87 87  FCB    $86,$86,$86,$86,$87,$87,$87,$87
-C909: 87 87 86 86 86 86 84 83  FCB    $87,$87,$86,$86,$86,$86,$84,$83
-C911: 80 7E 7D 7D 7B 75 74 70  FCB    $80,$7E,$7D,$7D,$7B,$75,$74,$70
-C919: 6C 5F 55 48 44 40 3F 39  FCB    $6C,$5F,$55,$48,$44,$40,$3F,$39
-C921: 37 37 36 34 31 30 2E 2E  FCB    $37,$37,$36,$34,$31,$30,$2E,$2E
-C929: 2E 2E 2D 2D 2D 2D 2D 2D  FCB    $2E,$2E,$2D,$2D,$2D,$2D,$2D,$2D
-C931: 2E 2E 2E 2E 30 31 34 36  FCB    $2E,$2E,$2E,$2E,$30,$31,$34,$36
-C939: 37 37 39 3F 40 44 48 55  FCB    $37,$37,$39,$3F,$40,$44,$48,$55
-C941: 5F 6C 70 74 75 7B 7D 7D  FCB    $5F,$6C,$70,$74,$75,$7B,$7D,$7D
-C949: 7E 80 83 84 86 86 86 86  FCB    $7E,$80,$83,$84,$86,$86,$86,$86
-C951: 87 87 87 87 87 87 86 86  FCB    $87,$87,$87,$87,$87,$87,$86,$86
-C959: 86 86 84 83 80 7E 7D 7D  FCB    $86,$86,$84,$83,$80,$7E,$7D,$7D
-C961: 7B 75 74 70 6C 5F 55 48  FCB    $7B,$75,$74,$70,$6C,$5F,$55,$48
-C969: 44 40 3F 39 37 37 36 34  FCB    $44,$40,$3F,$39,$37,$37,$36,$34
-C971: 31 30 2E 2E 2E 2E 2D 2D  FCB    $31,$30,$2E,$2E,$2E,$2E,$2D,$2D
-C979: 2D FF C4 42 29 21 19 13  FCB    $2D,$FF,$C4,$42,$29,$21,$19,$13
-C981: 12 06 02 B0 AA AA A2 A0  FCB    $12,$06,$02,$B0,$AA,$AA,$A2,$A0
-C989: 9D 9B 96 95 8F 8F 8D 8A  FCB    $9D,$9B,$96,$95,$8F,$8F,$8D,$8A
-C991: 87 87 86 86 86 84 84 84  FCB    $87,$87,$86,$86,$86,$84,$84,$84
-C999: 84 84 84 81 81 80 7F 7E  FCB    $84,$84,$84,$81,$81,$80,$7F,$7E
-C9A1: 7E 7E 7B 79 79 78 78 77  FCB    $7E,$7E,$7B,$79,$79,$78,$78,$77
-C9A9: 77 76 71 6F 6C 6C 69 63  FCB    $77,$76,$71,$6F,$6C,$6C,$69,$63
-C9B1: 63 5D 5A 56 54 50 4E 45  FCB    $63,$5D,$5A,$56,$54,$50,$4E,$45
-C9B9: 43 41 3B 38 32 30 2F 2D  FCB    $43,$41,$3B,$38,$32,$30,$2F,$2D
-C9C1: 26 24 1D 18 13 10 0C 0A  FCB    $26,$24,$1D,$18,$13,$10,$0C,$0A
-C9C9: 05 02 00 B0 AA A8 A4 A0  FCB    $05,$02,$00,$B0,$AA,$A8,$A4,$A0
-C9D1: 9B 97 93 8F 8A 8A 8A 86  FCB    $9B,$97,$93,$8F,$8A,$8A,$8A,$86
-C9D9: 7E 7D 7A 79 75 74 74 73  FCB    $7E,$7D,$7A,$79,$75,$74,$74,$73
-C9E1: 73 72 72 71 71 71 70 70  FCB    $73,$72,$72,$71,$71,$71,$70,$70
-C9E9: 6F 6E 6F 71 71 72 72 72  FCB    $6F,$6E,$6F,$71,$71,$72,$72,$72
-C9F1: 72 73 73 73 74 74 75 75  FCB    $72,$73,$73,$73,$74,$74,$75,$75
-C9F9: 75 76 76 79 79 7E 7E 80  FCB    $75,$76,$76,$79,$79,$7E,$7E,$80
-CA01: 81 81 86 86 87 87 8A 8D  FCB    $81,$81,$86,$86,$87,$87,$8A,$8D
-CA09: 8F 8F 90 90 90 92 92 94  FCB    $8F,$8F,$90,$90,$90,$92,$92,$94
-CA11: 95 96 96 97 97 98 98 99  FCB    $95,$96,$96,$97,$97,$98,$98,$99
-CA19: 99 9A 9A 9B 9B 9C 9C 9D  FCB    $99,$9A,$9A,$9B,$9B,$9C,$9C,$9D
-CA21: 9D 9D 9D 9E 9E 9E 9E 9F  FCB    $9D,$9D,$9D,$9E,$9E,$9E,$9E,$9F
-CA29: 9F 9F 9F 9F 9F A0 A0 A0  FCB    $9F,$9F,$9F,$9F,$9F,$A0,$A0,$A0
-CA31: A0 A0 A0 A0 A0 A0 A0 FE  FCB    $A0,$A0,$A0,$A0,$A0,$A0,$A0,$FE
-CA39: C9 7D 27 20 18 14 0D 09  FCB    $C9,$7D,$27,$20,$18,$14,$0D,$09
-CA41: 03 B1 B0 A8 A3 9D 9B 95  FCB    $03,$B1,$B0,$A8,$A3,$9D,$9B,$95
-CA49: 92 90 8A 87 84 83 7E 7D  FCB    $92,$90,$8A,$87,$84,$83,$7E,$7D
-CA51: 79 79 78 77 77 75 73 73  FCB    $79,$79,$78,$77,$77,$75,$73,$73
-CA59: 71 70 70 6E 6C 6C 6B 6A  FCB    $71,$70,$70,$6E,$6C,$6C,$6B,$6A
-CA61: 69 68 66 65 67 68 68 6C  FCB    $69,$68,$66,$65,$67,$68,$68,$6C
-CA69: 6C 70 70 77 77 79 81 83  FCB    $6C,$70,$70,$77,$77,$79,$81,$83
-CA71: 8A 8D 8D 95 99 99 A1 A2  FCB    $8A,$8D,$8D,$95,$99,$99,$A1,$A2
-CA79: A2 AA AC B0 AA AA A8 A3  FCB    $A2,$AA,$AC,$B0,$AA,$AA,$A8,$A3
-CA81: A4 9F 9F 9B 98 92 8F 8C  FCB    $A4,$9F,$9F,$9B,$98,$92,$8F,$8C
-CA89: 87 83 80 79 75 70 6C 6C  FCB    $87,$83,$80,$79,$75,$70,$6C,$6C
-CA91: 68 63 63 68 67 66 6C 69  FCB    $68,$63,$63,$68,$67,$66,$6C,$69
-CA99: 6F 71 70 76 77 79 79 7B  FCB    $6F,$71,$70,$76,$77,$79,$79,$7B
-CAA1: 84 84 89 8C 8F 94 97 92  FCB    $84,$84,$89,$8C,$8F,$94,$97,$92
-CAA9: 98 97 99 9B 9A 9D 9D 9D  FCB    $98,$97,$99,$9B,$9A,$9D,$9D,$9D
-CAB1: 9F 9D 9F 9D 9B A1 A0 9F  FCB    $9F,$9D,$9F,$9D,$9B,$A1,$A0,$9F
-CAB9: 9F A0 A1 A2 A3 FE CA 3B  FCB    $9F,$A0,$A1,$A2,$A3,$FE,$CA,$3B
+C899: FE CA C1                 FCB    $FE,$CA,$C1 ; FE: jump + clear axis 2 to
+                                             ; $CAC1
+
+; Path stream: 222 headings (heading_table indexes),
+; then FF = jump to $C442.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_C89C:
+C89C: 84 84 84 84 84 84 84 84  FCB    $84,$84,$84,$84,$84,$84,$84,$84
+C8A4: 84 84 84 84 83 83 83 83  FCB    $84,$84,$84,$84,$83,$83,$83,$83
+C8AC: 83 83 83 83 82 82 82 82  FCB    $83,$83,$83,$83,$82,$82,$82,$82
+C8B4: 82 82 82 82 82 82 82 81  FCB    $82,$82,$82,$82,$82,$82,$82,$81
+C8BC: 81 81 81 81 81 81 81 81  FCB    $81,$81,$81,$81,$81,$81,$81,$81
+C8C4: 80 7F 7F 7F 7A 7A 79 71  FCB    $80,$7F,$7F,$7F,$7A,$7A,$79,$71
+C8CC: 6E 66 5F 55 48 44 40 3F  FCB    $6E,$66,$5F,$55,$48,$44,$40,$3F
+C8D4: 39 37 37 36 34 31 30 2E  FCB    $39,$37,$37,$36,$34,$31,$30,$2E
+C8DC: 2E 2E 2E 2D 2D 2D 2D 2D  FCB    $2E,$2E,$2E,$2D,$2D,$2D,$2D,$2D
+C8E4: 2D 2E 2E 2E 2E 30 31 34  FCB    $2D,$2E,$2E,$2E,$2E,$30,$31,$34
+C8EC: 36 37 37 39 3F 40 44 48  FCB    $36,$37,$37,$39,$3F,$40,$44,$48
+C8F4: 55 5F 6C 70 74 75 7B 7D  FCB    $55,$5F,$6C,$70,$74,$75,$7B,$7D
+C8FC: 7D 7E 80 83 84 86 86 86  FCB    $7D,$7E,$80,$83,$84,$86,$86,$86
+C904: 86 87 87 87 87 87 87 86  FCB    $86,$87,$87,$87,$87,$87,$87,$86
+C90C: 86 86 86 84 83 80 7E 7D  FCB    $86,$86,$86,$84,$83,$80,$7E,$7D
+C914: 7D 7B 75 74 70 6C 5F 55  FCB    $7D,$7B,$75,$74,$70,$6C,$5F,$55
+C91C: 48 44 40 3F 39 37 37 36  FCB    $48,$44,$40,$3F,$39,$37,$37,$36
+C924: 34 31 30 2E 2E 2E 2E 2D  FCB    $34,$31,$30,$2E,$2E,$2E,$2E,$2D
+C92C: 2D 2D 2D 2D 2D 2E 2E 2E  FCB    $2D,$2D,$2D,$2D,$2D,$2E,$2E,$2E
+C934: 2E 30 31 34 36 37 37 39  FCB    $2E,$30,$31,$34,$36,$37,$37,$39
+C93C: 3F 40 44 48 55 5F 6C 70  FCB    $3F,$40,$44,$48,$55,$5F,$6C,$70
+C944: 74 75 7B 7D 7D 7E 80 83  FCB    $74,$75,$7B,$7D,$7D,$7E,$80,$83
+C94C: 84 86 86 86 86 87 87 87  FCB    $84,$86,$86,$86,$86,$87,$87,$87
+C954: 87 87 87 86 86 86 86 84  FCB    $87,$87,$87,$86,$86,$86,$86,$84
+C95C: 83 80 7E 7D 7D 7B 75 74  FCB    $83,$80,$7E,$7D,$7D,$7B,$75,$74
+C964: 70 6C 5F 55 48 44 40 3F  FCB    $70,$6C,$5F,$55,$48,$44,$40,$3F
+C96C: 39 37 37 36 34 31 30 2E  FCB    $39,$37,$37,$36,$34,$31,$30,$2E
+C974: 2E 2E 2E 2D 2D 2D        FCB    $2E,$2E,$2E,$2D,$2D,$2D
+C97A: FF C4 42                 FCB    $FF,$C4,$42 ; FF: jump to $C442
+
+; Path stream: 187 headings (heading_table indexes),
+; then FE = jump to $C97D (loops), axis 2 reset.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_C97D:
+C97D: 29 21 19 13 12 06 02 B0  FCB    $29,$21,$19,$13,$12,$06,$02,$B0
+C985: AA AA A2 A0 9D 9B 96 95  FCB    $AA,$AA,$A2,$A0,$9D,$9B,$96,$95
+C98D: 8F 8F 8D 8A 87 87 86 86  FCB    $8F,$8F,$8D,$8A,$87,$87,$86,$86
+C995: 86 84 84 84 84 84 84 81  FCB    $86,$84,$84,$84,$84,$84,$84,$81
+C99D: 81 80 7F 7E 7E 7E 7B 79  FCB    $81,$80,$7F,$7E,$7E,$7E,$7B,$79
+C9A5: 79 78 78 77 77 76 71 6F  FCB    $79,$78,$78,$77,$77,$76,$71,$6F
+C9AD: 6C 6C 69 63 63 5D 5A 56  FCB    $6C,$6C,$69,$63,$63,$5D,$5A,$56
+C9B5: 54 50 4E 45 43 41 3B 38  FCB    $54,$50,$4E,$45,$43,$41,$3B,$38
+C9BD: 32 30 2F 2D 26 24 1D 18  FCB    $32,$30,$2F,$2D,$26,$24,$1D,$18
+C9C5: 13 10 0C 0A 05 02 00 B0  FCB    $13,$10,$0C,$0A,$05,$02,$00,$B0
+C9CD: AA A8 A4 A0 9B 97 93 8F  FCB    $AA,$A8,$A4,$A0,$9B,$97,$93,$8F
+C9D5: 8A 8A 8A 86 7E 7D 7A 79  FCB    $8A,$8A,$8A,$86,$7E,$7D,$7A,$79
+C9DD: 75 74 74 73 73 72 72 71  FCB    $75,$74,$74,$73,$73,$72,$72,$71
+C9E5: 71 71 70 70 6F 6E 6F 71  FCB    $71,$71,$70,$70,$6F,$6E,$6F,$71
+C9ED: 71 72 72 72 72 73 73 73  FCB    $71,$72,$72,$72,$72,$73,$73,$73
+C9F5: 74 74 75 75 75 76 76 79  FCB    $74,$74,$75,$75,$75,$76,$76,$79
+C9FD: 79 7E 7E 80 81 81 86 86  FCB    $79,$7E,$7E,$80,$81,$81,$86,$86
+CA05: 87 87 8A 8D 8F 8F 90 90  FCB    $87,$87,$8A,$8D,$8F,$8F,$90,$90
+CA0D: 90 92 92 94 95 96 96 97  FCB    $90,$92,$92,$94,$95,$96,$96,$97
+CA15: 97 98 98 99 99 9A 9A 9B  FCB    $97,$98,$98,$99,$99,$9A,$9A,$9B
+CA1D: 9B 9C 9C 9D 9D 9D 9D 9E  FCB    $9B,$9C,$9C,$9D,$9D,$9D,$9D,$9E
+CA25: 9E 9E 9E 9F 9F 9F 9F 9F  FCB    $9E,$9E,$9E,$9F,$9F,$9F,$9F,$9F
+CA2D: 9F A0 A0 A0 A0 A0 A0 A0  FCB    $9F,$A0,$A0,$A0,$A0,$A0,$A0,$A0
+CA35: A0 A0 A0                 FCB    $A0,$A0,$A0
+CA38: FE C9 7D                 FCB    $FE,$C9,$7D ; FE: jump + clear axis 2 to
+                                             ; $C97D
+
+; Path stream: 131 headings (heading_table indexes),
+; then FE = jump to $CA3B (loops), axis 2 reset.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_CA3B:
+CA3B: 27 20 18 14 0D 09 03 B1  FCB    $27,$20,$18,$14,$0D,$09,$03,$B1
+CA43: B0 A8 A3 9D 9B 95 92 90  FCB    $B0,$A8,$A3,$9D,$9B,$95,$92,$90
+CA4B: 8A 87 84 83 7E 7D 79 79  FCB    $8A,$87,$84,$83,$7E,$7D,$79,$79
+CA53: 78 77 77 75 73 73 71 70  FCB    $78,$77,$77,$75,$73,$73,$71,$70
+CA5B: 70 6E 6C 6C 6B 6A 69 68  FCB    $70,$6E,$6C,$6C,$6B,$6A,$69,$68
+CA63: 66 65 67 68 68 6C 6C 70  FCB    $66,$65,$67,$68,$68,$6C,$6C,$70
+CA6B: 70 77 77 79 81 83 8A 8D  FCB    $70,$77,$77,$79,$81,$83,$8A,$8D
+CA73: 8D 95 99 99 A1 A2 A2 AA  FCB    $8D,$95,$99,$99,$A1,$A2,$A2,$AA
+CA7B: AC B0 AA AA A8 A3 A4 9F  FCB    $AC,$B0,$AA,$AA,$A8,$A3,$A4,$9F
+CA83: 9F 9B 98 92 8F 8C 87 83  FCB    $9F,$9B,$98,$92,$8F,$8C,$87,$83
+CA8B: 80 79 75 70 6C 6C 68 63  FCB    $80,$79,$75,$70,$6C,$6C,$68,$63
+CA93: 63 68 67 66 6C 69 6F 71  FCB    $63,$68,$67,$66,$6C,$69,$6F,$71
+CA9B: 70 76 77 79 79 7B 84 84  FCB    $70,$76,$77,$79,$79,$7B,$84,$84
+CAA3: 89 8C 8F 94 97 92 98 97  FCB    $89,$8C,$8F,$94,$97,$92,$98,$97
+CAAB: 99 9B 9A 9D 9D 9D 9F 9D  FCB    $99,$9B,$9A,$9D,$9D,$9D,$9F,$9D
+CAB3: 9F 9D 9B A1 A0 9F 9F A0  FCB    $9F,$9D,$9B,$A1,$A0,$9F,$9F,$A0
+CABB: A1 A2 A3                 FCB    $A1,$A2,$A3
+CABE: FE CA 3B                 FCB    $FE,$CA,$3B ; FE: jump + clear axis 2 to
+                                             ; $CA3B
+
+; Path stream: 150 headings (heading_table indexes),
+; then FE = jump to $CAC1 (loops), axis 2 reset.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_CAC1:
 CAC1: 26 21 1E 14 0D 0C 03 B3  FCB    $26,$21,$1E,$14,$0D,$0C,$03,$B3
 CAC9: AB AA A0 98 95 94 8E 8D  FCB    $AB,$AA,$A0,$98,$95,$94,$8E,$8D
 CAD1: 8C 89 87 87 84 83 80 80  FCB    $8C,$89,$87,$87,$84,$83,$80,$80
@@ -2888,167 +3345,220 @@ CB31: 77 77 77 77 75 75 74 74  FCB    $77,$77,$77,$77,$75,$75,$74,$74
 CB39: 74 73 73 72 72 72 71 71  FCB    $74,$73,$73,$72,$72,$72,$71,$71
 CB41: 71 71 70 70 70 70 70 6F  FCB    $71,$71,$70,$70,$70,$70,$70,$6F
 CB49: 6F 6F 6F 6E 6E 6E 6D 6D  FCB    $6F,$6F,$6F,$6E,$6E,$6E,$6D,$6D
-CB51: 6D 6C 6C 6C 6C 6C FE CA  FCB    $6D,$6C,$6C,$6C,$6C,$6C,$FE,$CA
-CB59: C1 1F 1F 16 10 0E 09 02  FCB    $C1,$1F,$1F,$16,$10,$0E,$09,$02
-CB61: AD AC A3 A1 9E 94 92 8C  FCB    $AD,$AC,$A3,$A1,$9E,$94,$92,$8C
-CB69: 8C 87 86 83 80 7F 7E 7D  FCB    $8C,$87,$86,$83,$80,$7F,$7E,$7D
-CB71: 79 78 74 72 72 6F 6E 6E  FCB    $79,$78,$74,$72,$72,$6F,$6E,$6E
-CB79: 6C 6C 6C 69 68 68 67 66  FCB    $6C,$6C,$6C,$69,$68,$68,$67,$66
-CB81: 66 65 65 65 65 65 63 63  FCB    $66,$65,$65,$65,$65,$65,$63,$63
-CB89: 62 62 61 5F 62 62 62 63  FCB    $62,$62,$61,$5F,$62,$62,$62,$63
-CB91: 63 65 65 66 67 68 6E 72  FCB    $63,$65,$65,$66,$67,$68,$6E,$72
-CB99: 75 79 81 86 8A 90 97 9D  FCB    $75,$79,$81,$86,$8A,$90,$97,$9D
-CBA1: 9F A2 A4 A6 A8 AB AC AD  FCB    $9F,$A2,$A4,$A6,$A8,$AB,$AC,$AD
-CBA9: AE B0 B0 AF AE B0 B0 B3  FCB    $AE,$B0,$B0,$AF,$AE,$B0,$B0,$B3
-CBB1: B1 B0 B3 B0 B0 B1 AF AD  FCB    $B1,$B0,$B3,$B0,$B0,$B1,$AF,$AD
-CBB9: AF B0 AE AE AE AA A4 A4  FCB    $AF,$B0,$AE,$AE,$AE,$AA,$A4,$A4
-CBC1: A2 9D 9C 94 92 89 7B 7B  FCB    $A2,$9D,$9C,$94,$92,$89,$7B,$7B
-CBC9: 77 74 70 6C 69 67 66 63  FCB    $77,$74,$70,$6C,$69,$67,$66,$63
-CBD1: 62 62 61 61 60 60 5F 60  FCB    $62,$62,$61,$61,$60,$60,$5F,$60
-CBD9: 61 62 63 66 66 66 66 66  FCB    $61,$62,$63,$66,$66,$66,$66,$66
-CBE1: 66 66 66 66 66 66 66 66  FCB    $66,$66,$66,$66,$66,$66,$66,$66
-CBE9: 66 66 66 66 66 66 66 66  FCB    $66,$66,$66,$66,$66,$66,$66,$66
-CBF1: 66 66 66 66 66 66 66 66  FCB    $66,$66,$66,$66,$66,$66,$66,$66
-CBF9: 66 66 66 66 66 66 66 66  FCB    $66,$66,$66,$66,$66,$66,$66,$66
-CC01: 66 66 66 66 66 66 66 66  FCB    $66,$66,$66,$66,$66,$66,$66,$66
-CC09: 66 66 66 66 66 66 66 66  FCB    $66,$66,$66,$66,$66,$66,$66,$66
-CC11: 66 66 66 66 66 66 66 66  FCB    $66,$66,$66,$66,$66,$66,$66,$66
-CC19: 66 66 66 66 66 66 66 66  FCB    $66,$66,$66,$66,$66,$66,$66,$66
-CC21: 66 66 66 66 66 66 66 66  FCB    $66,$66,$66,$66,$66,$66,$66,$66
-CC29: FE CB 5A 2A 23 1C 15 0E  FCB    $FE,$CB,$5A,$2A,$23,$1C,$15,$0E
-CC31: 07 00 AD A7 A2 9F 9D 9B  FCB    $07,$00,$AD,$A7,$A2,$9F,$9D,$9B
-CC39: 99 96 94 92 90 8F 8D 8B  FCB    $99,$96,$94,$92,$90,$8F,$8D,$8B
-CC41: 8A 8A 89 88 87 86 85 83  FCB    $8A,$8A,$89,$88,$87,$86,$85,$83
-CC49: 82 81 80 7F 7E 7E 7D 7D  FCB    $82,$81,$80,$7F,$7E,$7E,$7D,$7D
-CC51: 7C 7A 78 78 77 76 76 75  FCB    $7C,$7A,$78,$78,$77,$76,$76,$75
-CC59: 75 75 74 74 73 73 72 71  FCB    $75,$75,$74,$74,$73,$73,$72,$71
-CC61: 70 6F 6F 6E 6E 6E 6C 6B  FCB    $70,$6F,$6F,$6E,$6E,$6E,$6C,$6B
-CC69: 6B 6A 69 68 67 66 67 68  FCB    $6B,$6A,$69,$68,$67,$66,$67,$68
-CC71: 6A 6B 6D 70 74 75 77 79  FCB    $6A,$6B,$6D,$70,$74,$75,$77,$79
-CC79: 7B 7D 7F 81 83 85 87 8A  FCB    $7B,$7D,$7F,$81,$83,$85,$87,$8A
-CC81: 8D 8F 91 93 95 97 99 9B  FCB    $8D,$8F,$91,$93,$95,$97,$99,$9B
-CC89: 9D A0 A2 A4 A6 A8 AA AC  FCB    $9D,$A0,$A2,$A4,$A6,$A8,$AA,$AC
-CC91: AE B1 00 03 06 08 0A 0C  FCB    $AE,$B1,$00,$03,$06,$08,$0A,$0C
-CC99: 0E 10 12 14 16 19 1B 1D  FCB    $0E,$10,$12,$14,$16,$19,$1B,$1D
-CCA1: 1F 21 23 25 27 2A 2D 30  FCB    $1F,$21,$23,$25,$27,$2A,$2D,$30
-CCA9: 33 35 37 39 3B 3D 3F 41  FCB    $33,$35,$37,$39,$3B,$3D,$3F,$41
-CCB1: 43 46 48 4A 4C 4E 50 52  FCB    $43,$46,$48,$4A,$4C,$4E,$50,$52
-CCB9: 54 57 5A 5D 60 62 64 66  FCB    $54,$57,$5A,$5D,$60,$62,$64,$66
-CCC1: 68 6A 6C 6E 70 73 75 77  FCB    $68,$6A,$6C,$6E,$70,$73,$75,$77
-CCC9: 79 7B 7D 7F 81 84 87 88  FCB    $79,$7B,$7D,$7F,$81,$84,$87,$88
-CCD1: 89 8A 8C 8E 8F 90 91 92  FCB    $89,$8A,$8C,$8E,$8F,$90,$91,$92
-CCD9: 93 94 95 96 96 97 97 97  FCB    $93,$94,$95,$96,$96,$97,$97,$97
-CCE1: 98 98 99 99 9A 9A 9B 9B  FCB    $98,$98,$99,$99,$9A,$9A,$9B,$9B
-CCE9: 9C 9C 9D 9D 9E 9E 9F 9F  FCB    $9C,$9C,$9D,$9D,$9E,$9E,$9F,$9F
-CCF1: A0 A0 A0 A0 A0 A0 FE CC  FCB    $A0,$A0,$A0,$A0,$A0,$A0,$FE,$CC
-CCF9: 2C 2A 23 1C 15 0E 07 00  FCB    $2C,$2A,$23,$1C,$15,$0E,$07,$00
-CD01: AD A7 A2 9F 9D 9B 99 96  FCB    $AD,$A7,$A2,$9F,$9D,$9B,$99,$96
-CD09: 94 92 90 8F 8E 8D 8C 8C  FCB    $94,$92,$90,$8F,$8E,$8D,$8C,$8C
-CD11: 8B 8B 8A 8A 89 88 87 86  FCB    $8B,$8B,$8A,$8A,$89,$88,$87,$86
-CD19: 85 84 83 82 81 80 7F 7E  FCB    $85,$84,$83,$82,$81,$80,$7F,$7E
-CD21: 7E 7D 7D 7C 7A 78 78 77  FCB    $7E,$7D,$7D,$7C,$7A,$78,$78,$77
-CD29: 76 76 75 75 75 74 74 73  FCB    $76,$76,$75,$75,$75,$74,$74,$73
-CD31: 73 72 71 70 6F 6F 6E 6E  FCB    $73,$72,$71,$70,$6F,$6F,$6E,$6E
-CD39: 6E 6C 6B 6B 6A 69 68 67  FCB    $6E,$6C,$6B,$6B,$6A,$69,$68,$67
-CD41: 66 67 68 6A 6B 6D 70 74  FCB    $66,$67,$68,$6A,$6B,$6D,$70,$74
-CD49: 75 77 79 7B 7D 7F 81 83  FCB    $75,$77,$79,$7B,$7D,$7F,$81,$83
-CD51: 85 87 8A 8D 8F 91 93 95  FCB    $85,$87,$8A,$8D,$8F,$91,$93,$95
-CD59: 97 99 9B 9D A0 A2 A4 A6  FCB    $97,$99,$9B,$9D,$A0,$A2,$A4,$A6
-CD61: A8 AA AC AE B1 00 03 06  FCB    $A8,$AA,$AC,$AE,$B1,$00,$03,$06
-CD69: 08 0A 0C 0E 10 12 14 16  FCB    $08,$0A,$0C,$0E,$10,$12,$14,$16
-CD71: 19 1B 1D 1F 21 23 25 27  FCB    $19,$1B,$1D,$1F,$21,$23,$25,$27
-CD79: 2A 2D 30 33 35 37 39 3B  FCB    $2A,$2D,$30,$33,$35,$37,$39,$3B
-CD81: 3D 3F 41 43 46 48 4A 4C  FCB    $3D,$3F,$41,$43,$46,$48,$4A,$4C
-CD89: 4E 50 52 54 57 5A 5D 60  FCB    $4E,$50,$52,$54,$57,$5A,$5D,$60
-CD91: 62 64 66 68 6A 6C 6E 70  FCB    $62,$64,$66,$68,$6A,$6C,$6E,$70
-CD99: 73 75 77 79 7B 7D 7F 81  FCB    $73,$75,$77,$79,$7B,$7D,$7F,$81
-CDA1: 84 87 88 8A 8C 8E 90 93  FCB    $84,$87,$88,$8A,$8C,$8E,$90,$93
-CDA9: 96 99 9C 9F A2 A5 A8 AB  FCB    $96,$99,$9C,$9F,$A2,$A5,$A8,$AB
-CDB1: AE B1 01 04 07 0B 0E 10  FCB    $AE,$B1,$01,$04,$07,$0B,$0E,$10
-CDB9: 13 16 18 1A 1C 1E 20 22  FCB    $13,$16,$18,$1A,$1C,$1E,$20,$22
-CDC1: 24 25 26 28 2A 2D 2F 31  FCB    $24,$25,$26,$28,$2A,$2D,$2F,$31
-CDC9: 34 36 39 3B 3D 40 43 45  FCB    $34,$36,$39,$3B,$3D,$40,$43,$45
-CDD1: 46 48 4A 4C 4E 50 52 55  FCB    $46,$48,$4A,$4C,$4E,$50,$52,$55
-CDD9: 58 5A 5D 5E 60 62 64 66  FCB    $58,$5A,$5D,$5E,$60,$62,$64,$66
-CDE1: 68 6B 6D 70 72 75 78 7B  FCB    $68,$6B,$6D,$70,$72,$75,$78,$7B
-CDE9: 7D 80 82 84 86 88 89 8A  FCB    $7D,$80,$82,$84,$86,$88,$89,$8A
-CDF1: 8C 8E 8F 90 91 92 93 94  FCB    $8C,$8E,$8F,$90,$91,$92,$93,$94
-CDF9: 95 96 96 97 97 97 98 98  FCB    $95,$96,$96,$97,$97,$97,$98,$98
-CE01: 99 99 9A 9A 9B 9B 9C 9C  FCB    $99,$99,$9A,$9A,$9B,$9B,$9C,$9C
-CE09: 9D 9D 9E 9E 9F 9F FE CC  FCB    $9D,$9D,$9E,$9E,$9F,$9F,$FE,$CC
-CE11: FA 33 2B 19 13 12 06 02  FCB    $FA,$33,$2B,$19,$13,$12,$06,$02
-CE19: B0 AA AA AC A0 9D 9B 96  FCB    $B0,$AA,$AA,$AC,$A0,$9D,$9B,$96
-CE21: 95 8F 8F 8D 8A 87 87 86  FCB    $95,$8F,$8F,$8D,$8A,$87,$87,$86
-CE29: 86 86 84 84 84 84 84 84  FCB    $86,$86,$84,$84,$84,$84,$84,$84
-CE31: 81 81 80 7F 7E 7E 7E 7B  FCB    $81,$81,$80,$7F,$7E,$7E,$7E,$7B
-CE39: 79 79 78 78 77 77 76 71  FCB    $79,$79,$78,$78,$77,$77,$76,$71
-CE41: 6F 6C 6C 69 63 63 63 5A  FCB    $6F,$6C,$6C,$69,$63,$63,$63,$5A
-CE49: 56 54 50 4E 45 43 41 3B  FCB    $56,$54,$50,$4E,$45,$43,$41,$3B
-CE51: 38 32 30 2F 2D 30 24 1D  FCB    $38,$32,$30,$2F,$2D,$30,$24,$1D
-CE59: 18 13 10 0C 0A 05 02 00  FCB    $18,$13,$10,$0C,$0A,$05,$02,$00
-CE61: B0 AA A8 A4 A0 9B 97 93  FCB    $B0,$AA,$A8,$A4,$A0,$9B,$97,$93
-CE69: 8F 8A 8A 8A 86 7E 7D 7A  FCB    $8F,$8A,$8A,$8A,$86,$7E,$7D,$7A
-CE71: 79 75 74 74 73 73 72 72  FCB    $79,$75,$74,$74,$73,$73,$72,$72
-CE79: 71 71 71 70 70 6F 6E 6F  FCB    $71,$71,$71,$70,$70,$6F,$6E,$6F
-CE81: 71 71 72 72 72 73 73 74  FCB    $71,$71,$72,$72,$72,$73,$73,$74
-CE89: 75 75 76 79 7C 7E 80 81  FCB    $75,$75,$76,$79,$7C,$7E,$80,$81
-CE91: 83 85 86 87 85 83 81 7F  FCB    $83,$85,$86,$87,$85,$83,$81,$7F
-CE99: 7D 7B 79 77 75 72 6F 6C  FCB    $7D,$7B,$79,$77,$75,$72,$6F,$6C
-CEA1: 68 64 5F 5A 55 50 4C 48  FCB    $68,$64,$5F,$5A,$55,$50,$4C,$48
-CEA9: 45 42 3F 3D 3B 39 37 35  FCB    $45,$42,$3F,$3D,$3B,$39,$37,$35
-CEB1: 33 31 2F 2D 2B 29 27 25  FCB    $33,$31,$2F,$2D,$2B,$29,$27,$25
-CEB9: 23 21 1F 1D 1B 18 15 12  FCB    $23,$21,$1F,$1D,$1B,$18,$15,$12
-CEC1: 0E 0A 05 00 AF AA A6 A2  FCB    $0E,$0A,$05,$00,$AF,$AA,$A6,$A2
-CEC9: 9F 9C 99 97 95 93 91 8F  FCB    $9F,$9C,$99,$97,$95,$93,$91,$8F
-CED1: 8D 8B 89 87 87 87 87 86  FCB    $8D,$8B,$89,$87,$87,$87,$87,$86
-CED9: 86 86 85 85 85 84 84 84  FCB    $86,$86,$85,$85,$85,$84,$84,$84
-CEE1: 83 83 83 82 82 81 81 80  FCB    $83,$83,$83,$82,$82,$81,$81,$80
-CEE9: 80 7F 7F 7E 7E 7D 7D 7C  FCB    $80,$7F,$7F,$7E,$7E,$7D,$7D,$7C
-CEF1: 7C 7C 7B 7B 7B 7B 7A 7A  FCB    $7C,$7C,$7B,$7B,$7B,$7B,$7A,$7A
-CEF9: 7A 7A 79 79 79 79 79 78  FCB    $7A,$7A,$79,$79,$79,$79,$79,$78
-CF01: 78 78 77 77 77 77 77 77  FCB    $78,$78,$77,$77,$77,$77,$77,$77
-CF09: 77 FE CA C1 8A 8A 8A 8A  FCB    $77,$FE,$CA,$C1,$8A,$8A,$8A,$8A
-CF11: 8A 8A 8A 8A 8A 8A 8A 8A  FCB    $8A,$8A,$8A,$8A,$8A,$8A,$8A,$8A
-CF19: 8B 8B 8B 8B 8B 8B 8B 8B  FCB    $8B,$8B,$8B,$8B,$8B,$8B,$8B,$8B
-CF21: 8C 8C 8C 8C 8C 8C 8C 8C  FCB    $8C,$8C,$8C,$8C,$8C,$8C,$8C,$8C
-CF29: 8C 8C 8C 8D 8D 8D 8D 8D  FCB    $8C,$8C,$8C,$8D,$8D,$8D,$8D,$8D
-CF31: 8D 8D 8D 8D 8E 8F 8F 8F  FCB    $8D,$8D,$8D,$8D,$8E,$8F,$8F,$8F
-CF39: 94 94 95 9D A0 A8 AF 05  FCB    $94,$94,$95,$9D,$A0,$A8,$AF,$05
-CF41: 12 16 1A 1B 21 23 23 24  FCB    $12,$16,$1A,$1B,$21,$23,$23,$24
-CF49: 26 29 2A 2C 2C 2C 2C 2D  FCB    $26,$29,$2A,$2C,$2C,$2C,$2C,$2D
-CF51: 2D 2D 2D 2D 2D 2C 2C 2C  FCB    $2D,$2D,$2D,$2D,$2D,$2C,$2C,$2C
-CF59: 2C 2A 29 26 24 23 23 21  FCB    $2C,$2A,$29,$26,$24,$23,$23,$21
-CF61: 1B 1A 16 12 05 AF A2 9E  FCB    $1B,$1A,$16,$12,$05,$AF,$A2,$9E
-CF69: 9A 99 93 91 91 90 8E 8B  FCB    $9A,$99,$93,$91,$91,$90,$8E,$8B
-CF71: 8A 88 88 88 88 87 87 87  FCB    $8A,$88,$88,$88,$88,$87,$87,$87
-CF79: 87 87 87 88 88 88 88 8A  FCB    $87,$87,$87,$88,$88,$88,$88,$8A
-CF81: 8B 8E 90 91 91 93 99 9A  FCB    $8B,$8E,$90,$91,$91,$93,$99,$9A
-CF89: 9E A2 AF 05 12 16 1A 1B  FCB    $9E,$A2,$AF,$05,$12,$16,$1A,$1B
-CF91: 21 23 23 24 26 29 2A 2C  FCB    $21,$23,$23,$24,$26,$29,$2A,$2C
-CF99: 2C 2C 2C 2D 2D 2D 2D 2D  FCB    $2C,$2C,$2C,$2D,$2D,$2D,$2D,$2D
-CFA1: 2D 2C 2C 2C 2C 2A 29 26  FCB    $2D,$2C,$2C,$2C,$2C,$2A,$29,$26
-CFA9: 24 23 23 21 1B 1A 16 12  FCB    $24,$23,$23,$21,$1B,$1A,$16,$12
-CFB1: 05 AF A2 9E 9A 99 93 91  FCB    $05,$AF,$A2,$9E,$9A,$99,$93,$91
-CFB9: 91 90 8E 8B 8A 88 88 88  FCB    $91,$90,$8E,$8B,$8A,$88,$88,$88
-CFC1: 88 87 87 87 87 87 87 88  FCB    $88,$87,$87,$87,$87,$87,$87,$88
-CFC9: 88 88 88 8A 8B 8E 90 91  FCB    $88,$88,$88,$8A,$8B,$8E,$90,$91
-CFD1: 91 93 99 9A 9E A2 AF 05  FCB    $91,$93,$99,$9A,$9E,$A2,$AF,$05
-CFD9: 12 16 1A 1B 21 23 23 24  FCB    $12,$16,$1A,$1B,$21,$23,$23,$24
-CFE1: 26 29 2A 2C 2C 2C 2C 2D  FCB    $26,$29,$2A,$2C,$2C,$2C,$2C,$2D
-CFE9: 2D 2D FF CA C1 09 09 09  FCB    $2D,$2D,$FF,$CA,$C1,$09,$09,$09
-CFF1: 09 0A 0A 0A 0A 0B 0B 0C  FCB    $09,$0A,$0A,$0A,$0A,$0B,$0B,$0C
-CFF9: 0C 0C 0C 0C 0E 0E 0F 10  FCB    $0C,$0C,$0C,$0C,$0E,$0E,$0F,$10
-D001: 11 11 11 12 13 15 16 17  FCB    $11,$11,$11,$12,$13,$15,$16,$17
-D009: 18 19 1A 1B 1F 21 23 24  FCB    $18,$19,$1A,$1B,$1F,$21,$23,$24
-D011: 27 27 27 27 29 2B 2D 30  FCB    $27,$27,$27,$27,$29,$2B,$2D,$30
-D019: 33 36 39 3C 3F 42 45 48  FCB    $33,$36,$39,$3C,$3F,$42,$45,$48
-D021: 4B 4E 51 54 57 5A 5D 60  FCB    $4B,$4E,$51,$54,$57,$5A,$5D,$60
-D029: 63 66 69 6C 6F 72 75 78  FCB    $63,$66,$69,$6C,$6F,$72,$75,$78
-D031: 7B 7E 81 84 87 8A 8D 90  FCB    $7B,$7E,$81,$84,$87,$8A,$8D,$90
-D039: 93 96 99 9C 9F A2 A5 A8  FCB    $93,$96,$99,$9C,$9F,$A2,$A5,$A8
-D041: AB AE B1 00 03 06 09 0C  FCB    $AB,$AE,$B1,$00,$03,$06,$09,$0C
-D049: 0F 12 15 18 1B 1E 21 24  FCB    $0F,$12,$15,$18,$1B,$1E,$21,$24
-D051: 27 2A 2D 2D 2D FF C4 42  FCB    $27,$2A,$2D,$2D,$2D,$FF,$C4,$42
+CB51: 6D 6C 6C 6C 6C 6C        FCB    $6D,$6C,$6C,$6C,$6C,$6C
+CB57: FE CA C1                 FCB    $FE,$CA,$C1 ; FE: jump + clear axis 2 to
+                                             ; $CAC1
+
+; Path stream: 207 headings (heading_table indexes),
+; then FE = jump to $CB5A (loops), axis 2 reset.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_CB5A:
+CB5A: 1F 1F 16 10 0E 09 02 AD  FCB    $1F,$1F,$16,$10,$0E,$09,$02,$AD
+CB62: AC A3 A1 9E 94 92 8C 8C  FCB    $AC,$A3,$A1,$9E,$94,$92,$8C,$8C
+CB6A: 87 86 83 80 7F 7E 7D 79  FCB    $87,$86,$83,$80,$7F,$7E,$7D,$79
+CB72: 78 74 72 72 6F 6E 6E 6C  FCB    $78,$74,$72,$72,$6F,$6E,$6E,$6C
+CB7A: 6C 6C 69 68 68 67 66 66  FCB    $6C,$6C,$69,$68,$68,$67,$66,$66
+CB82: 65 65 65 65 65 63 63 62  FCB    $65,$65,$65,$65,$65,$63,$63,$62
+CB8A: 62 61 5F 62 62 62 63 63  FCB    $62,$61,$5F,$62,$62,$62,$63,$63
+CB92: 65 65 66 67 68 6E 72 75  FCB    $65,$65,$66,$67,$68,$6E,$72,$75
+CB9A: 79 81 86 8A 90 97 9D 9F  FCB    $79,$81,$86,$8A,$90,$97,$9D,$9F
+CBA2: A2 A4 A6 A8 AB AC AD AE  FCB    $A2,$A4,$A6,$A8,$AB,$AC,$AD,$AE
+CBAA: B0 B0 AF AE B0 B0 B3 B1  FCB    $B0,$B0,$AF,$AE,$B0,$B0,$B3,$B1
+CBB2: B0 B3 B0 B0 B1 AF AD AF  FCB    $B0,$B3,$B0,$B0,$B1,$AF,$AD,$AF
+CBBA: B0 AE AE AE AA A4 A4 A2  FCB    $B0,$AE,$AE,$AE,$AA,$A4,$A4,$A2
+CBC2: 9D 9C 94 92 89 7B 7B 77  FCB    $9D,$9C,$94,$92,$89,$7B,$7B,$77
+CBCA: 74 70 6C 69 67 66 63 62  FCB    $74,$70,$6C,$69,$67,$66,$63,$62
+CBD2: 62 61 61 60 60 5F 60 61  FCB    $62,$61,$61,$60,$60,$5F,$60,$61
+CBDA: 62 63 66 66 66 66 66 66  FCB    $62,$63,$66,$66,$66,$66,$66,$66
+CBE2: 66 66 66 66 66 66 66 66  FCB    $66,$66,$66,$66,$66,$66,$66,$66
+CBEA: 66 66 66 66 66 66 66 66  FCB    $66,$66,$66,$66,$66,$66,$66,$66
+CBF2: 66 66 66 66 66 66 66 66  FCB    $66,$66,$66,$66,$66,$66,$66,$66
+CBFA: 66 66 66 66 66 66 66 66  FCB    $66,$66,$66,$66,$66,$66,$66,$66
+CC02: 66 66 66 66 66 66 66 66  FCB    $66,$66,$66,$66,$66,$66,$66,$66
+CC0A: 66 66 66 66 66 66 66 66  FCB    $66,$66,$66,$66,$66,$66,$66,$66
+CC12: 66 66 66 66 66 66 66 66  FCB    $66,$66,$66,$66,$66,$66,$66,$66
+CC1A: 66 66 66 66 66 66 66 66  FCB    $66,$66,$66,$66,$66,$66,$66,$66
+CC22: 66 66 66 66 66 66 66     FCB    $66,$66,$66,$66,$66,$66,$66
+CC29: FE CB 5A                 FCB    $FE,$CB,$5A ; FE: jump + clear axis 2 to
+                                             ; $CB5A
+
+; Path stream: 203 headings (heading_table indexes),
+; then FE = jump to $CC2C (loops), axis 2 reset.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_CC2C:
+CC2C: 2A 23 1C 15 0E 07 00 AD  FCB    $2A,$23,$1C,$15,$0E,$07,$00,$AD
+CC34: A7 A2 9F 9D 9B 99 96 94  FCB    $A7,$A2,$9F,$9D,$9B,$99,$96,$94
+CC3C: 92 90 8F 8D 8B 8A 8A 89  FCB    $92,$90,$8F,$8D,$8B,$8A,$8A,$89
+CC44: 88 87 86 85 83 82 81 80  FCB    $88,$87,$86,$85,$83,$82,$81,$80
+CC4C: 7F 7E 7E 7D 7D 7C 7A 78  FCB    $7F,$7E,$7E,$7D,$7D,$7C,$7A,$78
+CC54: 78 77 76 76 75 75 75 74  FCB    $78,$77,$76,$76,$75,$75,$75,$74
+CC5C: 74 73 73 72 71 70 6F 6F  FCB    $74,$73,$73,$72,$71,$70,$6F,$6F
+CC64: 6E 6E 6E 6C 6B 6B 6A 69  FCB    $6E,$6E,$6E,$6C,$6B,$6B,$6A,$69
+CC6C: 68 67 66 67 68 6A 6B 6D  FCB    $68,$67,$66,$67,$68,$6A,$6B,$6D
+CC74: 70 74 75 77 79 7B 7D 7F  FCB    $70,$74,$75,$77,$79,$7B,$7D,$7F
+CC7C: 81 83 85 87 8A 8D 8F 91  FCB    $81,$83,$85,$87,$8A,$8D,$8F,$91
+CC84: 93 95 97 99 9B 9D A0 A2  FCB    $93,$95,$97,$99,$9B,$9D,$A0,$A2
+CC8C: A4 A6 A8 AA AC AE B1 00  FCB    $A4,$A6,$A8,$AA,$AC,$AE,$B1,$00
+CC94: 03 06 08 0A 0C 0E 10 12  FCB    $03,$06,$08,$0A,$0C,$0E,$10,$12
+CC9C: 14 16 19 1B 1D 1F 21 23  FCB    $14,$16,$19,$1B,$1D,$1F,$21,$23
+CCA4: 25 27 2A 2D 30 33 35 37  FCB    $25,$27,$2A,$2D,$30,$33,$35,$37
+CCAC: 39 3B 3D 3F 41 43 46 48  FCB    $39,$3B,$3D,$3F,$41,$43,$46,$48
+CCB4: 4A 4C 4E 50 52 54 57 5A  FCB    $4A,$4C,$4E,$50,$52,$54,$57,$5A
+CCBC: 5D 60 62 64 66 68 6A 6C  FCB    $5D,$60,$62,$64,$66,$68,$6A,$6C
+CCC4: 6E 70 73 75 77 79 7B 7D  FCB    $6E,$70,$73,$75,$77,$79,$7B,$7D
+CCCC: 7F 81 84 87 88 89 8A 8C  FCB    $7F,$81,$84,$87,$88,$89,$8A,$8C
+CCD4: 8E 8F 90 91 92 93 94 95  FCB    $8E,$8F,$90,$91,$92,$93,$94,$95
+CCDC: 96 96 97 97 97 98 98 99  FCB    $96,$96,$97,$97,$97,$98,$98,$99
+CCE4: 99 9A 9A 9B 9B 9C 9C 9D  FCB    $99,$9A,$9A,$9B,$9B,$9C,$9C,$9D
+CCEC: 9D 9E 9E 9F 9F A0 A0 A0  FCB    $9D,$9E,$9E,$9F,$9F,$A0,$A0,$A0
+CCF4: A0 A0 A0                 FCB    $A0,$A0,$A0
+CCF7: FE CC 2C                 FCB    $FE,$CC,$2C ; FE: jump + clear axis 2 to
+                                             ; $CC2C
+
+; Path stream: 277 headings (heading_table indexes),
+; then FE = jump to $CCFA (loops), axis 2 reset.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_CCFA:
+CCFA: 2A 23 1C 15 0E 07 00 AD  FCB    $2A,$23,$1C,$15,$0E,$07,$00,$AD
+CD02: A7 A2 9F 9D 9B 99 96 94  FCB    $A7,$A2,$9F,$9D,$9B,$99,$96,$94
+CD0A: 92 90 8F 8E 8D 8C 8C 8B  FCB    $92,$90,$8F,$8E,$8D,$8C,$8C,$8B
+CD12: 8B 8A 8A 89 88 87 86 85  FCB    $8B,$8A,$8A,$89,$88,$87,$86,$85
+CD1A: 84 83 82 81 80 7F 7E 7E  FCB    $84,$83,$82,$81,$80,$7F,$7E,$7E
+CD22: 7D 7D 7C 7A 78 78 77 76  FCB    $7D,$7D,$7C,$7A,$78,$78,$77,$76
+CD2A: 76 75 75 75 74 74 73 73  FCB    $76,$75,$75,$75,$74,$74,$73,$73
+CD32: 72 71 70 6F 6F 6E 6E 6E  FCB    $72,$71,$70,$6F,$6F,$6E,$6E,$6E
+CD3A: 6C 6B 6B 6A 69 68 67 66  FCB    $6C,$6B,$6B,$6A,$69,$68,$67,$66
+CD42: 67 68 6A 6B 6D 70 74 75  FCB    $67,$68,$6A,$6B,$6D,$70,$74,$75
+CD4A: 77 79 7B 7D 7F 81 83 85  FCB    $77,$79,$7B,$7D,$7F,$81,$83,$85
+CD52: 87 8A 8D 8F 91 93 95 97  FCB    $87,$8A,$8D,$8F,$91,$93,$95,$97
+CD5A: 99 9B 9D A0 A2 A4 A6 A8  FCB    $99,$9B,$9D,$A0,$A2,$A4,$A6,$A8
+CD62: AA AC AE B1 00 03 06 08  FCB    $AA,$AC,$AE,$B1,$00,$03,$06,$08
+CD6A: 0A 0C 0E 10 12 14 16 19  FCB    $0A,$0C,$0E,$10,$12,$14,$16,$19
+CD72: 1B 1D 1F 21 23 25 27 2A  FCB    $1B,$1D,$1F,$21,$23,$25,$27,$2A
+CD7A: 2D 30 33 35 37 39 3B 3D  FCB    $2D,$30,$33,$35,$37,$39,$3B,$3D
+CD82: 3F 41 43 46 48 4A 4C 4E  FCB    $3F,$41,$43,$46,$48,$4A,$4C,$4E
+CD8A: 50 52 54 57 5A 5D 60 62  FCB    $50,$52,$54,$57,$5A,$5D,$60,$62
+CD92: 64 66 68 6A 6C 6E 70 73  FCB    $64,$66,$68,$6A,$6C,$6E,$70,$73
+CD9A: 75 77 79 7B 7D 7F 81 84  FCB    $75,$77,$79,$7B,$7D,$7F,$81,$84
+CDA2: 87 88 8A 8C 8E 90 93 96  FCB    $87,$88,$8A,$8C,$8E,$90,$93,$96
+CDAA: 99 9C 9F A2 A5 A8 AB AE  FCB    $99,$9C,$9F,$A2,$A5,$A8,$AB,$AE
+CDB2: B1 01 04 07 0B 0E 10 13  FCB    $B1,$01,$04,$07,$0B,$0E,$10,$13
+CDBA: 16 18 1A 1C 1E 20 22 24  FCB    $16,$18,$1A,$1C,$1E,$20,$22,$24
+CDC2: 25 26 28 2A 2D 2F 31 34  FCB    $25,$26,$28,$2A,$2D,$2F,$31,$34
+CDCA: 36 39 3B 3D 40 43 45 46  FCB    $36,$39,$3B,$3D,$40,$43,$45,$46
+CDD2: 48 4A 4C 4E 50 52 55 58  FCB    $48,$4A,$4C,$4E,$50,$52,$55,$58
+CDDA: 5A 5D 5E 60 62 64 66 68  FCB    $5A,$5D,$5E,$60,$62,$64,$66,$68
+CDE2: 6B 6D 70 72 75 78 7B 7D  FCB    $6B,$6D,$70,$72,$75,$78,$7B,$7D
+CDEA: 80 82 84 86 88 89 8A 8C  FCB    $80,$82,$84,$86,$88,$89,$8A,$8C
+CDF2: 8E 8F 90 91 92 93 94 95  FCB    $8E,$8F,$90,$91,$92,$93,$94,$95
+CDFA: 96 96 97 97 97 98 98 99  FCB    $96,$96,$97,$97,$97,$98,$98,$99
+CE02: 99 9A 9A 9B 9B 9C 9C 9D  FCB    $99,$9A,$9A,$9B,$9B,$9C,$9C,$9D
+CE0A: 9D 9E 9E 9F 9F           FCB    $9D,$9E,$9E,$9F,$9F
+CE0F: FE CC FA                 FCB    $FE,$CC,$FA ; FE: jump + clear axis 2 to
+                                             ; $CCFA
+
+; Path stream: 248 headings (heading_table indexes),
+; then FE = jump to $CAC1, axis 2 reset.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_CE12:
+CE12: 33 2B 19 13 12 06 02 B0  FCB    $33,$2B,$19,$13,$12,$06,$02,$B0
+CE1A: AA AA AC A0 9D 9B 96 95  FCB    $AA,$AA,$AC,$A0,$9D,$9B,$96,$95
+CE22: 8F 8F 8D 8A 87 87 86 86  FCB    $8F,$8F,$8D,$8A,$87,$87,$86,$86
+CE2A: 86 84 84 84 84 84 84 81  FCB    $86,$84,$84,$84,$84,$84,$84,$81
+CE32: 81 80 7F 7E 7E 7E 7B 79  FCB    $81,$80,$7F,$7E,$7E,$7E,$7B,$79
+CE3A: 79 78 78 77 77 76 71 6F  FCB    $79,$78,$78,$77,$77,$76,$71,$6F
+CE42: 6C 6C 69 63 63 63 5A 56  FCB    $6C,$6C,$69,$63,$63,$63,$5A,$56
+CE4A: 54 50 4E 45 43 41 3B 38  FCB    $54,$50,$4E,$45,$43,$41,$3B,$38
+CE52: 32 30 2F 2D 30 24 1D 18  FCB    $32,$30,$2F,$2D,$30,$24,$1D,$18
+CE5A: 13 10 0C 0A 05 02 00 B0  FCB    $13,$10,$0C,$0A,$05,$02,$00,$B0
+CE62: AA A8 A4 A0 9B 97 93 8F  FCB    $AA,$A8,$A4,$A0,$9B,$97,$93,$8F
+CE6A: 8A 8A 8A 86 7E 7D 7A 79  FCB    $8A,$8A,$8A,$86,$7E,$7D,$7A,$79
+CE72: 75 74 74 73 73 72 72 71  FCB    $75,$74,$74,$73,$73,$72,$72,$71
+CE7A: 71 71 70 70 6F 6E 6F 71  FCB    $71,$71,$70,$70,$6F,$6E,$6F,$71
+CE82: 71 72 72 72 73 73 74 75  FCB    $71,$72,$72,$72,$73,$73,$74,$75
+CE8A: 75 76 79 7C 7E 80 81 83  FCB    $75,$76,$79,$7C,$7E,$80,$81,$83
+CE92: 85 86 87 85 83 81 7F 7D  FCB    $85,$86,$87,$85,$83,$81,$7F,$7D
+CE9A: 7B 79 77 75 72 6F 6C 68  FCB    $7B,$79,$77,$75,$72,$6F,$6C,$68
+CEA2: 64 5F 5A 55 50 4C 48 45  FCB    $64,$5F,$5A,$55,$50,$4C,$48,$45
+CEAA: 42 3F 3D 3B 39 37 35 33  FCB    $42,$3F,$3D,$3B,$39,$37,$35,$33
+CEB2: 31 2F 2D 2B 29 27 25 23  FCB    $31,$2F,$2D,$2B,$29,$27,$25,$23
+CEBA: 21 1F 1D 1B 18 15 12 0E  FCB    $21,$1F,$1D,$1B,$18,$15,$12,$0E
+CEC2: 0A 05 00 AF AA A6 A2 9F  FCB    $0A,$05,$00,$AF,$AA,$A6,$A2,$9F
+CECA: 9C 99 97 95 93 91 8F 8D  FCB    $9C,$99,$97,$95,$93,$91,$8F,$8D
+CED2: 8B 89 87 87 87 87 86 86  FCB    $8B,$89,$87,$87,$87,$87,$86,$86
+CEDA: 86 85 85 85 84 84 84 83  FCB    $86,$85,$85,$85,$84,$84,$84,$83
+CEE2: 83 83 82 82 81 81 80 80  FCB    $83,$83,$82,$82,$81,$81,$80,$80
+CEEA: 7F 7F 7E 7E 7D 7D 7C 7C  FCB    $7F,$7F,$7E,$7E,$7D,$7D,$7C,$7C
+CEF2: 7C 7B 7B 7B 7B 7A 7A 7A  FCB    $7C,$7B,$7B,$7B,$7B,$7A,$7A,$7A
+CEFA: 7A 79 79 79 79 79 78 78  FCB    $7A,$79,$79,$79,$79,$79,$78,$78
+CF02: 78 77 77 77 77 77 77 77  FCB    $78,$77,$77,$77,$77,$77,$77,$77
+CF0A: FE CA C1                 FCB    $FE,$CA,$C1 ; FE: jump + clear axis 2 to
+                                             ; $CAC1
+
+; Path stream: 222 headings (heading_table indexes),
+; then FF = jump to $CAC1.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_CF0D:
+CF0D: 8A 8A 8A 8A 8A 8A 8A 8A  FCB    $8A,$8A,$8A,$8A,$8A,$8A,$8A,$8A
+CF15: 8A 8A 8A 8A 8B 8B 8B 8B  FCB    $8A,$8A,$8A,$8A,$8B,$8B,$8B,$8B
+CF1D: 8B 8B 8B 8B 8C 8C 8C 8C  FCB    $8B,$8B,$8B,$8B,$8C,$8C,$8C,$8C
+CF25: 8C 8C 8C 8C 8C 8C 8C 8D  FCB    $8C,$8C,$8C,$8C,$8C,$8C,$8C,$8D
+CF2D: 8D 8D 8D 8D 8D 8D 8D 8D  FCB    $8D,$8D,$8D,$8D,$8D,$8D,$8D,$8D
+CF35: 8E 8F 8F 8F 94 94 95 9D  FCB    $8E,$8F,$8F,$8F,$94,$94,$95,$9D
+CF3D: A0 A8 AF 05 12 16 1A 1B  FCB    $A0,$A8,$AF,$05,$12,$16,$1A,$1B
+CF45: 21 23 23 24 26 29 2A 2C  FCB    $21,$23,$23,$24,$26,$29,$2A,$2C
+CF4D: 2C 2C 2C 2D 2D 2D 2D 2D  FCB    $2C,$2C,$2C,$2D,$2D,$2D,$2D,$2D
+CF55: 2D 2C 2C 2C 2C 2A 29 26  FCB    $2D,$2C,$2C,$2C,$2C,$2A,$29,$26
+CF5D: 24 23 23 21 1B 1A 16 12  FCB    $24,$23,$23,$21,$1B,$1A,$16,$12
+CF65: 05 AF A2 9E 9A 99 93 91  FCB    $05,$AF,$A2,$9E,$9A,$99,$93,$91
+CF6D: 91 90 8E 8B 8A 88 88 88  FCB    $91,$90,$8E,$8B,$8A,$88,$88,$88
+CF75: 88 87 87 87 87 87 87 88  FCB    $88,$87,$87,$87,$87,$87,$87,$88
+CF7D: 88 88 88 8A 8B 8E 90 91  FCB    $88,$88,$88,$8A,$8B,$8E,$90,$91
+CF85: 91 93 99 9A 9E A2 AF 05  FCB    $91,$93,$99,$9A,$9E,$A2,$AF,$05
+CF8D: 12 16 1A 1B 21 23 23 24  FCB    $12,$16,$1A,$1B,$21,$23,$23,$24
+CF95: 26 29 2A 2C 2C 2C 2C 2D  FCB    $26,$29,$2A,$2C,$2C,$2C,$2C,$2D
+CF9D: 2D 2D 2D 2D 2D 2C 2C 2C  FCB    $2D,$2D,$2D,$2D,$2D,$2C,$2C,$2C
+CFA5: 2C 2A 29 26 24 23 23 21  FCB    $2C,$2A,$29,$26,$24,$23,$23,$21
+CFAD: 1B 1A 16 12 05 AF A2 9E  FCB    $1B,$1A,$16,$12,$05,$AF,$A2,$9E
+CFB5: 9A 99 93 91 91 90 8E 8B  FCB    $9A,$99,$93,$91,$91,$90,$8E,$8B
+CFBD: 8A 88 88 88 88 87 87 87  FCB    $8A,$88,$88,$88,$88,$87,$87,$87
+CFC5: 87 87 87 88 88 88 88 8A  FCB    $87,$87,$87,$88,$88,$88,$88,$8A
+CFCD: 8B 8E 90 91 91 93 99 9A  FCB    $8B,$8E,$90,$91,$91,$93,$99,$9A
+CFD5: 9E A2 AF 05 12 16 1A 1B  FCB    $9E,$A2,$AF,$05,$12,$16,$1A,$1B
+CFDD: 21 23 23 24 26 29 2A 2C  FCB    $21,$23,$23,$24,$26,$29,$2A,$2C
+CFE5: 2C 2C 2C 2D 2D 2D        FCB    $2C,$2C,$2C,$2D,$2D,$2D
+CFEB: FF CA C1                 FCB    $FF,$CA,$C1 ; FF: jump to $CAC1
+
+; Path stream: 104 headings (heading_table indexes),
+; then FF = jump to $C442.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_CFEE:
+CFEE: 09 09 09 09 0A 0A 0A 0A  FCB    $09,$09,$09,$09,$0A,$0A,$0A,$0A
+CFF6: 0B 0B 0C 0C 0C 0C 0C 0E  FCB    $0B,$0B,$0C,$0C,$0C,$0C,$0C,$0E
+CFFE: 0E 0F 10 11 11 11 12 13  FCB    $0E,$0F,$10,$11,$11,$11,$12,$13
+D006: 15 16 17 18 19 1A 1B 1F  FCB    $15,$16,$17,$18,$19,$1A,$1B,$1F
+D00E: 21 23 24 27 27 27 27 29  FCB    $21,$23,$24,$27,$27,$27,$27,$29
+D016: 2B 2D 30 33 36 39 3C 3F  FCB    $2B,$2D,$30,$33,$36,$39,$3C,$3F
+D01E: 42 45 48 4B 4E 51 54 57  FCB    $42,$45,$48,$4B,$4E,$51,$54,$57
+D026: 5A 5D 60 63 66 69 6C 6F  FCB    $5A,$5D,$60,$63,$66,$69,$6C,$6F
+D02E: 72 75 78 7B 7E 81 84 87  FCB    $72,$75,$78,$7B,$7E,$81,$84,$87
+D036: 8A 8D 90 93 96 99 9C 9F  FCB    $8A,$8D,$90,$93,$96,$99,$9C,$9F
+D03E: A2 A5 A8 AB AE B1 00 03  FCB    $A2,$A5,$A8,$AB,$AE,$B1,$00,$03
+D046: 06 09 0C 0F 12 15 18 1B  FCB    $06,$09,$0C,$0F,$12,$15,$18,$1B
+D04E: 1E 21 24 27 2A 2D 2D 2D  FCB    $1E,$21,$24,$27,$2A,$2D,$2D,$2D
+D056: FF C4 42                 FCB    $FF,$C4,$42 ; FF: jump to $C442
+
+; Path stream: 137 headings (heading_table indexes),
+; then F0 = end (+ unread back-pointer to this stream).
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_D059:
 D059: 09 09 09 09 0A 0A 0A 0A  FCB    $09,$09,$09,$09,$0A,$0A,$0A,$0A
 D061: 0B 0B 0C 0C 0C 0C 0C 0E  FCB    $0B,$0B,$0C,$0C,$0C,$0C,$0C,$0E
 D069: 0E 0F 10 11 11 11 12 13  FCB    $0E,$0F,$10,$11,$11,$11,$12,$13
@@ -3066,299 +3576,458 @@ D0C1: 8A 88 88 85 84 83 82 81  FCB    $8A,$88,$88,$85,$84,$83,$82,$81
 D0C9: 81 80 80 7F 7F 7E 7E 7D  FCB    $81,$80,$80,$7F,$7F,$7E,$7E,$7D
 D0D1: 7D 7C 7C 7B 7B 7A 79 78  FCB    $7D,$7C,$7C,$7B,$7B,$7A,$79,$78
 D0D9: 78 78 78 78 78 78 78 78  FCB    $78,$78,$78,$78,$78,$78,$78,$78
-D0E1: 78 F0 D0 59 82 82 82 81  FCB    $78,$F0,$D0,$59,$82,$82,$82,$81
-D0E9: 80 7F 7F 7F 7F 7E 7C 7C  FCB    $80,$7F,$7F,$7F,$7F,$7E,$7C,$7C
-D0F1: 7B 7B 7A 7A 79 78 77 77  FCB    $7B,$7B,$7A,$7A,$79,$78,$77,$77
-D0F9: 76 74 73 73 71 71 71 70  FCB    $76,$74,$73,$73,$71,$71,$71,$70
-D101: 70 6F 6E 6D 6D 6D 6C 6C  FCB    $70,$6F,$6E,$6D,$6D,$6D,$6C,$6C
-D109: 6A 6B 6C 6D 6E 6F 70 70  FCB    $6A,$6B,$6C,$6D,$6E,$6F,$70,$70
-D111: 70 72 73 74 75 76 77 79  FCB    $70,$72,$73,$74,$75,$76,$77,$79
-D119: 7B 7B 7F 7F 81 84 85 87  FCB    $7B,$7B,$7F,$7F,$81,$84,$85,$87
-D121: 87 8A 8B 8E 92 96 99 9C  FCB    $87,$8A,$8B,$8E,$92,$96,$99,$9C
-D129: 9E A2 A4 A7 AB AE B2 01  FCB    $9E,$A2,$A4,$A7,$AB,$AE,$B2,$01
-D131: 04 07 0A 0D 10 13 17 1B  FCB    $04,$07,$0A,$0D,$10,$13,$17,$1B
-D139: 1E 1F 20 20 21 21 22 22  FCB    $1E,$1F,$20,$20,$21,$21,$22,$22
-D141: 23 23 24 FF D0 E5 82 82  FCB    $23,$23,$24,$FF,$D0,$E5,$82,$82
-D149: 82 81 80 7F 7F 7F 7F 7E  FCB    $82,$81,$80,$7F,$7F,$7F,$7F,$7E
-D151: 7C 7C 7B 7B 7A 7A 79 78  FCB    $7C,$7C,$7B,$7B,$7A,$7A,$79,$78
-D159: 77 77 76 74 73 73 71 71  FCB    $77,$77,$76,$74,$73,$73,$71,$71
-D161: 71 70 70 6F 6E 6D 6D 6D  FCB    $71,$70,$70,$6F,$6E,$6D,$6D,$6D
-D169: 6C 6C 6A 6B 6C 6D 6E 6F  FCB    $6C,$6C,$6A,$6B,$6C,$6D,$6E,$6F
-D171: 70 70 70 72 73 74 75 76  FCB    $70,$70,$70,$72,$73,$74,$75,$76
-D179: 77 79 7B 7B 7F 7F 81 84  FCB    $77,$79,$7B,$7B,$7F,$7F,$81,$84
-D181: 85 87 87 87 87 88 8A 8C  FCB    $85,$87,$87,$87,$87,$88,$8A,$8C
-D189: 8E 8F 90 93 96 98 99 9B  FCB    $8E,$8F,$90,$93,$96,$98,$99,$9B
-D191: 9C 9B 9B 9B 9A 9A 99 99  FCB    $9C,$9B,$9B,$9B,$9A,$9A,$99,$99
-D199: 99 97 97 97 97 95 94 94  FCB    $99,$97,$97,$97,$97,$95,$94,$94
-D1A1: 94 93 93 91 91 90 90 8F  FCB    $94,$93,$93,$91,$91,$90,$90,$8F
-D1A9: 8F 8F 8F 8E 8E 8E 8E 8D  FCB    $8F,$8F,$8F,$8E,$8E,$8E,$8E,$8D
-D1B1: 8D 8D 8C 8A 8A 8A 8A 8A  FCB    $8D,$8D,$8C,$8A,$8A,$8A,$8A,$8A
-D1B9: 8A 8A 8A 8A 8A 8A 8A 8A  FCB    $8A,$8A,$8A,$8A,$8A,$8A,$8A,$8A
-D1C1: F0 D1 47 51 51 51 51 50  FCB    $F0,$D1,$47,$51,$51,$51,$51,$50
-D1C9: 50 50 50 4F 4F 4E 4E 4E  FCB    $50,$50,$50,$4F,$4F,$4E,$4E,$4E
-D1D1: 4E 4E 4C 4C 4C 4C 49 49  FCB    $4E,$4E,$4C,$4C,$4C,$4C,$49,$49
-D1D9: 49 48 47 45 44 43 42 41  FCB    $49,$48,$47,$45,$44,$43,$42,$41
-D1E1: 40 3F 3B 39 37 36 33 33  FCB    $40,$3F,$3B,$39,$37,$36,$33,$33
-D1E9: 33 33 31 2F 2D 29 27 24  FCB    $33,$33,$31,$2F,$2D,$29,$27,$24
-D1F1: 21 1E 1B 16 15 12 0F 0C  FCB    $21,$1E,$1B,$16,$15,$12,$0F,$0C
-D1F9: 09 06 03 00 B1 AE AB A8  FCB    $09,$06,$03,$00,$B1,$AE,$AB,$A8
-D201: A5 A2 9F 9C 99 96 93 90  FCB    $A5,$A2,$9F,$9C,$99,$96,$93,$90
-D209: 8D 8A 87 84 81 7E 7B 78  FCB    $8D,$8A,$87,$84,$81,$7E,$7B,$78
-D211: 75 72 6F 6C 69 66 63 60  FCB    $75,$72,$6F,$6C,$69,$66,$63,$60
-D219: 5D 5A 57 54 51 4E 4B 48  FCB    $5D,$5A,$57,$54,$51,$4E,$4B,$48
-D221: 45 42 3F 3C 39 36 33 30  FCB    $45,$42,$3F,$3C,$39,$36,$33,$30
-D229: 2D 2D 2D FF CA C1 51 51  FCB    $2D,$2D,$2D,$FF,$CA,$C1,$51,$51
-D231: 51 51 50 50 50 50 4F 4F  FCB    $51,$51,$50,$50,$50,$50,$4F,$4F
-D239: 4E 4E 4E 4E 4E 4C 4C 4B  FCB    $4E,$4E,$4E,$4E,$4E,$4C,$4C,$4B
-D241: 4A 4A 4A 4A 48 47 45 44  FCB    $4A,$4A,$4A,$4A,$48,$47,$45,$44
-D249: 43 42 41 40 3F 3B 39 37  FCB    $43,$42,$41,$40,$3F,$3B,$39,$37
-D251: 36 33 33 33 33 31 2F 2D  FCB    $36,$33,$33,$33,$33,$31,$2F,$2D
-D259: 2A 27 24 21 1E 1B 18 15  FCB    $2A,$27,$24,$21,$1E,$1B,$18,$15
-D261: 12 0F 0C 09 06 03 00 B1  FCB    $12,$0F,$0C,$09,$06,$03,$00,$B1
-D269: B0 AB A8 A5 A2 9F 9C 98  FCB    $B0,$AB,$A8,$A5,$A2,$9F,$9C,$98
-D271: 96 93 90 8D 8A 87 86 86  FCB    $96,$93,$90,$8D,$8A,$87,$86,$86
-D279: 84 81 80 7E 7B 7B 7B 78  FCB    $84,$81,$80,$7E,$7B,$7B,$7B,$78
-D281: 76 75 71 71 6E 6E 6C 6A  FCB    $76,$75,$71,$71,$6E,$6E,$6C,$6A
-D289: 6E 70 72 76 77 78 79 7D  FCB    $6E,$70,$72,$76,$77,$78,$79,$7D
-D291: 7F 80 80 80 83 84 84 86  FCB    $7F,$80,$80,$80,$83,$84,$84,$86
-D299: 86 89 8A 8B 8C 8D 8D 8E  FCB    $86,$89,$8A,$8B,$8C,$8D,$8D,$8E
-D2A1: 8E 8F 8F 90 90 91 91 92  FCB    $8E,$8F,$8F,$90,$90,$91,$91,$92
-D2A9: 92 93 93 93 95 96 96 96  FCB    $92,$93,$93,$93,$95,$96,$96,$96
-D2B1: 96 96 96 96 96 96 96 F0  FCB    $96,$96,$96,$96,$96,$96,$96,$F0
-D2B9: D2 2F 8C 8C 8C 8D 8E 8F  FCB    $D2,$2F,$8C,$8C,$8C,$8D,$8E,$8F
-D2C1: 8F 8F 8F 90 92 92 93 93  FCB    $8F,$8F,$8F,$90,$92,$92,$93,$93
-D2C9: 94 94 95 96 97 97 98 9A  FCB    $94,$94,$95,$96,$97,$97,$98,$9A
-D2D1: 9B 9B 9D 9D 9D 9E 9E 9F  FCB    $9B,$9B,$9D,$9D,$9D,$9E,$9E,$9F
-D2D9: A0 A1 A1 A1 A2 A2 A4 A3  FCB    $A0,$A1,$A1,$A1,$A2,$A2,$A4,$A3
-D2E1: A2 A1 A0 9F 9E 9E 9E 9C  FCB    $A2,$A1,$A0,$9F,$9E,$9E,$9E,$9C
-D2E9: 9B 9A 99 98 97 95 93 8F  FCB    $9B,$9A,$99,$98,$97,$95,$93,$8F
-D2F1: 8F 8F 8D 8A 89 87 87 84  FCB    $8F,$8F,$8D,$8A,$89,$87,$87,$84
-D2F9: 83 80 7C 78 75 72 70 6C  FCB    $83,$80,$7C,$78,$75,$72,$70,$6C
-D301: 6A 67 63 60 5C 59 56 53  FCB    $6A,$67,$63,$60,$5C,$59,$56,$53
-D309: 50 49 4A 47 43 3F 3C 3B  FCB    $50,$49,$4A,$47,$43,$3F,$3C,$3B
-D311: 3A 3A 39 39 38 38 37 37  FCB    $3A,$3A,$39,$39,$38,$38,$37,$37
-D319: 36 FF D2 BB 8C 8C 8C 8D  FCB    $36,$FF,$D2,$BB,$8C,$8C,$8C,$8D
-D321: 8E 8F 8F 8F 8F 90 92 92  FCB    $8E,$8F,$8F,$8F,$8F,$90,$92,$92
-D329: 93 93 94 94 95 96 97 97  FCB    $93,$93,$94,$94,$95,$96,$97,$97
-D331: 98 9A 9B 9B 9D 9D 9D 9E  FCB    $98,$9A,$9B,$9B,$9D,$9D,$9D,$9E
-D339: 9E 9F A0 A1 A1 A1 A2 A2  FCB    $9E,$9F,$A0,$A1,$A1,$A1,$A2,$A2
-D341: A4 A3 A2 A1 A0 9F 9E 9E  FCB    $A4,$A3,$A2,$A1,$A0,$9F,$9E,$9E
-D349: 9E 9C 9B 9A 99 98 97 95  FCB    $9E,$9C,$9B,$9A,$99,$98,$97,$95
-D351: 93 93 8F 8F 8D 8D 89 87  FCB    $93,$93,$8F,$8F,$8D,$8D,$89,$87
-D359: 87 87 87 86 84 82 80 7F  FCB    $87,$87,$87,$86,$84,$82,$80,$7F
-D361: 7E 7B 78 76 75 75 74 73  FCB    $7E,$7B,$78,$76,$75,$75,$74,$73
-D369: 73 73 74 74 75 75 75 77  FCB    $73,$73,$74,$74,$75,$75,$75,$77
-D371: 77 77 77 79 7A 7A 7A 7B  FCB    $77,$77,$77,$79,$7A,$7A,$7A,$7B
-D379: 7B 7D 7D 7E 7E 7F 7F 7F  FCB    $7B,$7D,$7D,$7E,$7E,$7F,$7F,$7F
-D381: 7F 80 80 80 80 81 81 81  FCB    $7F,$80,$80,$80,$80,$81,$81,$81
-D389: 82 84 84 84 84 84 84 84  FCB    $82,$84,$84,$84,$84,$84,$84,$84
-D391: 84 84 84 84 84 84 F0 D3  FCB    $84,$84,$84,$84,$84,$84,$F0,$D3
-D399: 1D 7A 78 76 75 74 73 71  FCB    $1D,$7A,$78,$76,$75,$74,$73,$71
-D3A1: 6F 6E 6D 6C 6C 6C 6B 6B  FCB    $6F,$6E,$6D,$6C,$6C,$6C,$6B,$6B
-D3A9: 6A 68 67 66 66 65 64 63  FCB    $6A,$68,$67,$66,$66,$65,$64,$63
-D3B1: 62 62 62 62 62 61 60 5F  FCB    $62,$62,$62,$62,$62,$61,$60,$5F
-D3B9: 60 61 61 62 62 62 62 63  FCB    $60,$61,$61,$62,$62,$62,$62,$63
-D3C1: 63 63 64 64 65 65 66 66  FCB    $63,$63,$64,$64,$65,$65,$66,$66
-D3C9: 67 67 68 68 68 69 6A 6A  FCB    $67,$67,$68,$68,$68,$69,$6A,$6A
-D3D1: 6B 6C 6C 6C 6D 6E 6F 6F  FCB    $6B,$6C,$6C,$6C,$6D,$6E,$6F,$6F
-D3D9: 70 71 72 73 74 75 76 77  FCB    $70,$71,$72,$73,$74,$75,$76,$77
-D3E1: 78 7A 7A 7A 7B 7C 7F 82  FCB    $78,$7A,$7A,$7A,$7B,$7C,$7F,$82
-D3E9: 85 88 8B 8E 91 94 97 9B  FCB    $85,$88,$8B,$8E,$91,$94,$97,$9B
-D3F1: 9F A2 A5 A8 AB AE B1 00  FCB    $9F,$A2,$A5,$A8,$AB,$AE,$B1,$00
-D3F9: 03 07 0A 0D 10 13 16 19  FCB    $03,$07,$0A,$0D,$10,$13,$16,$19
-D401: 1B 1E 21 24 25 24 23 22  FCB    $1B,$1E,$21,$24,$25,$24,$23,$22
-D409: 21 20 1F FF D3 9A 7A 78  FCB    $21,$20,$1F,$FF,$D3,$9A,$7A,$78
-D411: 76 75 74 73 71 6F 6E 6D  FCB    $76,$75,$74,$73,$71,$6F,$6E,$6D
-D419: 6C 6C 6C 6B 6B 6A 68 67  FCB    $6C,$6C,$6C,$6B,$6B,$6A,$68,$67
-D421: 66 66 65 64 63 62 62 62  FCB    $66,$66,$65,$64,$63,$62,$62,$62
-D429: 62 62 61 60 5F 60 61 61  FCB    $62,$62,$61,$60,$5F,$60,$61,$61
-D431: 62 62 62 62 63 63 63 64  FCB    $62,$62,$62,$62,$63,$63,$63,$64
-D439: 64 65 65 66 66 67 67 68  FCB    $64,$65,$65,$66,$66,$67,$67,$68
-D441: 68 68 69 6A 6C 6D 6F 72  FCB    $68,$68,$69,$6A,$6C,$6D,$6F,$72
-D449: 74 76 78 7B 7D 7F 81 83  FCB    $74,$76,$78,$7B,$7D,$7F,$81,$83
-D451: 85 86 87 88 89 8A 8A 8B  FCB    $85,$86,$87,$88,$89,$8A,$8A,$8B
-D459: 8C 8D 8D 8E 8E 8F 8F 90  FCB    $8C,$8D,$8D,$8E,$8E,$8F,$8F,$90
-D461: 90 90 90 8F 8E 8E 8C 8A  FCB    $90,$90,$90,$8F,$8E,$8E,$8C,$8A
-D469: 88 87 87 86 84 83 81 7E  FCB    $88,$87,$87,$86,$84,$83,$81,$7E
-D471: 7C 7B 79 79 78 77 77 78  FCB    $7C,$7B,$79,$79,$78,$77,$77,$78
-D479: 78 79 7B 7C 7E 80 82 83  FCB    $78,$79,$7B,$7C,$7E,$80,$82,$83
-D481: 84 85 87 88 8A 8C 8D 8E  FCB    $84,$85,$87,$88,$8A,$8C,$8D,$8E
-D489: 8F 90 91 92 93 93 94 95  FCB    $8F,$90,$91,$92,$93,$93,$94,$95
-D491: 96 96 96 F0 D4 0F 8C 8F  FCB    $96,$96,$96,$F0,$D4,$0F,$8C,$8F
-D499: 92 95 98 9C A0 A3 A7 AA  FCB    $92,$95,$98,$9C,$A0,$A3,$A7,$AA
-D4A1: AC AF B1 00 04 08 0C 10  FCB    $AC,$AF,$B1,$00,$04,$08,$0C,$10
-D4A9: 13 16 19 1C 1F 22 25 28  FCB    $13,$16,$19,$1C,$1F,$22,$25,$28
-D4B1: 2B 2D 30 34 38 3B 3F 43  FCB    $2B,$2D,$30,$34,$38,$3B,$3F,$43
-D4B9: 46 48 44 43 42 42 42 40  FCB    $46,$48,$44,$43,$42,$42,$42,$40
-D4C1: 3F 3E 3D 3B 39 37 35 33  FCB    $3F,$3E,$3D,$3B,$39,$37,$35,$33
-D4C9: 30 2E 2B 28 25 22 1E 1B  FCB    $30,$2E,$2B,$28,$25,$22,$1E,$1B
-D4D1: 18 14 FF D4 97 8C 8F 92  FCB    $18,$14,$FF,$D4,$97,$8C,$8F,$92
-D4D9: 95 98 9C A0 A3 A7 AA AC  FCB    $95,$98,$9C,$A0,$A3,$A7,$AA,$AC
-D4E1: AF B1 00 04 08 0C 10 13  FCB    $AF,$B1,$00,$04,$08,$0C,$10,$13
-D4E9: 16 19 1C 1F 22 25 28 2B  FCB    $16,$19,$1C,$1F,$22,$25,$28,$2B
-D4F1: 2D 30 34 38 3B 3F 43 46  FCB    $2D,$30,$34,$38,$3B,$3F,$43,$46
-D4F9: 46 46 46 47 48 49 4A 4B  FCB    $46,$46,$46,$47,$48,$49,$4A,$4B
-D501: 4D 4F 52 56 5B 61 68 6F  FCB    $4D,$4F,$52,$56,$5B,$61,$68,$6F
-D509: 76 7D 84 8B 91 95 96 97  FCB    $76,$7D,$84,$8B,$91,$95,$96,$97
-D511: 98 99 99 9A 9A 9B 9B 9C  FCB    $98,$99,$99,$9A,$9A,$9B,$9B,$9C
-D519: 9C 9D 9D 9E 9E 9F 9E 9E  FCB    $9C,$9D,$9D,$9E,$9E,$9F,$9E,$9E
-D521: 9E 9D 9D 9D 9D 9C 9C 9C  FCB    $9E,$9D,$9D,$9D,$9D,$9C,$9C,$9C
-D529: 9C 9B 9B 9B 9B 9B 9A 9A  FCB    $9C,$9B,$9B,$9B,$9B,$9B,$9A,$9A
-D531: 9A 9A 9A 99 99 99 99 99  FCB    $9A,$9A,$9A,$99,$99,$99,$99,$99
-D539: 98 98 98 98 97 97 97 97  FCB    $98,$98,$98,$98,$97,$97,$97,$97
-D541: 96 96 96 95 95 95 F0 D4  FCB    $96,$96,$96,$95,$95,$95,$F0,$D4
-D549: D6 82 82 81 81 80 80 7F  FCB    $D6,$82,$82,$81,$81,$80,$80,$7F
-D551: 7F 7E 7E 7D 7D 7C 7C 7B  FCB    $7F,$7E,$7E,$7D,$7D,$7C,$7C,$7B
-D559: 7B 7B 7A 7A 7A 79 79 79  FCB    $7B,$7B,$7A,$7A,$7A,$79,$79,$79
-D561: 78 78 78 77 77 77 76 76  FCB    $78,$78,$78,$77,$77,$77,$76,$76
-D569: 75 75 74 74 73 73 72 72  FCB    $75,$75,$74,$74,$73,$73,$72,$72
-D571: 71 71 70 70 6F 6E 6D 6B  FCB    $71,$71,$70,$70,$6F,$6E,$6D,$6B
-D579: 69 66 63 5F 5A 55 4F 49  FCB    $69,$66,$63,$5F,$5A,$55,$4F,$49
-D581: 43 3D 38 34 30 2D 2A 27  FCB    $43,$3D,$38,$34,$30,$2D,$2A,$27
-D589: 25 24 22 20 1F 1E 1E 1C  FCB    $25,$24,$22,$20,$1F,$1E,$1E,$1C
-D591: 1C 1C 1B 1B 1B 1A 1A 1A  FCB    $1C,$1C,$1B,$1B,$1B,$1A,$1A,$1A
-D599: 1B 1B 1B 1C 1C 1D 1D 1E  FCB    $1B,$1B,$1B,$1C,$1C,$1D,$1D,$1E
-D5A1: 20 22 25 28 2B 2E 31 34  FCB    $20,$22,$25,$28,$2B,$2E,$31,$34
-D5A9: 37 FF C4 42 82 80 7E 7B  FCB    $37,$FF,$C4,$42,$82,$80,$7E,$7B
-D5B1: 79 78 77 76 75 74 73 72  FCB    $79,$78,$77,$76,$75,$74,$73,$72
-D5B9: 71 71 70 70 70 6F 6F 6F  FCB    $71,$71,$70,$70,$70,$6F,$6F,$6F
-D5C1: 6F 6E 6E 6E 6E 6D 6D 6D  FCB    $6F,$6E,$6E,$6E,$6E,$6D,$6D,$6D
-D5C9: 6D 6C 6C 6C 6C 6B 6B 6B  FCB    $6D,$6C,$6C,$6C,$6C,$6B,$6B,$6B
-D5D1: 6B 6A 6A 6A 6A 69 69 69  FCB    $6B,$6A,$6A,$6A,$6A,$69,$69,$69
-D5D9: 6A 6A 6A 6A 6B 6B 6B 6B  FCB    $6A,$6A,$6A,$6A,$6B,$6B,$6B,$6B
-D5E1: 6C 6C 6C 6D 6D 6D 6D 6E  FCB    $6C,$6C,$6C,$6D,$6D,$6D,$6D,$6E
-D5E9: 6E 6E 6F 6F 6F 70 70 71  FCB    $6E,$6E,$6F,$6F,$6F,$70,$70,$71
-D5F1: 71 72 72 73 74 75 76 77  FCB    $71,$72,$72,$73,$74,$75,$76,$77
-D5F9: 78 7A 7C 7E 80 82 84 86  FCB    $78,$7A,$7C,$7E,$80,$82,$84,$86
-D601: 88 8A 8C 8E 90 92 94 96  FCB    $88,$8A,$8C,$8E,$90,$92,$94,$96
-D609: 98 9A 9C 9E A0 A2 A4 A6  FCB    $98,$9A,$9C,$9E,$A0,$A2,$A4,$A6
-D611: A8 AA AB AB AC AD AE AF  FCB    $A8,$AA,$AB,$AB,$AC,$AD,$AE,$AF
-D619: B0 B1 B1 B2 B2 B2 B3 B3  FCB    $B0,$B1,$B1,$B2,$B2,$B2,$B3,$B3
-D621: B3 00 00 00 00 00 00 01  FCB    $B3,$00,$00,$00,$00,$00,$00,$01
-D629: 01 01 02 02 02 03 03 04  FCB    $01,$01,$02,$02,$02,$03,$03,$04
-D631: 05 06 07 08 09 09 0A 0C  FCB    $05,$06,$07,$08,$09,$09,$0A,$0C
-D639: 0E 10 12 14 16 18 1A 1C  FCB    $0E,$10,$12,$14,$16,$18,$1A,$1C
-D641: 1E 20 22 24 26 28 2A 2C  FCB    $1E,$20,$22,$24,$26,$28,$2A,$2C
-D649: 2E 30 32 34 36 38 3A 3C  FCB    $2E,$30,$32,$34,$36,$38,$3A,$3C
-D651: 3D 3E 3F 40 41 42 42 43  FCB    $3D,$3E,$3F,$40,$41,$42,$42,$43
-D659: 43 44 44 45 45 45 46 46  FCB    $43,$44,$44,$45,$45,$45,$46,$46
-D661: 46 47 47 47 FF C4 42 8C  FCB    $46,$47,$47,$47,$FF,$C4,$42,$8C
-D669: 8C 8D 8D 8E 8E 8F 8F 90  FCB    $8C,$8D,$8D,$8E,$8E,$8F,$8F,$90
-D671: 90 91 91 92 92 93 93 93  FCB    $90,$91,$91,$92,$92,$93,$93,$93
-D679: 94 94 94 95 95 95 96 96  FCB    $94,$94,$94,$95,$95,$95,$96,$96
-D681: 96 97 97 97 98 98 99 99  FCB    $96,$97,$97,$97,$98,$98,$99,$99
-D689: 9A 9A 9B 9B 9C 9C 9D 9D  FCB    $9A,$9A,$9B,$9B,$9C,$9C,$9D,$9D
-D691: 9E 9E 9F A0 A1 A3 A5 A8  FCB    $9E,$9E,$9F,$A0,$A1,$A3,$A5,$A8
-D699: AB AF 00 05 0B 11 17 1D  FCB    $AB,$AF,$00,$05,$0B,$11,$17,$1D
-D6A1: 22 26 2A 2D 30 33 35 36  FCB    $22,$26,$2A,$2D,$30,$33,$35,$36
-D6A9: 38 3A 3B 3C 3C 3E 3E 3E  FCB    $38,$3A,$3B,$3C,$3C,$3E,$3E,$3E
-D6B1: 3F 3F 3F 40 40 40 3F 3F  FCB    $3F,$3F,$3F,$40,$40,$40,$3F,$3F
-D6B9: 3F 3E 3E 3D 3D 3C 3A 38  FCB    $3F,$3E,$3E,$3D,$3D,$3C,$3A,$38
-D6C1: 35 32 2F 2C 29 26 23 FF  FCB    $35,$32,$2F,$2C,$29,$26,$23,$FF
-D6C9: C4 42 87 8E 90 93 95 96  FCB    $C4,$42,$87,$8E,$90,$93,$95,$96
-D6D1: 97 98 99 9A 9B 9C 9D 9D  FCB    $97,$98,$99,$9A,$9B,$9C,$9D,$9D
-D6D9: 9E 9E 9E 9F 9F 9F 9F A0  FCB    $9E,$9E,$9E,$9F,$9F,$9F,$9F,$A0
-D6E1: A0 A0 A0 A1 A1 A1 A1 A2  FCB    $A0,$A0,$A0,$A1,$A1,$A1,$A1,$A2
-D6E9: A2 A2 A2 A3 A3 A3 A3 A4  FCB    $A2,$A2,$A2,$A3,$A3,$A3,$A3,$A4
-D6F1: A4 A4 A4 A5 A5 A5 A4 A4  FCB    $A4,$A4,$A4,$A5,$A5,$A5,$A4,$A4
-D6F9: A4 A4 A3 A3 A3 A3 A2 A2  FCB    $A4,$A4,$A3,$A3,$A3,$A3,$A2,$A2
-D701: A2 A1 A1 A1 A1 A0 A0 A0  FCB    $A2,$A1,$A1,$A1,$A1,$A0,$A0,$A0
-D709: 9F 9F 9F 9E 9E 9D 9D 9C  FCB    $9F,$9F,$9F,$9E,$9E,$9D,$9D,$9C
-D711: 9C 9B 9A 99 98 97 96 94  FCB    $9C,$9B,$9A,$99,$98,$97,$96,$94
-D719: 92 90 8E 8C 8A 88 86 84  FCB    $92,$90,$8E,$8C,$8A,$88,$86,$84
-D721: 82 80 7E 7C 7A 78 76 74  FCB    $82,$80,$7E,$7C,$7A,$78,$76,$74
-D729: 72 70 6E 6C 6A 68 66 64  FCB    $72,$70,$6E,$6C,$6A,$68,$66,$64
-D731: 63 63 62 61 60 5F 5E 5D  FCB    $63,$63,$62,$61,$60,$5F,$5E,$5D
-D739: 5D 5C 5C 5C 5B 5B 5B 5A  FCB    $5D,$5C,$5C,$5C,$5B,$5B,$5B,$5A
-D741: 5A 5A 5A 5A 5A 59 59 59  FCB    $5A,$5A,$5A,$5A,$5A,$59,$59,$59
-D749: 58 58 58 57 57 56 55 54  FCB    $58,$58,$58,$57,$57,$56,$55,$54
-D751: 53 52 51 51 50 4E 4C 4A  FCB    $53,$52,$51,$51,$50,$4E,$4C,$4A
-D759: 48 46 44 42 40 3E 3C 3A  FCB    $48,$46,$44,$42,$40,$3E,$3C,$3A
-D761: 38 36 34 32 30 2E 2C 2A  FCB    $38,$36,$34,$32,$30,$2E,$2C,$2A
-D769: 28 26 24 22 20 1E 1D 1C  FCB    $28,$26,$24,$22,$20,$1E,$1D,$1C
-D771: 1B 1A 19 18 18 17 17 16  FCB    $1B,$1A,$19,$18,$18,$17,$17,$16
-D779: 16 15 15 15 14 14 14 13  FCB    $16,$15,$15,$15,$14,$14,$14,$13
-D781: 13 13 FF C4 42 94 96 98  FCB    $13,$13,$FF,$C4,$42,$94,$96,$98
-D789: 99 9A 9B 9D 9F A0 A1 A2  FCB    $99,$9A,$9B,$9D,$9F,$A0,$A1,$A2
-D791: A2 A2 A3 A3 A4 A6 A7 A8  FCB    $A2,$A2,$A3,$A3,$A4,$A6,$A7,$A8
-D799: A8 A9 AA AB AC AC AC AC  FCB    $A8,$A9,$AA,$AB,$AC,$AC,$AC,$AC
-D7A1: AC AD AE AF AE AD AC AC  FCB    $AC,$AD,$AE,$AF,$AE,$AD,$AC,$AC
-D7A9: AC AC AC AB AB AB AA AA  FCB    $AC,$AC,$AC,$AB,$AB,$AB,$AA,$AA
-D7B1: A9 A9 A8 A8 A7 A7 A6 A6  FCB    $A9,$A9,$A8,$A8,$A7,$A7,$A6,$A6
-D7B9: A6 A5 A4 A4 A3 A2 A2 A2  FCB    $A6,$A5,$A4,$A4,$A3,$A2,$A2,$A2
-D7C1: A1 A0 9F 9F 9E 9D 9C 9B  FCB    $A1,$A0,$9F,$9F,$9E,$9D,$9C,$9B
-D7C9: 9A 99 98 97 96 94 94 94  FCB    $9A,$99,$98,$97,$96,$94,$94,$94
-D7D1: 93 92 8F 8C 89 86 83 80  FCB    $93,$92,$8F,$8C,$89,$86,$83,$80
-D7D9: 7D 7A 77 73 6F 6C 69 66  FCB    $7D,$7A,$77,$73,$6F,$6C,$69,$66
-D7E1: 63 60 5D 5A 57 53 50 4D  FCB    $63,$60,$5D,$5A,$57,$53,$50,$4D
-D7E9: 4A 47 44 41 3F 3C 39 36  FCB    $4A,$47,$44,$41,$3F,$3C,$39,$36
-D7F1: 35 36 37 38 39 3A 3B FF  FCB    $35,$36,$37,$38,$39,$3A,$3B,$FF
-D7F9: D7 86 94 96 98 99 9A 9B  FCB    $D7,$86,$94,$96,$98,$99,$9A,$9B
-D801: 9D 9F A0 A1 A2 A2 A2 A3  FCB    $9D,$9F,$A0,$A1,$A2,$A2,$A2,$A3
-D809: A3 A4 A6 A7 A8 A8 A9 AA  FCB    $A3,$A4,$A6,$A7,$A8,$A8,$A9,$AA
-D811: AB AC AC AC AC AC AD AE  FCB    $AB,$AC,$AC,$AC,$AC,$AC,$AD,$AE
-D819: AF AE AD AD AC AC AC AC  FCB    $AF,$AE,$AD,$AD,$AC,$AC,$AC,$AC
-D821: AB AB AB AA AA A9 A9 A8  FCB    $AB,$AB,$AB,$AA,$AA,$A9,$A9,$A8
-D829: A8 A7 A7 A6 A6 A6 A5 A4  FCB    $A8,$A7,$A7,$A6,$A6,$A6,$A5,$A4
-D831: A2 A1 9F 9C 9A 98 96 93  FCB    $A2,$A1,$9F,$9C,$9A,$98,$96,$93
-D839: 91 8F 8D 8B 89 88 87 86  FCB    $91,$8F,$8D,$8B,$89,$88,$87,$86
-D841: 85 84 84 83 82 81 81 80  FCB    $85,$84,$84,$83,$82,$81,$81,$80
-D849: 80 7F 7F 7E 7E 7E 7E 7F  FCB    $80,$7F,$7F,$7E,$7E,$7E,$7E,$7F
-D851: 80 80 82 84 86 87 87 88  FCB    $80,$80,$82,$84,$86,$87,$87,$88
-D859: 8A 8B 8D 90 92 93 95 95  FCB    $8A,$8B,$8D,$90,$92,$93,$95,$95
-D861: 96 97 97 96 96 95 93 92  FCB    $96,$97,$97,$96,$96,$95,$93,$92
-D869: 90 8E 8C 8B 8A 89 87 86  FCB    $90,$8E,$8C,$8B,$8A,$89,$87,$86
-D871: 84 82 81 80 7F 7E 7D 7C  FCB    $84,$82,$81,$80,$7F,$7E,$7D,$7C
-D879: 7B 7B 7A 79 78 78 78 F0  FCB    $7B,$7B,$7A,$79,$78,$78,$78,$F0
-D881: D7 FB 82 7F 7C 79 76 72  FCB    $D7,$FB,$82,$7F,$7C,$79,$76,$72
-D889: 6E 6B 67 64 62 5F 5D 5A  FCB    $6E,$6B,$67,$64,$62,$5F,$5D,$5A
-D891: 56 52 4E 4A 47 44 41 3E  FCB    $56,$52,$4E,$4A,$47,$44,$41,$3E
-D899: 3B 38 35 32 2F 2D 2A 26  FCB    $3B,$38,$35,$32,$2F,$2D,$2A,$26
-D8A1: 22 1F 1B 17 14 12 16 17  FCB    $22,$1F,$1B,$17,$14,$12,$16,$17
-D8A9: 18 18 18 1A 1B 1C 1D 1F  FCB    $18,$18,$18,$1A,$1B,$1C,$1D,$1F
-D8B1: 21 23 25 27 2A 2C 2F 32  FCB    $21,$23,$25,$27,$2A,$2C,$2F,$32
-D8B9: 35 38 3C 3F 42 46 FF D8  FCB    $35,$38,$3C,$3F,$42,$46,$FF,$D8
-D8C1: 83 82 7F 7C 79 76 72 6E  FCB    $83,$82,$7F,$7C,$79,$76,$72,$6E
-D8C9: 6B 67 64 62 5F 5D 5A 56  FCB    $6B,$67,$64,$62,$5F,$5D,$5A,$56
-D8D1: 52 4E 4A 47 44 41 3E 3B  FCB    $52,$4E,$4A,$47,$44,$41,$3E,$3B
-D8D9: 38 35 32 2F 2D 2A 26 22  FCB    $38,$35,$32,$2F,$2D,$2A,$26,$22
-D8E1: 1F 1B 17 14 14 14 14 13  FCB    $1F,$1B,$17,$14,$14,$14,$14,$13
-D8E9: 12 11 10 0F 0D 0B 09 04  FCB    $12,$11,$10,$0F,$0D,$0B,$09,$04
-D8F1: B3 AD A6 9F 98 91 8A 83  FCB    $B3,$AD,$A6,$9F,$98,$91,$8A,$83
-D8F9: 7D 79 78 77 76 75 75 74  FCB    $7D,$79,$78,$77,$76,$75,$75,$74
-D901: 74 73 73 72 72 71 71 70  FCB    $74,$73,$73,$72,$72,$71,$71,$70
-D909: 70 6F 70 70 70 71 71 71  FCB    $70,$6F,$70,$70,$70,$71,$71,$71
-D911: 71 72 72 72 72 73 73 73  FCB    $71,$72,$72,$72,$72,$73,$73,$73
-D919: 73 73 74 74 74 74 74 75  FCB    $73,$73,$74,$74,$74,$74,$74,$75
-D921: 75 75 75 75 76 76 76 76  FCB    $75,$75,$75,$75,$76,$76,$76,$76
-D929: 77 77 77 77 78 78 78 79  FCB    $77,$77,$77,$77,$78,$78,$78,$79
-D931: 79 79 F0 D8 C2 2D 2D 2D  FCB    $79,$79,$F0,$D8,$C2,$2D,$2D,$2D
-D939: 2D 2D 2D 2D 2D 2D 2D 2C  FCB    $2D,$2D,$2D,$2D,$2D,$2D,$2D,$2C
-D941: 2C 2C 2B 2B 2B 2A 2A 2A  FCB    $2C,$2C,$2B,$2B,$2B,$2A,$2A,$2A
-D949: 29 29 29 28 28 27 27 26  FCB    $29,$29,$29,$28,$28,$27,$27,$26
-D951: 26 25 25 24 24 23 22 21  FCB    $26,$25,$25,$24,$24,$23,$22,$21
-D959: 20 1F 1D 1B 19 17 14 11  FCB    $20,$1F,$1D,$1B,$19,$17,$14,$11
-D961: 0D 09 07 05 02 00 B2 AF  FCB    $0D,$09,$07,$05,$02,$00,$B2,$AF
-D969: AD AB A7 A3 A0 9D 9B 99  FCB    $AD,$AB,$A7,$A3,$A0,$9D,$9B,$99
-D971: 97 95 94 93 92 91 90 90  FCB    $97,$95,$94,$93,$92,$91,$90,$90
-D979: 8F 8F 8E 8E 8D 8D 8C 8C  FCB    $8F,$8F,$8E,$8E,$8D,$8D,$8C,$8C
-D981: 8B 8B 8B 8A 8A 8A 89 89  FCB    $8B,$8B,$8B,$8A,$8A,$8A,$89,$89
-D989: 89 88 88 88 87 87 87 87  FCB    $89,$88,$88,$88,$87,$87,$87,$87
-D991: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
-D999: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
-D9A1: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
-D9A9: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
-D9B1: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
-D9B9: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
-D9C1: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
-D9C9: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
-D9D1: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
-D9D9: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
-D9E1: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
-D9E9: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
-D9F1: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
-D9F9: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
-DA01: 87 87 87 87 87 F0 D9 36  FCB    $87,$87,$87,$87,$87,$F0,$D9,$36
+D0E1: 78                       FCB    $78
+D0E2: F0 D0 59                 FCB    $F0,$D0,$59 ; F0: end of path. QUIRK:
+                                             ; back-pointer $D059 (own
+                                             ; start), never read
+
+; Path stream: 95 headings (heading_table indexes),
+; then FF = jump to $D0E5 (loops).
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_D0E5:
+D0E5: 82 82 82 81 80 7F 7F 7F  FCB    $82,$82,$82,$81,$80,$7F,$7F,$7F
+D0ED: 7F 7E 7C 7C 7B 7B 7A 7A  FCB    $7F,$7E,$7C,$7C,$7B,$7B,$7A,$7A
+D0F5: 79 78 77 77 76 74 73 73  FCB    $79,$78,$77,$77,$76,$74,$73,$73
+D0FD: 71 71 71 70 70 6F 6E 6D  FCB    $71,$71,$71,$70,$70,$6F,$6E,$6D
+D105: 6D 6D 6C 6C 6A 6B 6C 6D  FCB    $6D,$6D,$6C,$6C,$6A,$6B,$6C,$6D
+D10D: 6E 6F 70 70 70 72 73 74  FCB    $6E,$6F,$70,$70,$70,$72,$73,$74
+D115: 75 76 77 79 7B 7B 7F 7F  FCB    $75,$76,$77,$79,$7B,$7B,$7F,$7F
+D11D: 81 84 85 87 87 8A 8B 8E  FCB    $81,$84,$85,$87,$87,$8A,$8B,$8E
+D125: 92 96 99 9C 9E A2 A4 A7  FCB    $92,$96,$99,$9C,$9E,$A2,$A4,$A7
+D12D: AB AE B2 01 04 07 0A 0D  FCB    $AB,$AE,$B2,$01,$04,$07,$0A,$0D
+D135: 10 13 17 1B 1E 1F 20 20  FCB    $10,$13,$17,$1B,$1E,$1F,$20,$20
+D13D: 21 21 22 22 23 23 24     FCB    $21,$21,$22,$22,$23,$23,$24
+D144: FF D0 E5                 FCB    $FF,$D0,$E5 ; FF: jump to $D0E5
+
+; Path stream: 122 headings (heading_table indexes),
+; then F0 = end (+ unread back-pointer to this stream).
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_D147:
+D147: 82 82 82 81 80 7F 7F 7F  FCB    $82,$82,$82,$81,$80,$7F,$7F,$7F
+D14F: 7F 7E 7C 7C 7B 7B 7A 7A  FCB    $7F,$7E,$7C,$7C,$7B,$7B,$7A,$7A
+D157: 79 78 77 77 76 74 73 73  FCB    $79,$78,$77,$77,$76,$74,$73,$73
+D15F: 71 71 71 70 70 6F 6E 6D  FCB    $71,$71,$71,$70,$70,$6F,$6E,$6D
+D167: 6D 6D 6C 6C 6A 6B 6C 6D  FCB    $6D,$6D,$6C,$6C,$6A,$6B,$6C,$6D
+D16F: 6E 6F 70 70 70 72 73 74  FCB    $6E,$6F,$70,$70,$70,$72,$73,$74
+D177: 75 76 77 79 7B 7B 7F 7F  FCB    $75,$76,$77,$79,$7B,$7B,$7F,$7F
+D17F: 81 84 85 87 87 87 87 88  FCB    $81,$84,$85,$87,$87,$87,$87,$88
+D187: 8A 8C 8E 8F 90 93 96 98  FCB    $8A,$8C,$8E,$8F,$90,$93,$96,$98
+D18F: 99 9B 9C 9B 9B 9B 9A 9A  FCB    $99,$9B,$9C,$9B,$9B,$9B,$9A,$9A
+D197: 99 99 99 97 97 97 97 95  FCB    $99,$99,$99,$97,$97,$97,$97,$95
+D19F: 94 94 94 93 93 91 91 90  FCB    $94,$94,$94,$93,$93,$91,$91,$90
+D1A7: 90 8F 8F 8F 8F 8E 8E 8E  FCB    $90,$8F,$8F,$8F,$8F,$8E,$8E,$8E
+D1AF: 8E 8D 8D 8D 8C 8A 8A 8A  FCB    $8E,$8D,$8D,$8D,$8C,$8A,$8A,$8A
+D1B7: 8A 8A 8A 8A 8A 8A 8A 8A  FCB    $8A,$8A,$8A,$8A,$8A,$8A,$8A,$8A
+D1BF: 8A 8A                    FCB    $8A,$8A
+D1C1: F0 D1 47                 FCB    $F0,$D1,$47 ; F0: end of path. QUIRK:
+                                             ; back-pointer $D147 (own
+                                             ; start), never read
+
+; Path stream: 104 headings (heading_table indexes),
+; then FF = jump to $CAC1.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_D1C4:
+D1C4: 51 51 51 51 50 50 50 50  FCB    $51,$51,$51,$51,$50,$50,$50,$50
+D1CC: 4F 4F 4E 4E 4E 4E 4E 4C  FCB    $4F,$4F,$4E,$4E,$4E,$4E,$4E,$4C
+D1D4: 4C 4C 4C 49 49 49 48 47  FCB    $4C,$4C,$4C,$49,$49,$49,$48,$47
+D1DC: 45 44 43 42 41 40 3F 3B  FCB    $45,$44,$43,$42,$41,$40,$3F,$3B
+D1E4: 39 37 36 33 33 33 33 31  FCB    $39,$37,$36,$33,$33,$33,$33,$31
+D1EC: 2F 2D 29 27 24 21 1E 1B  FCB    $2F,$2D,$29,$27,$24,$21,$1E,$1B
+D1F4: 16 15 12 0F 0C 09 06 03  FCB    $16,$15,$12,$0F,$0C,$09,$06,$03
+D1FC: 00 B1 AE AB A8 A5 A2 9F  FCB    $00,$B1,$AE,$AB,$A8,$A5,$A2,$9F
+D204: 9C 99 96 93 90 8D 8A 87  FCB    $9C,$99,$96,$93,$90,$8D,$8A,$87
+D20C: 84 81 7E 7B 78 75 72 6F  FCB    $84,$81,$7E,$7B,$78,$75,$72,$6F
+D214: 6C 69 66 63 60 5D 5A 57  FCB    $6C,$69,$66,$63,$60,$5D,$5A,$57
+D21C: 54 51 4E 4B 48 45 42 3F  FCB    $54,$51,$4E,$4B,$48,$45,$42,$3F
+D224: 3C 39 36 33 30 2D 2D 2D  FCB    $3C,$39,$36,$33,$30,$2D,$2D,$2D
+D22C: FF CA C1                 FCB    $FF,$CA,$C1 ; FF: jump to $CAC1
+
+; Path stream: 137 headings (heading_table indexes),
+; then F0 = end (+ unread back-pointer to this stream).
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_D22F:
+D22F: 51 51 51 51 50 50 50 50  FCB    $51,$51,$51,$51,$50,$50,$50,$50
+D237: 4F 4F 4E 4E 4E 4E 4E 4C  FCB    $4F,$4F,$4E,$4E,$4E,$4E,$4E,$4C
+D23F: 4C 4B 4A 4A 4A 4A 48 47  FCB    $4C,$4B,$4A,$4A,$4A,$4A,$48,$47
+D247: 45 44 43 42 41 40 3F 3B  FCB    $45,$44,$43,$42,$41,$40,$3F,$3B
+D24F: 39 37 36 33 33 33 33 31  FCB    $39,$37,$36,$33,$33,$33,$33,$31
+D257: 2F 2D 2A 27 24 21 1E 1B  FCB    $2F,$2D,$2A,$27,$24,$21,$1E,$1B
+D25F: 18 15 12 0F 0C 09 06 03  FCB    $18,$15,$12,$0F,$0C,$09,$06,$03
+D267: 00 B1 B0 AB A8 A5 A2 9F  FCB    $00,$B1,$B0,$AB,$A8,$A5,$A2,$9F
+D26F: 9C 98 96 93 90 8D 8A 87  FCB    $9C,$98,$96,$93,$90,$8D,$8A,$87
+D277: 86 86 84 81 80 7E 7B 7B  FCB    $86,$86,$84,$81,$80,$7E,$7B,$7B
+D27F: 7B 78 76 75 71 71 6E 6E  FCB    $7B,$78,$76,$75,$71,$71,$6E,$6E
+D287: 6C 6A 6E 70 72 76 77 78  FCB    $6C,$6A,$6E,$70,$72,$76,$77,$78
+D28F: 79 7D 7F 80 80 80 83 84  FCB    $79,$7D,$7F,$80,$80,$80,$83,$84
+D297: 84 86 86 89 8A 8B 8C 8D  FCB    $84,$86,$86,$89,$8A,$8B,$8C,$8D
+D29F: 8D 8E 8E 8F 8F 90 90 91  FCB    $8D,$8E,$8E,$8F,$8F,$90,$90,$91
+D2A7: 91 92 92 93 93 93 95 96  FCB    $91,$92,$92,$93,$93,$93,$95,$96
+D2AF: 96 96 96 96 96 96 96 96  FCB    $96,$96,$96,$96,$96,$96,$96,$96
+D2B7: 96                       FCB    $96
+D2B8: F0 D2 2F                 FCB    $F0,$D2,$2F ; F0: end of path. QUIRK:
+                                             ; back-pointer $D22F (own
+                                             ; start), never read
+
+; Path stream: 95 headings (heading_table indexes),
+; then FF = jump to $D2BB (loops).
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_D2BB:
+D2BB: 8C 8C 8C 8D 8E 8F 8F 8F  FCB    $8C,$8C,$8C,$8D,$8E,$8F,$8F,$8F
+D2C3: 8F 90 92 92 93 93 94 94  FCB    $8F,$90,$92,$92,$93,$93,$94,$94
+D2CB: 95 96 97 97 98 9A 9B 9B  FCB    $95,$96,$97,$97,$98,$9A,$9B,$9B
+D2D3: 9D 9D 9D 9E 9E 9F A0 A1  FCB    $9D,$9D,$9D,$9E,$9E,$9F,$A0,$A1
+D2DB: A1 A1 A2 A2 A4 A3 A2 A1  FCB    $A1,$A1,$A2,$A2,$A4,$A3,$A2,$A1
+D2E3: A0 9F 9E 9E 9E 9C 9B 9A  FCB    $A0,$9F,$9E,$9E,$9E,$9C,$9B,$9A
+D2EB: 99 98 97 95 93 8F 8F 8F  FCB    $99,$98,$97,$95,$93,$8F,$8F,$8F
+D2F3: 8D 8A 89 87 87 84 83 80  FCB    $8D,$8A,$89,$87,$87,$84,$83,$80
+D2FB: 7C 78 75 72 70 6C 6A 67  FCB    $7C,$78,$75,$72,$70,$6C,$6A,$67
+D303: 63 60 5C 59 56 53 50 49  FCB    $63,$60,$5C,$59,$56,$53,$50,$49
+D30B: 4A 47 43 3F 3C 3B 3A 3A  FCB    $4A,$47,$43,$3F,$3C,$3B,$3A,$3A
+D313: 39 39 38 38 37 37 36     FCB    $39,$39,$38,$38,$37,$37,$36
+D31A: FF D2 BB                 FCB    $FF,$D2,$BB ; FF: jump to $D2BB
+
+; Path stream: 122 headings (heading_table indexes),
+; then F0 = end (+ unread back-pointer to this stream).
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_D31D:
+D31D: 8C 8C 8C 8D 8E 8F 8F 8F  FCB    $8C,$8C,$8C,$8D,$8E,$8F,$8F,$8F
+D325: 8F 90 92 92 93 93 94 94  FCB    $8F,$90,$92,$92,$93,$93,$94,$94
+D32D: 95 96 97 97 98 9A 9B 9B  FCB    $95,$96,$97,$97,$98,$9A,$9B,$9B
+D335: 9D 9D 9D 9E 9E 9F A0 A1  FCB    $9D,$9D,$9D,$9E,$9E,$9F,$A0,$A1
+D33D: A1 A1 A2 A2 A4 A3 A2 A1  FCB    $A1,$A1,$A2,$A2,$A4,$A3,$A2,$A1
+D345: A0 9F 9E 9E 9E 9C 9B 9A  FCB    $A0,$9F,$9E,$9E,$9E,$9C,$9B,$9A
+D34D: 99 98 97 95 93 93 8F 8F  FCB    $99,$98,$97,$95,$93,$93,$8F,$8F
+D355: 8D 8D 89 87 87 87 87 86  FCB    $8D,$8D,$89,$87,$87,$87,$87,$86
+D35D: 84 82 80 7F 7E 7B 78 76  FCB    $84,$82,$80,$7F,$7E,$7B,$78,$76
+D365: 75 75 74 73 73 73 74 74  FCB    $75,$75,$74,$73,$73,$73,$74,$74
+D36D: 75 75 75 77 77 77 77 79  FCB    $75,$75,$75,$77,$77,$77,$77,$79
+D375: 7A 7A 7A 7B 7B 7D 7D 7E  FCB    $7A,$7A,$7A,$7B,$7B,$7D,$7D,$7E
+D37D: 7E 7F 7F 7F 7F 80 80 80  FCB    $7E,$7F,$7F,$7F,$7F,$80,$80,$80
+D385: 80 81 81 81 82 84 84 84  FCB    $80,$81,$81,$81,$82,$84,$84,$84
+D38D: 84 84 84 84 84 84 84 84  FCB    $84,$84,$84,$84,$84,$84,$84,$84
+D395: 84 84                    FCB    $84,$84
+D397: F0 D3 1D                 FCB    $F0,$D3,$1D ; F0: end of path. QUIRK:
+                                             ; back-pointer $D31D (own
+                                             ; start), never read
+
+; Path stream: 114 headings (heading_table indexes),
+; then FF = jump to $D39A (loops).
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_D39A:
+D39A: 7A 78 76 75 74 73 71 6F  FCB    $7A,$78,$76,$75,$74,$73,$71,$6F
+D3A2: 6E 6D 6C 6C 6C 6B 6B 6A  FCB    $6E,$6D,$6C,$6C,$6C,$6B,$6B,$6A
+D3AA: 68 67 66 66 65 64 63 62  FCB    $68,$67,$66,$66,$65,$64,$63,$62
+D3B2: 62 62 62 62 61 60 5F 60  FCB    $62,$62,$62,$62,$61,$60,$5F,$60
+D3BA: 61 61 62 62 62 62 63 63  FCB    $61,$61,$62,$62,$62,$62,$63,$63
+D3C2: 63 64 64 65 65 66 66 67  FCB    $63,$64,$64,$65,$65,$66,$66,$67
+D3CA: 67 68 68 68 69 6A 6A 6B  FCB    $67,$68,$68,$68,$69,$6A,$6A,$6B
+D3D2: 6C 6C 6C 6D 6E 6F 6F 70  FCB    $6C,$6C,$6C,$6D,$6E,$6F,$6F,$70
+D3DA: 71 72 73 74 75 76 77 78  FCB    $71,$72,$73,$74,$75,$76,$77,$78
+D3E2: 7A 7A 7A 7B 7C 7F 82 85  FCB    $7A,$7A,$7A,$7B,$7C,$7F,$82,$85
+D3EA: 88 8B 8E 91 94 97 9B 9F  FCB    $88,$8B,$8E,$91,$94,$97,$9B,$9F
+D3F2: A2 A5 A8 AB AE B1 00 03  FCB    $A2,$A5,$A8,$AB,$AE,$B1,$00,$03
+D3FA: 07 0A 0D 10 13 16 19 1B  FCB    $07,$0A,$0D,$10,$13,$16,$19,$1B
+D402: 1E 21 24 25 24 23 22 21  FCB    $1E,$21,$24,$25,$24,$23,$22,$21
+D40A: 20 1F                    FCB    $20,$1F
+D40C: FF D3 9A                 FCB    $FF,$D3,$9A ; FF: jump to $D39A
+
+; Path stream: 133 headings (heading_table indexes),
+; then F0 = end (+ unread back-pointer to this stream).
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_D40F:
+D40F: 7A 78 76 75 74 73 71 6F  FCB    $7A,$78,$76,$75,$74,$73,$71,$6F
+D417: 6E 6D 6C 6C 6C 6B 6B 6A  FCB    $6E,$6D,$6C,$6C,$6C,$6B,$6B,$6A
+D41F: 68 67 66 66 65 64 63 62  FCB    $68,$67,$66,$66,$65,$64,$63,$62
+D427: 62 62 62 62 61 60 5F 60  FCB    $62,$62,$62,$62,$61,$60,$5F,$60
+D42F: 61 61 62 62 62 62 63 63  FCB    $61,$61,$62,$62,$62,$62,$63,$63
+D437: 63 64 64 65 65 66 66 67  FCB    $63,$64,$64,$65,$65,$66,$66,$67
+D43F: 67 68 68 68 69 6A 6C 6D  FCB    $67,$68,$68,$68,$69,$6A,$6C,$6D
+D447: 6F 72 74 76 78 7B 7D 7F  FCB    $6F,$72,$74,$76,$78,$7B,$7D,$7F
+D44F: 81 83 85 86 87 88 89 8A  FCB    $81,$83,$85,$86,$87,$88,$89,$8A
+D457: 8A 8B 8C 8D 8D 8E 8E 8F  FCB    $8A,$8B,$8C,$8D,$8D,$8E,$8E,$8F
+D45F: 8F 90 90 90 90 8F 8E 8E  FCB    $8F,$90,$90,$90,$90,$8F,$8E,$8E
+D467: 8C 8A 88 87 87 86 84 83  FCB    $8C,$8A,$88,$87,$87,$86,$84,$83
+D46F: 81 7E 7C 7B 79 79 78 77  FCB    $81,$7E,$7C,$7B,$79,$79,$78,$77
+D477: 77 78 78 79 7B 7C 7E 80  FCB    $77,$78,$78,$79,$7B,$7C,$7E,$80
+D47F: 82 83 84 85 87 88 8A 8C  FCB    $82,$83,$84,$85,$87,$88,$8A,$8C
+D487: 8D 8E 8F 90 91 92 93 93  FCB    $8D,$8E,$8F,$90,$91,$92,$93,$93
+D48F: 94 95 96 96 96           FCB    $94,$95,$96,$96,$96
+D494: F0 D4 0F                 FCB    $F0,$D4,$0F ; F0: end of path. QUIRK:
+                                             ; back-pointer $D40F (own
+                                             ; start), never read
+
+; Path stream: 60 headings (heading_table indexes),
+; then FF = jump to $D497 (loops).
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_D497:
+D497: 8C 8F 92 95 98 9C A0 A3  FCB    $8C,$8F,$92,$95,$98,$9C,$A0,$A3
+D49F: A7 AA AC AF B1 00 04 08  FCB    $A7,$AA,$AC,$AF,$B1,$00,$04,$08
+D4A7: 0C 10 13 16 19 1C 1F 22  FCB    $0C,$10,$13,$16,$19,$1C,$1F,$22
+D4AF: 25 28 2B 2D 30 34 38 3B  FCB    $25,$28,$2B,$2D,$30,$34,$38,$3B
+D4B7: 3F 43 46 48 44 43 42 42  FCB    $3F,$43,$46,$48,$44,$43,$42,$42
+D4BF: 42 40 3F 3E 3D 3B 39 37  FCB    $42,$40,$3F,$3E,$3D,$3B,$39,$37
+D4C7: 35 33 30 2E 2B 28 25 22  FCB    $35,$33,$30,$2E,$2B,$28,$25,$22
+D4CF: 1E 1B 18 14              FCB    $1E,$1B,$18,$14
+D4D3: FF D4 97                 FCB    $FF,$D4,$97 ; FF: jump to $D497
+
+; Path stream: 113 headings (heading_table indexes),
+; then F0 = end (+ unread back-pointer to this stream).
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_D4D6:
+D4D6: 8C 8F 92 95 98 9C A0 A3  FCB    $8C,$8F,$92,$95,$98,$9C,$A0,$A3
+D4DE: A7 AA AC AF B1 00 04 08  FCB    $A7,$AA,$AC,$AF,$B1,$00,$04,$08
+D4E6: 0C 10 13 16 19 1C 1F 22  FCB    $0C,$10,$13,$16,$19,$1C,$1F,$22
+D4EE: 25 28 2B 2D 30 34 38 3B  FCB    $25,$28,$2B,$2D,$30,$34,$38,$3B
+D4F6: 3F 43 46 46 46 46 47 48  FCB    $3F,$43,$46,$46,$46,$46,$47,$48
+D4FE: 49 4A 4B 4D 4F 52 56 5B  FCB    $49,$4A,$4B,$4D,$4F,$52,$56,$5B
+D506: 61 68 6F 76 7D 84 8B 91  FCB    $61,$68,$6F,$76,$7D,$84,$8B,$91
+D50E: 95 96 97 98 99 99 9A 9A  FCB    $95,$96,$97,$98,$99,$99,$9A,$9A
+D516: 9B 9B 9C 9C 9D 9D 9E 9E  FCB    $9B,$9B,$9C,$9C,$9D,$9D,$9E,$9E
+D51E: 9F 9E 9E 9E 9D 9D 9D 9D  FCB    $9F,$9E,$9E,$9E,$9D,$9D,$9D,$9D
+D526: 9C 9C 9C 9C 9B 9B 9B 9B  FCB    $9C,$9C,$9C,$9C,$9B,$9B,$9B,$9B
+D52E: 9B 9A 9A 9A 9A 9A 99 99  FCB    $9B,$9A,$9A,$9A,$9A,$9A,$99,$99
+D536: 99 99 99 98 98 98 98 97  FCB    $99,$99,$99,$98,$98,$98,$98,$97
+D53E: 97 97 97 96 96 96 95 95  FCB    $97,$97,$97,$96,$96,$96,$95,$95
+D546: 95                       FCB    $95
+D547: F0 D4 D6                 FCB    $F0,$D4,$D6 ; F0: end of path. QUIRK:
+                                             ; back-pointer $D4D6 (own
+                                             ; start), never read
+
+; Path stream: 96 headings (heading_table indexes),
+; then FF = jump to $C442.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_D54A:
+D54A: 82 82 81 81 80 80 7F 7F  FCB    $82,$82,$81,$81,$80,$80,$7F,$7F
+D552: 7E 7E 7D 7D 7C 7C 7B 7B  FCB    $7E,$7E,$7D,$7D,$7C,$7C,$7B,$7B
+D55A: 7B 7A 7A 7A 79 79 79 78  FCB    $7B,$7A,$7A,$7A,$79,$79,$79,$78
+D562: 78 78 77 77 77 76 76 75  FCB    $78,$78,$77,$77,$77,$76,$76,$75
+D56A: 75 74 74 73 73 72 72 71  FCB    $75,$74,$74,$73,$73,$72,$72,$71
+D572: 71 70 70 6F 6E 6D 6B 69  FCB    $71,$70,$70,$6F,$6E,$6D,$6B,$69
+D57A: 66 63 5F 5A 55 4F 49 43  FCB    $66,$63,$5F,$5A,$55,$4F,$49,$43
+D582: 3D 38 34 30 2D 2A 27 25  FCB    $3D,$38,$34,$30,$2D,$2A,$27,$25
+D58A: 24 22 20 1F 1E 1E 1C 1C  FCB    $24,$22,$20,$1F,$1E,$1E,$1C,$1C
+D592: 1C 1B 1B 1B 1A 1A 1A 1B  FCB    $1C,$1B,$1B,$1B,$1A,$1A,$1A,$1B
+D59A: 1B 1B 1C 1C 1D 1D 1E 20  FCB    $1B,$1B,$1C,$1C,$1D,$1D,$1E,$20
+D5A2: 22 25 28 2B 2E 31 34 37  FCB    $22,$25,$28,$2B,$2E,$31,$34,$37
+D5AA: FF C4 42                 FCB    $FF,$C4,$42 ; FF: jump to $C442
+
+; Path stream: 184 headings (heading_table indexes),
+; then FF = jump to $C442.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_D5AD:
+D5AD: 82 80 7E 7B 79 78 77 76  FCB    $82,$80,$7E,$7B,$79,$78,$77,$76
+D5B5: 75 74 73 72 71 71 70 70  FCB    $75,$74,$73,$72,$71,$71,$70,$70
+D5BD: 70 6F 6F 6F 6F 6E 6E 6E  FCB    $70,$6F,$6F,$6F,$6F,$6E,$6E,$6E
+D5C5: 6E 6D 6D 6D 6D 6C 6C 6C  FCB    $6E,$6D,$6D,$6D,$6D,$6C,$6C,$6C
+D5CD: 6C 6B 6B 6B 6B 6A 6A 6A  FCB    $6C,$6B,$6B,$6B,$6B,$6A,$6A,$6A
+D5D5: 6A 69 69 69 6A 6A 6A 6A  FCB    $6A,$69,$69,$69,$6A,$6A,$6A,$6A
+D5DD: 6B 6B 6B 6B 6C 6C 6C 6D  FCB    $6B,$6B,$6B,$6B,$6C,$6C,$6C,$6D
+D5E5: 6D 6D 6D 6E 6E 6E 6F 6F  FCB    $6D,$6D,$6D,$6E,$6E,$6E,$6F,$6F
+D5ED: 6F 70 70 71 71 72 72 73  FCB    $6F,$70,$70,$71,$71,$72,$72,$73
+D5F5: 74 75 76 77 78 7A 7C 7E  FCB    $74,$75,$76,$77,$78,$7A,$7C,$7E
+D5FD: 80 82 84 86 88 8A 8C 8E  FCB    $80,$82,$84,$86,$88,$8A,$8C,$8E
+D605: 90 92 94 96 98 9A 9C 9E  FCB    $90,$92,$94,$96,$98,$9A,$9C,$9E
+D60D: A0 A2 A4 A6 A8 AA AB AB  FCB    $A0,$A2,$A4,$A6,$A8,$AA,$AB,$AB
+D615: AC AD AE AF B0 B1 B1 B2  FCB    $AC,$AD,$AE,$AF,$B0,$B1,$B1,$B2
+D61D: B2 B2 B3 B3 B3 00 00 00  FCB    $B2,$B2,$B3,$B3,$B3,$00,$00,$00
+D625: 00 00 00 01 01 01 02 02  FCB    $00,$00,$00,$01,$01,$01,$02,$02
+D62D: 02 03 03 04 05 06 07 08  FCB    $02,$03,$03,$04,$05,$06,$07,$08
+D635: 09 09 0A 0C 0E 10 12 14  FCB    $09,$09,$0A,$0C,$0E,$10,$12,$14
+D63D: 16 18 1A 1C 1E 20 22 24  FCB    $16,$18,$1A,$1C,$1E,$20,$22,$24
+D645: 26 28 2A 2C 2E 30 32 34  FCB    $26,$28,$2A,$2C,$2E,$30,$32,$34
+D64D: 36 38 3A 3C 3D 3E 3F 40  FCB    $36,$38,$3A,$3C,$3D,$3E,$3F,$40
+D655: 41 42 42 43 43 44 44 45  FCB    $41,$42,$42,$43,$43,$44,$44,$45
+D65D: 45 45 46 46 46 47 47 47  FCB    $45,$45,$46,$46,$46,$47,$47,$47
+D665: FF C4 42                 FCB    $FF,$C4,$42 ; FF: jump to $C442
+
+; Path stream: 96 headings (heading_table indexes),
+; then FF = jump to $C442.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_D668:
+D668: 8C 8C 8D 8D 8E 8E 8F 8F  FCB    $8C,$8C,$8D,$8D,$8E,$8E,$8F,$8F
+D670: 90 90 91 91 92 92 93 93  FCB    $90,$90,$91,$91,$92,$92,$93,$93
+D678: 93 94 94 94 95 95 95 96  FCB    $93,$94,$94,$94,$95,$95,$95,$96
+D680: 96 96 97 97 97 98 98 99  FCB    $96,$96,$97,$97,$97,$98,$98,$99
+D688: 99 9A 9A 9B 9B 9C 9C 9D  FCB    $99,$9A,$9A,$9B,$9B,$9C,$9C,$9D
+D690: 9D 9E 9E 9F A0 A1 A3 A5  FCB    $9D,$9E,$9E,$9F,$A0,$A1,$A3,$A5
+D698: A8 AB AF 00 05 0B 11 17  FCB    $A8,$AB,$AF,$00,$05,$0B,$11,$17
+D6A0: 1D 22 26 2A 2D 30 33 35  FCB    $1D,$22,$26,$2A,$2D,$30,$33,$35
+D6A8: 36 38 3A 3B 3C 3C 3E 3E  FCB    $36,$38,$3A,$3B,$3C,$3C,$3E,$3E
+D6B0: 3E 3F 3F 3F 40 40 40 3F  FCB    $3E,$3F,$3F,$3F,$40,$40,$40,$3F
+D6B8: 3F 3F 3E 3E 3D 3D 3C 3A  FCB    $3F,$3F,$3E,$3E,$3D,$3D,$3C,$3A
+D6C0: 38 35 32 2F 2C 29 26 23  FCB    $38,$35,$32,$2F,$2C,$29,$26,$23
+D6C8: FF C4 42                 FCB    $FF,$C4,$42 ; FF: jump to $C442
+
+; Path stream: 184 headings (heading_table indexes),
+; then FF = jump to $C442.
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_D6CB:
+D6CB: 87 8E 90 93 95 96 97 98  FCB    $87,$8E,$90,$93,$95,$96,$97,$98
+D6D3: 99 9A 9B 9C 9D 9D 9E 9E  FCB    $99,$9A,$9B,$9C,$9D,$9D,$9E,$9E
+D6DB: 9E 9F 9F 9F 9F A0 A0 A0  FCB    $9E,$9F,$9F,$9F,$9F,$A0,$A0,$A0
+D6E3: A0 A1 A1 A1 A1 A2 A2 A2  FCB    $A0,$A1,$A1,$A1,$A1,$A2,$A2,$A2
+D6EB: A2 A3 A3 A3 A3 A4 A4 A4  FCB    $A2,$A3,$A3,$A3,$A3,$A4,$A4,$A4
+D6F3: A4 A5 A5 A5 A4 A4 A4 A4  FCB    $A4,$A5,$A5,$A5,$A4,$A4,$A4,$A4
+D6FB: A3 A3 A3 A3 A2 A2 A2 A1  FCB    $A3,$A3,$A3,$A3,$A2,$A2,$A2,$A1
+D703: A1 A1 A1 A0 A0 A0 9F 9F  FCB    $A1,$A1,$A1,$A0,$A0,$A0,$9F,$9F
+D70B: 9F 9E 9E 9D 9D 9C 9C 9B  FCB    $9F,$9E,$9E,$9D,$9D,$9C,$9C,$9B
+D713: 9A 99 98 97 96 94 92 90  FCB    $9A,$99,$98,$97,$96,$94,$92,$90
+D71B: 8E 8C 8A 88 86 84 82 80  FCB    $8E,$8C,$8A,$88,$86,$84,$82,$80
+D723: 7E 7C 7A 78 76 74 72 70  FCB    $7E,$7C,$7A,$78,$76,$74,$72,$70
+D72B: 6E 6C 6A 68 66 64 63 63  FCB    $6E,$6C,$6A,$68,$66,$64,$63,$63
+D733: 62 61 60 5F 5E 5D 5D 5C  FCB    $62,$61,$60,$5F,$5E,$5D,$5D,$5C
+D73B: 5C 5C 5B 5B 5B 5A 5A 5A  FCB    $5C,$5C,$5B,$5B,$5B,$5A,$5A,$5A
+D743: 5A 5A 5A 59 59 59 58 58  FCB    $5A,$5A,$5A,$59,$59,$59,$58,$58
+D74B: 58 57 57 56 55 54 53 52  FCB    $58,$57,$57,$56,$55,$54,$53,$52
+D753: 51 51 50 4E 4C 4A 48 46  FCB    $51,$51,$50,$4E,$4C,$4A,$48,$46
+D75B: 44 42 40 3E 3C 3A 38 36  FCB    $44,$42,$40,$3E,$3C,$3A,$38,$36
+D763: 34 32 30 2E 2C 2A 28 26  FCB    $34,$32,$30,$2E,$2C,$2A,$28,$26
+D76B: 24 22 20 1E 1D 1C 1B 1A  FCB    $24,$22,$20,$1E,$1D,$1C,$1B,$1A
+D773: 19 18 18 17 17 16 16 15  FCB    $19,$18,$18,$17,$17,$16,$16,$15
+D77B: 15 15 14 14 14 13 13 13  FCB    $15,$15,$14,$14,$14,$13,$13,$13
+D783: FF C4 42                 FCB    $FF,$C4,$42 ; FF: jump to $C442
+
+; Path stream: 114 headings (heading_table indexes),
+; then FF = jump to $D786 (loops).
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_D786:
+D786: 94 96 98 99 9A 9B 9D 9F  FCB    $94,$96,$98,$99,$9A,$9B,$9D,$9F
+D78E: A0 A1 A2 A2 A2 A3 A3 A4  FCB    $A0,$A1,$A2,$A2,$A2,$A3,$A3,$A4
+D796: A6 A7 A8 A8 A9 AA AB AC  FCB    $A6,$A7,$A8,$A8,$A9,$AA,$AB,$AC
+D79E: AC AC AC AC AD AE AF AE  FCB    $AC,$AC,$AC,$AC,$AD,$AE,$AF,$AE
+D7A6: AD AC AC AC AC AC AB AB  FCB    $AD,$AC,$AC,$AC,$AC,$AC,$AB,$AB
+D7AE: AB AA AA A9 A9 A8 A8 A7  FCB    $AB,$AA,$AA,$A9,$A9,$A8,$A8,$A7
+D7B6: A7 A6 A6 A6 A5 A4 A4 A3  FCB    $A7,$A6,$A6,$A6,$A5,$A4,$A4,$A3
+D7BE: A2 A2 A2 A1 A0 9F 9F 9E  FCB    $A2,$A2,$A2,$A1,$A0,$9F,$9F,$9E
+D7C6: 9D 9C 9B 9A 99 98 97 96  FCB    $9D,$9C,$9B,$9A,$99,$98,$97,$96
+D7CE: 94 94 94 93 92 8F 8C 89  FCB    $94,$94,$94,$93,$92,$8F,$8C,$89
+D7D6: 86 83 80 7D 7A 77 73 6F  FCB    $86,$83,$80,$7D,$7A,$77,$73,$6F
+D7DE: 6C 69 66 63 60 5D 5A 57  FCB    $6C,$69,$66,$63,$60,$5D,$5A,$57
+D7E6: 53 50 4D 4A 47 44 41 3F  FCB    $53,$50,$4D,$4A,$47,$44,$41,$3F
+D7EE: 3C 39 36 35 36 37 38 39  FCB    $3C,$39,$36,$35,$36,$37,$38,$39
+D7F6: 3A 3B                    FCB    $3A,$3B
+D7F8: FF D7 86                 FCB    $FF,$D7,$86 ; FF: jump to $D786
+
+; Path stream: 133 headings (heading_table indexes),
+; then F0 = end (+ unread back-pointer to this stream).
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_D7FB:
+D7FB: 94 96 98 99 9A 9B 9D 9F  FCB    $94,$96,$98,$99,$9A,$9B,$9D,$9F
+D803: A0 A1 A2 A2 A2 A3 A3 A4  FCB    $A0,$A1,$A2,$A2,$A2,$A3,$A3,$A4
+D80B: A6 A7 A8 A8 A9 AA AB AC  FCB    $A6,$A7,$A8,$A8,$A9,$AA,$AB,$AC
+D813: AC AC AC AC AD AE AF AE  FCB    $AC,$AC,$AC,$AC,$AD,$AE,$AF,$AE
+D81B: AD AD AC AC AC AC AB AB  FCB    $AD,$AD,$AC,$AC,$AC,$AC,$AB,$AB
+D823: AB AA AA A9 A9 A8 A8 A7  FCB    $AB,$AA,$AA,$A9,$A9,$A8,$A8,$A7
+D82B: A7 A6 A6 A6 A5 A4 A2 A1  FCB    $A7,$A6,$A6,$A6,$A5,$A4,$A2,$A1
+D833: 9F 9C 9A 98 96 93 91 8F  FCB    $9F,$9C,$9A,$98,$96,$93,$91,$8F
+D83B: 8D 8B 89 88 87 86 85 84  FCB    $8D,$8B,$89,$88,$87,$86,$85,$84
+D843: 84 83 82 81 81 80 80 7F  FCB    $84,$83,$82,$81,$81,$80,$80,$7F
+D84B: 7F 7E 7E 7E 7E 7F 80 80  FCB    $7F,$7E,$7E,$7E,$7E,$7F,$80,$80
+D853: 82 84 86 87 87 88 8A 8B  FCB    $82,$84,$86,$87,$87,$88,$8A,$8B
+D85B: 8D 90 92 93 95 95 96 97  FCB    $8D,$90,$92,$93,$95,$95,$96,$97
+D863: 97 96 96 95 93 92 90 8E  FCB    $97,$96,$96,$95,$93,$92,$90,$8E
+D86B: 8C 8B 8A 89 87 86 84 82  FCB    $8C,$8B,$8A,$89,$87,$86,$84,$82
+D873: 81 80 7F 7E 7D 7C 7B 7B  FCB    $81,$80,$7F,$7E,$7D,$7C,$7B,$7B
+D87B: 7A 79 78 78 78           FCB    $7A,$79,$78,$78,$78
+D880: F0 D7 FB                 FCB    $F0,$D7,$FB ; F0: end of path. QUIRK:
+                                             ; back-pointer $D7FB (own
+                                             ; start), never read
+
+; Path stream: 60 headings (heading_table indexes),
+; then FF = jump to $D883 (loops).
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_D883:
+D883: 82 7F 7C 79 76 72 6E 6B  FCB    $82,$7F,$7C,$79,$76,$72,$6E,$6B
+D88B: 67 64 62 5F 5D 5A 56 52  FCB    $67,$64,$62,$5F,$5D,$5A,$56,$52
+D893: 4E 4A 47 44 41 3E 3B 38  FCB    $4E,$4A,$47,$44,$41,$3E,$3B,$38
+D89B: 35 32 2F 2D 2A 26 22 1F  FCB    $35,$32,$2F,$2D,$2A,$26,$22,$1F
+D8A3: 1B 17 14 12 16 17 18 18  FCB    $1B,$17,$14,$12,$16,$17,$18,$18
+D8AB: 18 1A 1B 1C 1D 1F 21 23  FCB    $18,$1A,$1B,$1C,$1D,$1F,$21,$23
+D8B3: 25 27 2A 2C 2F 32 35 38  FCB    $25,$27,$2A,$2C,$2F,$32,$35,$38
+D8BB: 3C 3F 42 46              FCB    $3C,$3F,$42,$46
+D8BF: FF D8 83                 FCB    $FF,$D8,$83 ; FF: jump to $D883
+
+; Path stream: 113 headings (heading_table indexes),
+; then F0 = end (+ unread back-pointer to this stream).
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_D8C2:
+D8C2: 82 7F 7C 79 76 72 6E 6B  FCB    $82,$7F,$7C,$79,$76,$72,$6E,$6B
+D8CA: 67 64 62 5F 5D 5A 56 52  FCB    $67,$64,$62,$5F,$5D,$5A,$56,$52
+D8D2: 4E 4A 47 44 41 3E 3B 38  FCB    $4E,$4A,$47,$44,$41,$3E,$3B,$38
+D8DA: 35 32 2F 2D 2A 26 22 1F  FCB    $35,$32,$2F,$2D,$2A,$26,$22,$1F
+D8E2: 1B 17 14 14 14 14 13 12  FCB    $1B,$17,$14,$14,$14,$14,$13,$12
+D8EA: 11 10 0F 0D 0B 09 04 B3  FCB    $11,$10,$0F,$0D,$0B,$09,$04,$B3
+D8F2: AD A6 9F 98 91 8A 83 7D  FCB    $AD,$A6,$9F,$98,$91,$8A,$83,$7D
+D8FA: 79 78 77 76 75 75 74 74  FCB    $79,$78,$77,$76,$75,$75,$74,$74
+D902: 73 73 72 72 71 71 70 70  FCB    $73,$73,$72,$72,$71,$71,$70,$70
+D90A: 6F 70 70 70 71 71 71 71  FCB    $6F,$70,$70,$70,$71,$71,$71,$71
+D912: 72 72 72 72 73 73 73 73  FCB    $72,$72,$72,$72,$73,$73,$73,$73
+D91A: 73 74 74 74 74 74 75 75  FCB    $73,$74,$74,$74,$74,$74,$75,$75
+D922: 75 75 75 76 76 76 76 77  FCB    $75,$75,$75,$76,$76,$76,$76,$77
+D92A: 77 77 77 78 78 78 79 79  FCB    $77,$77,$77,$78,$78,$78,$79,$79
+D932: 79                       FCB    $79
+D933: F0 D8 C2                 FCB    $F0,$D8,$C2 ; F0: end of path. QUIRK:
+                                             ; back-pointer $D8C2 (own
+                                             ; start), never read
+
+; Path stream: 208 headings (heading_table indexes),
+; then F0 = end (+ unread back-pointer to this stream).
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_D936:
+D936: 2D 2D 2D 2D 2D 2D 2D 2D  FCB    $2D,$2D,$2D,$2D,$2D,$2D,$2D,$2D
+D93E: 2D 2D 2C 2C 2C 2B 2B 2B  FCB    $2D,$2D,$2C,$2C,$2C,$2B,$2B,$2B
+D946: 2A 2A 2A 29 29 29 28 28  FCB    $2A,$2A,$2A,$29,$29,$29,$28,$28
+D94E: 27 27 26 26 25 25 24 24  FCB    $27,$27,$26,$26,$25,$25,$24,$24
+D956: 23 22 21 20 1F 1D 1B 19  FCB    $23,$22,$21,$20,$1F,$1D,$1B,$19
+D95E: 17 14 11 0D 09 07 05 02  FCB    $17,$14,$11,$0D,$09,$07,$05,$02
+D966: 00 B2 AF AD AB A7 A3 A0  FCB    $00,$B2,$AF,$AD,$AB,$A7,$A3,$A0
+D96E: 9D 9B 99 97 95 94 93 92  FCB    $9D,$9B,$99,$97,$95,$94,$93,$92
+D976: 91 90 90 8F 8F 8E 8E 8D  FCB    $91,$90,$90,$8F,$8F,$8E,$8E,$8D
+D97E: 8D 8C 8C 8B 8B 8B 8A 8A  FCB    $8D,$8C,$8C,$8B,$8B,$8B,$8A,$8A
+D986: 8A 89 89 89 88 88 88 87  FCB    $8A,$89,$89,$89,$88,$88,$88,$87
+D98E: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
+D996: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
+D99E: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
+D9A6: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
+D9AE: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
+D9B6: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
+D9BE: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
+D9C6: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
+D9CE: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
+D9D6: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
+D9DE: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
+D9E6: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
+D9EE: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
+D9F6: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
+D9FE: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
+DA06: F0 D9 36                 FCB    $F0,$D9,$36 ; F0: end of path. QUIRK:
+                                             ; back-pointer $D936 (own
+                                             ; start), never read
+
+; Path stream: 208 headings (heading_table indexes),
+; then F0 = end (+ unread back-pointer to this stream).
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_DA09:
 DA09: 2D 2D 2D 2D 2D 2D 2D 2D  FCB    $2D,$2D,$2D,$2D,$2D,$2D,$2D,$2D
 DA11: 2D 2D 2E 2E 2E 2F 2F 2F  FCB    $2D,$2D,$2E,$2E,$2E,$2F,$2F,$2F
 DA19: 30 30 30 31 31 31 32 32  FCB    $30,$30,$30,$31,$31,$31,$32,$32
@@ -3385,10 +4054,16 @@ DAB9: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
 DAC1: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
 DAC9: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
 DAD1: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
-DAD9: F0 DA 09                 FCB    $F0,$DA,$09
+DAD9: F0 DA 09                 FCB    $F0,$DA,$09 ; F0: end of path. QUIRK:
+                                             ; back-pointer $DA09 (own
+                                             ; start), never read
 
-; Referenced from: $BE07 sub_BD56, $BE46 sub_BD56
-dat_DADC:
+; Path stream: 113 headings (heading_table indexes),
+; then F0 = end (+ unread back-pointer to this stream).
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+; Referenced from: $BE07 bonus_fly, $BE46 bonus_fly
+path_DADC:
 DADC: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
 DAE4: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
 DAEC: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
@@ -3403,73 +4078,99 @@ DB2C: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
 DB34: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
 DB3C: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
 DB44: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
-DB4C: 00 F0 DA DC 09 09 09 09  FCB    $00,$F0,$DA,$DC,$09,$09,$09,$09
-DB54: 0A 0A 0A 0A 0B 0B 0C 0C  FCB    $0A,$0A,$0A,$0A,$0B,$0B,$0C,$0C
-DB5C: 0C 0C 0C 0E 0E 0F 10 11  FCB    $0C,$0C,$0C,$0E,$0E,$0F,$10,$11
-DB64: 11 11 12 13 15 16 17 18  FCB    $11,$11,$12,$13,$15,$16,$17,$18
-DB6C: 19 1A 1B 1F 21 23 24 27  FCB    $19,$1A,$1B,$1F,$21,$23,$24,$27
-DB74: 27 27 27 29 2B 2D 30 33  FCB    $27,$27,$27,$29,$2B,$2D,$30,$33
-DB7C: 36 39 3C 3F 42 45 48 4B  FCB    $36,$39,$3C,$3F,$42,$45,$48,$4B
-DB84: 4E 51 54 57 5A 5D 60 63  FCB    $4E,$51,$54,$57,$5A,$5D,$60,$63
-DB8C: 66 69 6C 6F 72 75 78 7B  FCB    $66,$69,$6C,$6F,$72,$75,$78,$7B
-DB94: 7E 81 84 87 88 88 8A 8D  FCB    $7E,$81,$84,$87,$88,$88,$8A,$8D
-DB9C: 8E 90 93 93 93 96 98 99  FCB    $8E,$90,$93,$93,$93,$96,$98,$99
-DBA4: 9D 9D A0 A0 A2 A4 A0 9E  FCB    $9D,$9D,$A0,$A0,$A2,$A4,$A0,$9E
-DBAC: 9C 98 97 96 95 91 8F 8E  FCB    $9C,$98,$97,$96,$95,$91,$8F,$8E
-DBB4: 8E 8E 8B 8A 8A 88 88 85  FCB    $8E,$8E,$8B,$8A,$8A,$88,$88,$85
-DBBC: 84 83 82 81 81 80 80 7F  FCB    $84,$83,$82,$81,$81,$80,$80,$7F
-DBC4: 7F 7E 7E 7D 7D 7C 7C 7B  FCB    $7F,$7E,$7E,$7D,$7D,$7C,$7C,$7B
-DBCC: 7B 7A 79 78 78 78 78 78  FCB    $7B,$7A,$79,$78,$78,$78,$78,$78
-DBD4: 78 78 78 78 78 78 78 78  FCB    $78,$78,$78,$78,$78,$78,$78,$78
-DBDC: 78 78 78 78 78 78 78 78  FCB    $78,$78,$78,$78,$78,$78,$78,$78
-DBE4: 78 78 78 78 78 78 78 78  FCB    $78,$78,$78,$78,$78,$78,$78,$78
-DBEC: 78 78 78 78 78 78 78 78  FCB    $78,$78,$78,$78,$78,$78,$78,$78
-DBF4: 78 78 78 78 78 78 78 78  FCB    $78,$78,$78,$78,$78,$78,$78,$78
-DBFC: 78 78 78 78 78 78 78 78  FCB    $78,$78,$78,$78,$78,$78,$78,$78
-DC04: 78 78 78 78 78 78 78 F0  FCB    $78,$78,$78,$78,$78,$78,$78,$F0
-DC0C: DB 50 7A 78 76 75 74 73  FCB    $DB,$50,$7A,$78,$76,$75,$74,$73
-DC14: 71 6F 6E 6D 6C 6C 6C 6B  FCB    $71,$6F,$6E,$6D,$6C,$6C,$6C,$6B
-DC1C: 6B 6A 68 67 66 66 65 64  FCB    $6B,$6A,$68,$67,$66,$66,$65,$64
-DC24: 63 62 62 62 62 62 61 60  FCB    $63,$62,$62,$62,$62,$62,$61,$60
-DC2C: 5F 60 61 61 62 62 62 62  FCB    $5F,$60,$61,$61,$62,$62,$62,$62
-DC34: 63 63 63 64 64 65 65 66  FCB    $63,$63,$63,$64,$64,$65,$65,$66
-DC3C: 66 67 67 68 68 68 69 6A  FCB    $66,$67,$67,$68,$68,$68,$69,$6A
-DC44: 6A 6B 6C 6C 6C 6D 6E 6F  FCB    $6A,$6B,$6C,$6C,$6C,$6D,$6E,$6F
-DC4C: 6F 70 71 72 73 74 75 76  FCB    $6F,$70,$71,$72,$73,$74,$75,$76
-DC54: 77 78 7A 7A 7A 7B 7C 7F  FCB    $77,$78,$7A,$7A,$7A,$7B,$7C,$7F
-DC5C: 82 85 88 8B 8E 91 94 97  FCB    $82,$85,$88,$8B,$8E,$91,$94,$97
-DC64: 9B 9F A2 A5 A8 AB AE B1  FCB    $9B,$9F,$A2,$A5,$A8,$AB,$AE,$B1
-DC6C: 00 03 07 0A 0D 10 13 16  FCB    $00,$03,$07,$0A,$0D,$10,$13,$16
-DC74: 19 1B 1E 21 24 25 24 24  FCB    $19,$1B,$1E,$21,$24,$25,$24,$24
-DC7C: 23 23 22 21 20 1F 1E 1D  FCB    $23,$23,$22,$21,$20,$1F,$1E,$1D
-DC84: 1C 1B 1A 19 17 15 13 12  FCB    $1C,$1B,$1A,$19,$17,$15,$13,$12
-DC8C: 10 0F 0D 0C 0B 0A 08 06  FCB    $10,$0F,$0D,$0C,$0B,$0A,$08,$06
-DC94: 05 04 03 B2 AF AC A9 A6  FCB    $05,$04,$03,$B2,$AF,$AC,$A9,$A6
-DC9C: A3 A0 9E 9C 99 97 94 92  FCB    $A3,$A0,$9E,$9C,$99,$97,$94,$92
-DCA4: 90 8E 8C 8A 88 86 84 83  FCB    $90,$8E,$8C,$8A,$88,$86,$84,$83
-DCAC: 81 7F 7E 7C 7A 78 76 74  FCB    $81,$7F,$7E,$7C,$7A,$78,$76,$74
-DCB4: 72 71 70 6F 6E 6E 6E 6D  FCB    $72,$71,$70,$6F,$6E,$6E,$6E,$6D
-DCBC: 6D 6D 6C 6C 6C 6B 6B 6B  FCB    $6D,$6D,$6C,$6C,$6C,$6B,$6B,$6B
-DCC4: 6A 6A 6A 69 69 69 68 68  FCB    $6A,$6A,$6A,$69,$69,$69,$68,$68
-DCCC: 68 67 67 67 66 66 66 65  FCB    $68,$67,$67,$67,$66,$66,$66,$65
-DCD4: 65 65 64 64 64 63 63 62  FCB    $65,$65,$64,$64,$64,$63,$63,$62
-DCDC: 62 64 6C 73 78 7D 82 87  FCB    $62,$64,$6C,$73,$78,$7D,$82,$87
-DCE4: 8C 91 99 A0 AF B2 00 00  FCB    $8C,$91,$99,$A0,$AF,$B2,$00,$00
-DCEC: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
-DCF4: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
-DCFC: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
-DD04: 00 02 03 10 1F 28 2B 2D  FCB    $00,$02,$03,$10,$1F,$28,$2B,$2D
-DD0C: 2D 2D 2D 2D 2D 2D 2D 2D  FCB    $2D,$2D,$2D,$2D,$2D,$2D,$2D,$2D
-DD14: 2D 2D 87 87 87 8A 8D 90  FCB    $2D,$2D,$87,$87,$87,$8A,$8D,$90
-DD1C: 93 96 99 9C 9F A1 A3 A5  FCB    $93,$96,$99,$9C,$9F,$A1,$A3,$A5
-DD24: A7 A9 AC AE B0 B2 00 00  FCB    $A7,$A9,$AC,$AE,$B0,$B2,$00,$00
-DD2C: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
-DD34: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
-DD3C: 00 00 00 00 00 F0 DC 0E  FCB    $00,$00,$00,$00,$00,$F0,$DC,$0E
+DB4C: 00                       FCB    $00
+DB4D: F0 DA DC                 FCB    $F0,$DA,$DC ; F0: end of path. QUIRK:
+                                             ; back-pointer $DADC (own
+                                             ; start), never read
 
-; Referenced from: $B2A8 sub_B242, $FBE7 sub_FBB3, $FCDD sub_FCA9, $FDD0
-; sub_FD59
-dat_DD44:
+; Path stream: 187 headings (heading_table indexes),
+; then F0 = end (+ unread back-pointer to this stream).
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_DB50:
+DB50: 09 09 09 09 0A 0A 0A 0A  FCB    $09,$09,$09,$09,$0A,$0A,$0A,$0A
+DB58: 0B 0B 0C 0C 0C 0C 0C 0E  FCB    $0B,$0B,$0C,$0C,$0C,$0C,$0C,$0E
+DB60: 0E 0F 10 11 11 11 12 13  FCB    $0E,$0F,$10,$11,$11,$11,$12,$13
+DB68: 15 16 17 18 19 1A 1B 1F  FCB    $15,$16,$17,$18,$19,$1A,$1B,$1F
+DB70: 21 23 24 27 27 27 27 29  FCB    $21,$23,$24,$27,$27,$27,$27,$29
+DB78: 2B 2D 30 33 36 39 3C 3F  FCB    $2B,$2D,$30,$33,$36,$39,$3C,$3F
+DB80: 42 45 48 4B 4E 51 54 57  FCB    $42,$45,$48,$4B,$4E,$51,$54,$57
+DB88: 5A 5D 60 63 66 69 6C 6F  FCB    $5A,$5D,$60,$63,$66,$69,$6C,$6F
+DB90: 72 75 78 7B 7E 81 84 87  FCB    $72,$75,$78,$7B,$7E,$81,$84,$87
+DB98: 88 88 8A 8D 8E 90 93 93  FCB    $88,$88,$8A,$8D,$8E,$90,$93,$93
+DBA0: 93 96 98 99 9D 9D A0 A0  FCB    $93,$96,$98,$99,$9D,$9D,$A0,$A0
+DBA8: A2 A4 A0 9E 9C 98 97 96  FCB    $A2,$A4,$A0,$9E,$9C,$98,$97,$96
+DBB0: 95 91 8F 8E 8E 8E 8B 8A  FCB    $95,$91,$8F,$8E,$8E,$8E,$8B,$8A
+DBB8: 8A 88 88 85 84 83 82 81  FCB    $8A,$88,$88,$85,$84,$83,$82,$81
+DBC0: 81 80 80 7F 7F 7E 7E 7D  FCB    $81,$80,$80,$7F,$7F,$7E,$7E,$7D
+DBC8: 7D 7C 7C 7B 7B 7A 79 78  FCB    $7D,$7C,$7C,$7B,$7B,$7A,$79,$78
+DBD0: 78 78 78 78 78 78 78 78  FCB    $78,$78,$78,$78,$78,$78,$78,$78
+DBD8: 78 78 78 78 78 78 78 78  FCB    $78,$78,$78,$78,$78,$78,$78,$78
+DBE0: 78 78 78 78 78 78 78 78  FCB    $78,$78,$78,$78,$78,$78,$78,$78
+DBE8: 78 78 78 78 78 78 78 78  FCB    $78,$78,$78,$78,$78,$78,$78,$78
+DBF0: 78 78 78 78 78 78 78 78  FCB    $78,$78,$78,$78,$78,$78,$78,$78
+DBF8: 78 78 78 78 78 78 78 78  FCB    $78,$78,$78,$78,$78,$78,$78,$78
+DC00: 78 78 78 78 78 78 78 78  FCB    $78,$78,$78,$78,$78,$78,$78,$78
+DC08: 78 78 78                 FCB    $78,$78,$78
+DC0B: F0 DB 50                 FCB    $F0,$DB,$50 ; F0: end of path. QUIRK:
+                                             ; back-pointer $DB50 (own
+                                             ; start), never read
+
+; Path stream: 307 headings (heading_table indexes),
+; then F0 = end (+ unread back-pointer to this stream).
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_DC0E:
+DC0E: 7A 78 76 75 74 73 71 6F  FCB    $7A,$78,$76,$75,$74,$73,$71,$6F
+DC16: 6E 6D 6C 6C 6C 6B 6B 6A  FCB    $6E,$6D,$6C,$6C,$6C,$6B,$6B,$6A
+DC1E: 68 67 66 66 65 64 63 62  FCB    $68,$67,$66,$66,$65,$64,$63,$62
+DC26: 62 62 62 62 61 60 5F 60  FCB    $62,$62,$62,$62,$61,$60,$5F,$60
+DC2E: 61 61 62 62 62 62 63 63  FCB    $61,$61,$62,$62,$62,$62,$63,$63
+DC36: 63 64 64 65 65 66 66 67  FCB    $63,$64,$64,$65,$65,$66,$66,$67
+DC3E: 67 68 68 68 69 6A 6A 6B  FCB    $67,$68,$68,$68,$69,$6A,$6A,$6B
+DC46: 6C 6C 6C 6D 6E 6F 6F 70  FCB    $6C,$6C,$6C,$6D,$6E,$6F,$6F,$70
+DC4E: 71 72 73 74 75 76 77 78  FCB    $71,$72,$73,$74,$75,$76,$77,$78
+DC56: 7A 7A 7A 7B 7C 7F 82 85  FCB    $7A,$7A,$7A,$7B,$7C,$7F,$82,$85
+DC5E: 88 8B 8E 91 94 97 9B 9F  FCB    $88,$8B,$8E,$91,$94,$97,$9B,$9F
+DC66: A2 A5 A8 AB AE B1 00 03  FCB    $A2,$A5,$A8,$AB,$AE,$B1,$00,$03
+DC6E: 07 0A 0D 10 13 16 19 1B  FCB    $07,$0A,$0D,$10,$13,$16,$19,$1B
+DC76: 1E 21 24 25 24 24 23 23  FCB    $1E,$21,$24,$25,$24,$24,$23,$23
+DC7E: 22 21 20 1F 1E 1D 1C 1B  FCB    $22,$21,$20,$1F,$1E,$1D,$1C,$1B
+DC86: 1A 19 17 15 13 12 10 0F  FCB    $1A,$19,$17,$15,$13,$12,$10,$0F
+DC8E: 0D 0C 0B 0A 08 06 05 04  FCB    $0D,$0C,$0B,$0A,$08,$06,$05,$04
+DC96: 03 B2 AF AC A9 A6 A3 A0  FCB    $03,$B2,$AF,$AC,$A9,$A6,$A3,$A0
+DC9E: 9E 9C 99 97 94 92 90 8E  FCB    $9E,$9C,$99,$97,$94,$92,$90,$8E
+DCA6: 8C 8A 88 86 84 83 81 7F  FCB    $8C,$8A,$88,$86,$84,$83,$81,$7F
+DCAE: 7E 7C 7A 78 76 74 72 71  FCB    $7E,$7C,$7A,$78,$76,$74,$72,$71
+DCB6: 70 6F 6E 6E 6E 6D 6D 6D  FCB    $70,$6F,$6E,$6E,$6E,$6D,$6D,$6D
+DCBE: 6C 6C 6C 6B 6B 6B 6A 6A  FCB    $6C,$6C,$6C,$6B,$6B,$6B,$6A,$6A
+DCC6: 6A 69 69 69 68 68 68 67  FCB    $6A,$69,$69,$69,$68,$68,$68,$67
+DCCE: 67 67 66 66 66 65 65 65  FCB    $67,$67,$66,$66,$66,$65,$65,$65
+DCD6: 64 64 64 63 63 62 62 64  FCB    $64,$64,$64,$63,$63,$62,$62,$64
+DCDE: 6C 73 78 7D 82 87 8C 91  FCB    $6C,$73,$78,$7D,$82,$87,$8C,$91
+DCE6: 99 A0 AF B2 00 00 00 00  FCB    $99,$A0,$AF,$B2,$00,$00,$00,$00
+DCEE: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
+DCF6: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
+DCFE: 00 00 00 00 00 00 00 02  FCB    $00,$00,$00,$00,$00,$00,$00,$02
+DD06: 03 10 1F 28 2B 2D 2D 2D  FCB    $03,$10,$1F,$28,$2B,$2D,$2D,$2D
+DD0E: 2D 2D 2D 2D 2D 2D 2D 2D  FCB    $2D,$2D,$2D,$2D,$2D,$2D,$2D,$2D
+DD16: 87 87 87 8A 8D 90 93 96  FCB    $87,$87,$87,$8A,$8D,$90,$93,$96
+DD1E: 99 9C 9F A1 A3 A5 A7 A9  FCB    $99,$9C,$9F,$A1,$A3,$A5,$A7,$A9
+DD26: AC AE B0 B2 00 00 00 00  FCB    $AC,$AE,$B0,$B2,$00,$00,$00,$00
+DD2E: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
+DD36: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
+DD3E: 00 00 00                 FCB    $00,$00,$00
+DD41: F0 DC 0E                 FCB    $F0,$DC,$0E ; F0: end of path. QUIRK:
+                                             ; back-pointer $DC0E (own
+                                             ; start), never read
+
+; Path stream: 193 headings (heading_table indexes),
+; then F0 = end (+ unread back-pointer to this stream).
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+; Referenced from: $B2A8 formation_home, $FBE7 launch_group1_tail, $FCDD
+; launch_group2_tail, $FDD0 task_launch_trio
+path_DD44:
 DD44: 82 82 82 81 80 7F 7F 7F  FCB    $82,$82,$82,$81,$80,$7F,$7F,$7F
 DD4C: 7F 7E 7C 7C 7B 7B 7A 7A  FCB    $7F,$7E,$7C,$7C,$7B,$7B,$7A,$7A
 DD54: 79 78 77 77 76 74 73 73  FCB    $79,$78,$77,$77,$76,$74,$73,$73
@@ -3494,41 +4195,56 @@ DDE4: 73 74 76 77 7A 7D 80 83  FCB    $73,$74,$76,$77,$7A,$7D,$80,$83
 DDEC: 86 89 8E 93 96 99 9C 9F  FCB    $86,$89,$8E,$93,$96,$99,$9C,$9F
 DDF4: A1 A2 A3 A4 A4 A5 A5 A6  FCB    $A1,$A2,$A3,$A4,$A4,$A5,$A5,$A6
 DDFC: A5 A5 A4 A4 A3 A3 A2 A2  FCB    $A5,$A5,$A4,$A4,$A3,$A3,$A2,$A2
-DE04: A1 F0 DD 44 09 09 09 09  FCB    $A1,$F0,$DD,$44,$09,$09,$09,$09
-DE0C: 0A 0A 0A 0A 0B 0B 0C 0C  FCB    $0A,$0A,$0A,$0A,$0B,$0B,$0C,$0C
-DE14: 0C 0C 0C 0E 0E 0F 10 11  FCB    $0C,$0C,$0C,$0E,$0E,$0F,$10,$11
-DE1C: 11 11 12 13 15 16 17 18  FCB    $11,$11,$12,$13,$15,$16,$17,$18
-DE24: 19 1A 1B 1F 21 23 24 27  FCB    $19,$1A,$1B,$1F,$21,$23,$24,$27
-DE2C: 27 27 27 29 2B 2D 30 33  FCB    $27,$27,$27,$29,$2B,$2D,$30,$33
-DE34: 36 39 3C 3F 42 45 48 4B  FCB    $36,$39,$3C,$3F,$42,$45,$48,$4B
-DE3C: 4E 51 54 57 5A 5D 60 63  FCB    $4E,$51,$54,$57,$5A,$5D,$60,$63
-DE44: 66 69 6C 6F 72 75 78 7B  FCB    $66,$69,$6C,$6F,$72,$75,$78,$7B
-DE4C: 7E 81 84 87 87 88 8A 8B  FCB    $7E,$81,$84,$87,$87,$88,$8A,$8B
-DE54: 8E 90 92 94 96 97 99 9A  FCB    $8E,$90,$92,$94,$96,$97,$99,$9A
-DE5C: 9B 9C 9D 9E 9F A0 A1 A2  FCB    $9B,$9C,$9D,$9E,$9F,$A0,$A1,$A2
-DE64: A3 A4 A5 A5 A5 A5 A6 A6  FCB    $A3,$A4,$A5,$A5,$A5,$A5,$A6,$A6
-DE6C: A6 A6 A7 A7 A7 A7 A8 A8  FCB    $A6,$A6,$A7,$A7,$A7,$A7,$A8,$A8
-DE74: A8 A8 A8 A8 A8 A8 A9 AA  FCB    $A8,$A8,$A8,$A8,$A8,$A8,$A9,$AA
-DE7C: A9 A9 A8 A6 A4 A2 A0 9D  FCB    $A9,$A9,$A8,$A6,$A4,$A2,$A0,$9D
-DE84: 9B 99 97 95 93 90 8E 8C  FCB    $9B,$99,$97,$95,$93,$90,$8E,$8C
-DE8C: 8A 87 85 82 81 7F 7D 7A  FCB    $8A,$87,$85,$82,$81,$7F,$7D,$7A
-DE94: 78 75 73 71 6E 6C 6A 68  FCB    $78,$75,$73,$71,$6E,$6C,$6A,$68
-DE9C: 66 64 63 60 5D 5B 58 55  FCB    $66,$64,$63,$60,$5D,$5B,$58,$55
-DEA4: 53 51 50 4E 4B 48 46 44  FCB    $53,$51,$50,$4E,$4B,$48,$46,$44
-DEAC: 42 3F 3C 3A 38 36 34 32  FCB    $42,$3F,$3C,$3A,$38,$36,$34,$32
-DEB4: 30 2D 2B 28 25 22 20 1E  FCB    $30,$2D,$2B,$28,$25,$22,$20,$1E
-DEBC: 1D 1A 17 15 13 11 0F 0D  FCB    $1D,$1A,$17,$15,$13,$11,$0F,$0D
-DEC4: 0B 09 06 04 02 01 00 B1  FCB    $0B,$09,$06,$04,$02,$01,$00,$B1
-DECC: AF AC A9 A7 A5 A3 A0 9E  FCB    $AF,$AC,$A9,$A7,$A5,$A3,$A0,$9E
-DED4: 9C 99 96 94 92 90 8E 8C  FCB    $9C,$99,$96,$94,$92,$90,$8E,$8C
-DEDC: 8A 88 87 85 83 82 81 7F  FCB    $8A,$88,$87,$85,$83,$82,$81,$7F
-DEE4: 7D 7C 7B 7A 79 79 78 77  FCB    $7D,$7C,$7B,$7A,$79,$79,$78,$77
-DEEC: 77 77 77 77 76 76 75 75  FCB    $77,$77,$77,$77,$76,$76,$75,$75
-DEF4: 74 74 73 73 F0 DE 08 31  FCB    $74,$74,$73,$73,$F0,$DE,$08,$31
-DEFC: 39 38 34 20 4E 41 4D 43  FCB    $39,$38,$34,$20,$4E,$41,$4D,$43
-DF04: 4F 20 41 4C 4C 20 52 49  FCB    $4F,$20,$41,$4C,$4C,$20,$52,$49
-DF0C: 47 48 54 53 20 52 45 53  FCB    $47,$48,$54,$53,$20,$52,$45,$53
-DF14: 45 52 56 45 44           FCB    $45,$52,$56,$45,$44
+DE04: A1                       FCB    $A1
+DE05: F0 DD 44                 FCB    $F0,$DD,$44 ; F0: end of path. QUIRK:
+                                             ; back-pointer $DD44 (own
+                                             ; start), never read
+
+; Path stream: 240 headings (heading_table indexes),
+; then F0 = end (+ unread back-pointer to this stream).
+; Stepped by formation_path_step ($B0D4) via [$108C]; see
+; docs/modules/sub-C.md.
+path_DE08:
+DE08: 09 09 09 09 0A 0A 0A 0A  FCB    $09,$09,$09,$09,$0A,$0A,$0A,$0A
+DE10: 0B 0B 0C 0C 0C 0C 0C 0E  FCB    $0B,$0B,$0C,$0C,$0C,$0C,$0C,$0E
+DE18: 0E 0F 10 11 11 11 12 13  FCB    $0E,$0F,$10,$11,$11,$11,$12,$13
+DE20: 15 16 17 18 19 1A 1B 1F  FCB    $15,$16,$17,$18,$19,$1A,$1B,$1F
+DE28: 21 23 24 27 27 27 27 29  FCB    $21,$23,$24,$27,$27,$27,$27,$29
+DE30: 2B 2D 30 33 36 39 3C 3F  FCB    $2B,$2D,$30,$33,$36,$39,$3C,$3F
+DE38: 42 45 48 4B 4E 51 54 57  FCB    $42,$45,$48,$4B,$4E,$51,$54,$57
+DE40: 5A 5D 60 63 66 69 6C 6F  FCB    $5A,$5D,$60,$63,$66,$69,$6C,$6F
+DE48: 72 75 78 7B 7E 81 84 87  FCB    $72,$75,$78,$7B,$7E,$81,$84,$87
+DE50: 87 88 8A 8B 8E 90 92 94  FCB    $87,$88,$8A,$8B,$8E,$90,$92,$94
+DE58: 96 97 99 9A 9B 9C 9D 9E  FCB    $96,$97,$99,$9A,$9B,$9C,$9D,$9E
+DE60: 9F A0 A1 A2 A3 A4 A5 A5  FCB    $9F,$A0,$A1,$A2,$A3,$A4,$A5,$A5
+DE68: A5 A5 A6 A6 A6 A6 A7 A7  FCB    $A5,$A5,$A6,$A6,$A6,$A6,$A7,$A7
+DE70: A7 A7 A8 A8 A8 A8 A8 A8  FCB    $A7,$A7,$A8,$A8,$A8,$A8,$A8,$A8
+DE78: A8 A8 A9 AA A9 A9 A8 A6  FCB    $A8,$A8,$A9,$AA,$A9,$A9,$A8,$A6
+DE80: A4 A2 A0 9D 9B 99 97 95  FCB    $A4,$A2,$A0,$9D,$9B,$99,$97,$95
+DE88: 93 90 8E 8C 8A 87 85 82  FCB    $93,$90,$8E,$8C,$8A,$87,$85,$82
+DE90: 81 7F 7D 7A 78 75 73 71  FCB    $81,$7F,$7D,$7A,$78,$75,$73,$71
+DE98: 6E 6C 6A 68 66 64 63 60  FCB    $6E,$6C,$6A,$68,$66,$64,$63,$60
+DEA0: 5D 5B 58 55 53 51 50 4E  FCB    $5D,$5B,$58,$55,$53,$51,$50,$4E
+DEA8: 4B 48 46 44 42 3F 3C 3A  FCB    $4B,$48,$46,$44,$42,$3F,$3C,$3A
+DEB0: 38 36 34 32 30 2D 2B 28  FCB    $38,$36,$34,$32,$30,$2D,$2B,$28
+DEB8: 25 22 20 1E 1D 1A 17 15  FCB    $25,$22,$20,$1E,$1D,$1A,$17,$15
+DEC0: 13 11 0F 0D 0B 09 06 04  FCB    $13,$11,$0F,$0D,$0B,$09,$06,$04
+DEC8: 02 01 00 B1 AF AC A9 A7  FCB    $02,$01,$00,$B1,$AF,$AC,$A9,$A7
+DED0: A5 A3 A0 9E 9C 99 96 94  FCB    $A5,$A3,$A0,$9E,$9C,$99,$96,$94
+DED8: 92 90 8E 8C 8A 88 87 85  FCB    $92,$90,$8E,$8C,$8A,$88,$87,$85
+DEE0: 83 82 81 7F 7D 7C 7B 7A  FCB    $83,$82,$81,$7F,$7D,$7C,$7B,$7A
+DEE8: 79 79 78 77 77 77 77 77  FCB    $79,$79,$78,$77,$77,$77,$77,$77
+DEF0: 76 76 75 75 74 74 73 73  FCB    $76,$76,$75,$75,$74,$74,$73,$73
+DEF8: F0 DE 08                 FCB    $F0,$DE,$08 ; F0: end of path. QUIRK:
+                                             ; back-pointer $DE08 (own
+                                             ; start), never read
+
+str_copyright_2:
+;   "1984 NAMCO ALL RIGHTS RESERVED"
+DEFB: 31 39 38 34 20 4E 41 4D  FCB    $31,$39,$38,$34,$20,$4E,$41,$4D
+DF03: 43 4F 20 41 4C 4C 20 52  FCB    $43,$4F,$20,$41,$4C,$4C,$20,$52
+DF0B: 49 47 48 54 53 20 52 45  FCB    $49,$47,$48,$54,$53,$20,$52,$45
+DF13: 53 45 52 56 45 44        FCB    $53,$45,$52,$56,$45,$44
 DF19: FF FF FF FF FF FF FF FF  FCB    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
                                              ; [fill $FF x 214]
 DF21: FF FF FF FF FF FF FF FF  FCB    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
@@ -3568,6 +4284,7 @@ DFF8: FF FF FF FF FF FF FF FF  FCB    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
 
 ;------------------------------------------------------------------------------
 ; reset_sub  ($E000)
+; -> src/game/sub/gp2_6.js
 ; Sub CPU reset (released by the main CPU's SRESET_OFF write).
 ; DP = $10, S = $1D80; wait for $11 in $0800 from the main CPU;
 ; checksum $A000-$BFFF, $C000-$DFFF, $E000-$FFFF (byte sums must be
@@ -3594,7 +4311,7 @@ E015: 8E A0 00        LDX    #dat_A000       ; checksum $A000-$BFFF
 
 lE018:
 E018: AB 80           ADDA   ,X+
-E01A: 8C C0 00        CMPX   #dat_C000
+E01A: 8C C0 00        CMPX   #path_C000
 E01D: 26 F9           BNE    lE018
 E01F: 81 00           CMPA   #$00
 E021: 27 05           BEQ    lE028
@@ -3639,6 +4356,7 @@ E05E: 7E E0 EC        JMP    task_dispatch_sub
 
 ;------------------------------------------------------------------------------
 ; irq_sub  ($E061)
+; -> src/game/sub/gp2_6.js
 ; Sub CPU vblank IRQ.
 ;   - acknowledge (even VINTON address = IRQ off);
 ;   - copy the sub's sprites from the shadow buffers ($0E00-$0EE1 +
@@ -3659,7 +4377,7 @@ E067: 8E 0F 82        LDX    #SPRITE_RAM_1+$02 ; [#$0F82]
 lE06A:
 E06A: 11 83 0E E2     CMPU   #$0EE2
 E06E: 27 5A           BEQ    irq_sub_disable_rest
-E070: A6 C9 10 01     LDA    $1001,U
+E070: A6 C9 10 01     LDA    $1001,U         ; slot not in use: next
 E074: 84 80           ANDA   #$80
 E076: 26 04           BNE    lE07C
 E078: 33 42           LEAU   $2,U
@@ -3723,6 +4441,7 @@ E0EB: 3B              RTI
 
 ;------------------------------------------------------------------------------
 ; task_dispatch_sub  ($E0EC)
+; -> src/game/sub/gp2_6.js
 ; The sub CPU's scheduler: jump through
 ; sub_mode_task_lists[game_mode][sub_task]. Tasks end with
 ; INC <$7A / JMP task_dispatch_sub; the last one
@@ -3758,84 +4477,87 @@ E10B: E1 7D                    FDB    sub_tasks_mode9 ; [9] $E17D
 
 ; Referenced from: $E0F9 task_dispatch_sub
 sub_tasks_mode0:
-E10D: FA 2E                    FDB    sub_FA2E ; [0] $FA2E
+E10D: FA 2E                    FDB    task_move_enemy_shots ; [0] $FA2E
 E10F: BF 58                    FDB    task_formation_init ; [1] $BF58
 
 ; Referenced from: $E0FB task_dispatch_sub
 sub_tasks_mode1:
-E111: FA 2E                    FDB    sub_FA2E ; [0] $FA2E
+E111: FA 2E                    FDB    task_move_enemy_shots ; [0] $FA2E
 E113: E1 7F                    FDB    task_end_frame_sub ; [1] $E17F
 
 ; Referenced from: $E0FD task_dispatch_sub
 sub_tasks_mode2:
-E115: FA 2E                    FDB    sub_FA2E ; [0] $FA2E
-E117: E5 AA                    FDB    sub_E5AA ; [1] $E5AA
+E115: FA 2E                    FDB    task_move_enemy_shots ; [0] $FA2E
+E117: E5 AA                    FDB    copy_slot42_flag ; [1] $E5AA
 E119: E1 8A                    FDB    task_stage_setup ; [2] $E18A
 E11B: E1 7F                    FDB    task_end_frame_sub ; [3] $E17F
 
 ; Referenced from: $E0FF task_dispatch_sub
 sub_tasks_mode3:
-E11D: F8 44                    FDB    sub_F844 ; [0] $F844
-E11F: FA 2E                    FDB    sub_FA2E ; [1] $FA2E
-E121: F1 16                    FDB    sub_F116 ; [2] $F116
-E123: EB EC                    FDB    sub_EBEC ; [3] $EBEC
-E125: E3 41                    FDB    sub_E341 ; [4] $E341
-E127: B0 14                    FDB    sub_B014 ; [5] $B014
-E129: FB 09                    FDB    sub_FB09 ; [6] $FB09
-E12B: FB 58                    FDB    sub_FB58 ; [7] $FB58
+E11D: F8 44                    FDB    task_enemy_shots ; [0] $F844
+E11F: FA 2E                    FDB    task_move_enemy_shots ; [1] $FA2E
+E121: F1 16                    FDB    task_escort_flyin_b ; [2] $F116
+E123: EB EC                    FDB    task_escort_flyin_a ; [3] $EBEC
+E125: E3 41                    FDB    task_formation_anim ; [4] $E341
+E127: B0 14                    FDB    task_formation_move ; [5] $B014
+E129: FB 09                    FDB    task_refresh_formation_sprites
+                                             ; [6] $FB09
+E12B: FB 58                    FDB    task_show_188A_pair ; [7] $FB58
 E12D: E1 7F                    FDB    task_end_frame_sub ; [8] $E17F
 
 ; Referenced from: $E101 task_dispatch_sub
 sub_tasks_mode4:
-E12F: F8 44                    FDB    sub_F844 ; [0] $F844
-E131: FA 2E                    FDB    sub_FA2E ; [1] $FA2E
-E133: F5 A5                    FDB    sub_F5A5 ; [2] $F5A5
-E135: E3 41                    FDB    sub_E341 ; [3] $E341
-E137: B0 14                    FDB    sub_B014 ; [4] $B014
-E139: FB 09                    FDB    sub_FB09 ; [5] $FB09
-E13B: FB 58                    FDB    sub_FB58 ; [6] $FB58
+E12F: F8 44                    FDB    task_enemy_shots ; [0] $F844
+E131: FA 2E                    FDB    task_move_enemy_shots ; [1] $FA2E
+E133: F5 A5                    FDB    task_stage_entry_seq ; [2] $F5A5
+E135: E3 41                    FDB    task_formation_anim ; [3] $E341
+E137: B0 14                    FDB    task_formation_move ; [4] $B014
+E139: FB 09                    FDB    task_refresh_formation_sprites
+                                             ; [5] $FB09
+E13B: FB 58                    FDB    task_show_188A_pair ; [6] $FB58
 E13D: E1 7F                    FDB    task_end_frame_sub ; [7] $E17F
 
 ; Mode 5: normal play (the longest list).
 ; Referenced from: $E103 task_dispatch_sub
 sub_tasks_mode5:
-E13F: F8 44                    FDB    sub_F844 ; [0] $F844
-E141: FA 2E                    FDB    sub_FA2E ; [1] $FA2E
-E143: E3 41                    FDB    sub_E341 ; [2] $E341
-E145: B3 85                    FDB    sub_B385 ; [3] $B385
-E147: FB 77                    FDB    sub_FB77 ; [4] $FB77
-E149: FC 6D                    FDB    sub_FC6D ; [5] $FC6D
-E14B: FD 59                    FDB    sub_FD59 ; [6] $FD59
-E14D: FE 31                    FDB    sub_FE31 ; [7] $FE31
-E14F: B0 14                    FDB    sub_B014 ; [8] $B014
-E151: FB 09                    FDB    sub_FB09 ; [9] $FB09
-E153: FB 58                    FDB    sub_FB58 ; [10] $FB58
-E155: E5 B8                    FDB    sub_E5B8 ; [11] $E5B8
-E157: E6 54                    FDB    sub_E654 ; [12] $E654
-E159: B3 D1                    FDB    sub_B3D1 ; [13] $B3D1
-E15B: E7 29                    FDB    sub_E729 ; [14] $E729
-E15D: E7 ED                    FDB    sub_E7ED ; [15] $E7ED
-E15F: EA 4C                    FDB    sub_EA4C ; [16] $EA4C
-E161: F6 0B                    FDB    sub_F60B ; [17] $F60B
-E163: BB 50                    FDB    sub_BB50 ; [18] $BB50
+E13F: F8 44                    FDB    task_enemy_shots ; [0] $F844
+E141: FA 2E                    FDB    task_move_enemy_shots ; [1] $FA2E
+E143: E3 41                    FDB    task_formation_anim ; [2] $E341
+E145: B3 85                    FDB    task_attack_timer ; [3] $B385
+E147: FB 77                    FDB    task_launch_group1 ; [4] $FB77
+E149: FC 6D                    FDB    task_launch_group2 ; [5] $FC6D
+E14B: FD 59                    FDB    task_launch_trio ; [6] $FD59
+E14D: FE 31                    FDB    task_start_188A_object ; [7] $FE31
+E14F: B0 14                    FDB    task_formation_move ; [8] $B014
+E151: FB 09                    FDB    task_refresh_formation_sprites
+                                             ; [9] $FB09
+E153: FB 58                    FDB    task_show_188A_pair ; [10] $FB58
+E155: E5 B8                    FDB    task_slot42_timer ; [11] $E5B8
+E157: E6 54                    FDB    task_capture_steer ; [12] $E654
+E159: B3 D1                    FDB    task_effect ; [13] $B3D1
+E15B: E7 29                    FDB    capture_window ; [14] $E729
+E15D: E7 ED                    FDB    task_capture_dispatch ; [15] $E7ED
+E15F: EA 4C                    FDB    task_formation_refill ; [16] $EA4C
+E161: F6 0B                    FDB    task_bonus_sequence ; [17] $F60B
+E163: BB 50                    FDB    task_launch_objects ; [18] $BB50
 E165: B9 0E                    FDB    task_animate_objects ; [19] $B90E
-E167: FE 82                    FDB    sub_FE82 ; [20] $FE82
+E167: FE 82                    FDB    task_score_anim ; [20] $FE82
 E169: E1 7F                    FDB    task_end_frame_sub ; [21] $E17F
 
 ; Mode 6: stage clear.
 ; Referenced from: $E105 task_dispatch_sub
 sub_tasks_mode6:
-E16B: FA 2E                    FDB    sub_FA2E ; [0] $FA2E
-E16D: B3 D1                    FDB    sub_B3D1 ; [1] $B3D1
+E16B: FA 2E                    FDB    task_move_enemy_shots ; [0] $FA2E
+E16D: B3 D1                    FDB    task_effect ; [1] $B3D1
 E16F: E1 7F                    FDB    task_end_frame_sub ; [2] $E17F
 
 ; Mode 7: challenging stage.
 ; Referenced from: $E107 task_dispatch_sub
 sub_tasks_mode7:
-E171: B0 14                    FDB    sub_B014 ; [0] $B014
-E173: BB 96                    FDB    sub_BB96 ; [1] $BB96
-E175: BC F3                    FDB    sub_BCF3 ; [2] $BCF3
-E177: BE E5                    FDB    sub_BEE5 ; [3] $BEE5
+E171: B0 14                    FDB    task_formation_move ; [0] $B014
+E173: BB 96                    FDB    task_challenge_seq ; [1] $BB96
+E175: BC F3                    FDB    task_bonus_objects ; [2] $BCF3
+E177: BE E5                    FDB    task_bonus_colours ; [3] $BEE5
 E179: E1 7F                    FDB    task_end_frame_sub ; [4] $E17F
 
 ; Referenced from: $E109 task_dispatch_sub
@@ -3848,6 +4570,7 @@ E17D: E1 7F                    FDB    task_end_frame_sub ; [0] $E17F
 
 ;------------------------------------------------------------------------------
 ; task_end_frame_sub  ($E17F)
+; -> src/game/sub/gp2_6.js
 ; Last task of every list: CWAI for the next IRQ, reset the stack,
 ; restart the list.
 ; Table entry at: $E113, $E11B, $E12D, $E13D, $E169, $E16F, $E179, $E17B, $E17D
@@ -3860,12 +4583,15 @@ E187: 7E E0 EC        JMP    task_dispatch_sub
 
 ;------------------------------------------------------------------------------
 ; task_stage_setup  ($E18A)
+; -> src/game/sub/gp2_6_stage.js
 ; Mode 2 task: build the stage's enemy sprites and formation state
 ; from the stage tables (index $106E), then game_mode + 1.
+; QUIRK: stage tables indexed with a signed A,X offset from $106E * 2: values
+; above 2 read further into the ROM.
 ; Table entry at: $E119
 ;------------------------------------------------------------------------------
 task_stage_setup:
-E18A: 96 81           LDA    <$81            ; [$1081]
+E18A: 96 81           LDA    <stage_setup_pass ; [$1081]
 E18C: 26 38           BNE    lE1C6
 E18E: CE E2 C3        LDU    #dat_E2C3
 E191: 96 6E           LDA    <$6E            ; [$106E]
@@ -3891,7 +4617,7 @@ E1B5: 96 70           LDA    <$70            ; [$1070]
 E1B7: A6 86           LDA    A,X
 E1B9: B7 0E 87        STA    $0E87
 E1BC: B7 0E 8B        STA    $0E8B
-E1BF: 0C 81           INC    <$81            ; [$1081]
+E1BF: 0C 81           INC    <stage_setup_pass ; [$1081]
 E1C1: 0C 7A           INC    <sub_task       ; [$107A]
 E1C3: 16 FF 26        LBRA   task_dispatch_sub
 
@@ -3917,9 +4643,12 @@ E1E8: ED 81           STD    ,X++
 E1EA: CC 40 80        LDD    #$4080
 E1ED: ED 81           STD    ,X++
 E1EF: 8E 18 60        LDX    #formation_flags ; [#$1860]
-E1F2: 9F 86           STX    <formation_ptr  ; [$1086]
+E1F2: 9F 86           STX    <formation_ptr  ; QUIRK: only mode 2 sets
+                                             ; formation_ptr: Round Advance
+                                             ; straight to a challenging stage
+                                             ; leaves it stale [$1086]
 E1F4: 86 FF           LDA    #$FF
-E1F6: 97 96           STA    <$96            ; [$1096]
+E1F6: 97 96           STA    <formation_slot ; [$1096]
 E1F8: 8E 18 90        LDX    #$1890
 E1FB: 86 28           LDA    #$28
 
@@ -4013,7 +4742,7 @@ E283: 26 F9           BNE    lE27E
 E285: CC 00 00        LDD    #$0000
 E288: DD FA           STD    <$FA            ; [$10FA]
 E28A: 0C 2F           INC    <game_mode      ; [$102F]
-E28C: 0F 81           CLR    <$81            ; [$1081]
+E28C: 0F 81           CLR    <stage_setup_pass ; [$1081]
 E28E: 0F 7A           CLR    <sub_task       ; [$107A]
 E290: 7E E0 EC        JMP    task_dispatch_sub
 
@@ -4042,7 +4771,7 @@ E2E3: 40 80 FF FF              FCB    $40,$80,$FF,$FF
 dat_E2E7:
 E2E7: 04 19 17 14 16 3E        FCB    $04,$19,$17,$14,$16,$3E
 
-; Referenced from: $E36C sub_E369
+; Referenced from: $E36C formation_sprite_codes
 dat_E2ED:
 E2ED: E2 F3 E3 03 E3 13 50 40  FCB    $E2,$F3,$E3,$03,$E3,$13,$50,$40
 E2F5: 3C 20 5C 4C 30 2C 5D 4D  FCB    $3C,$20,$5C,$4C,$30,$2C,$5D,$4D
@@ -4052,7 +4781,7 @@ E30D: 8D 7D A0 90 8C 7C F0 E0  FCB    $8D,$7D,$A0,$90,$8C,$7C,$F0,$E0
 E315: D0 CC FC EC DC C0 FD ED  FCB    $D0,$CC,$FC,$EC,$DC,$C0,$FD,$ED
 E31D: DD CD FC EC DC C0        FCB    $DD,$CD,$FC,$EC,$DC,$C0
 
-; Referenced from: $E3A8 sub_E369
+; Referenced from: $E3A8 formation_sprite_codes
 dat_E323:
 E323: E3 29 E3 31 E3 39 10 1C  FCB    $E3,$29,$E3,$31,$E3,$39,$10,$1C
 E32B: 1D 1E 1F 1E 1D 1C 60 6C  FCB    $1D,$1E,$1F,$1E,$1D,$1C,$60,$6C
@@ -4060,13 +4789,15 @@ E333: 6D 6E 6F 6E 6D 6C B0 BC  FCB    $6D,$6E,$6F,$6E,$6D,$6C,$B0,$BC
 E33B: BD BE BF BE BD BC        FCB    $BD,$BE,$BF,$BE,$BD,$BC
 
 ;------------------------------------------------------------------------------
-; sub_E341  ($E341)
+; task_formation_anim  ($E341) ; JS: sub_E341
+; -> src/game/sub/gp2_6_stage.js
+; Formation tiles; dispatch on frame_counter & 7 (tbl_E359).
 ; Table entry at: $E125, $E135, $E143
 ;------------------------------------------------------------------------------
-sub_E341:
-E341: 96 AC           LDA    <$AC            ; [$10AC]
-E343: 27 24           BEQ    sub_E369
-E345: 96 F8           LDA    <$F8            ; [$10F8]
+task_formation_anim:
+E341: 96 AC           LDA    <formation_started ; [$10AC]
+E343: 27 24           BEQ    formation_sprite_codes
+E345: 96 F8           LDA    <refill_request ; [$10F8]
 E347: 26 05           BNE    lE34E
 E349: 86 01           LDA    #$01
 E34B: B7 08 49        STA    $0849
@@ -4078,23 +4809,26 @@ E352: 48              ASLA
 E353: 10 8E E3 59     LDY    #tbl_E359
 E357: 6E B6           JMP    [A,Y]           ; [table tbl_E359]
 
-; Referenced from: $E353 sub_E341
+; Referenced from: $E353 task_formation_anim
 tbl_E359:
-E359: E3 DA                    FDB    sub_E3DA ; [0] $E3DA
-E35B: E4 BD                    FDB    sub_E4BD ; [1] $E4BD
-E35D: E3 DA                    FDB    sub_E3DA ; [2] $E3DA
-E35F: E3 69                    FDB    sub_E369 ; [3] $E369
-E361: E3 DA                    FDB    sub_E3DA ; [4] $E3DA
-E363: E4 BD                    FDB    sub_E4BD ; [5] $E4BD
-E365: E3 DA                    FDB    sub_E3DA ; [6] $E3DA
-E367: E4 B5                    FDB    sub_E4B5 ; [7] $E4B5
+E359: E3 DA                    FDB    formation_move ; [0] $E3DA
+E35B: E4 BD                    FDB    formation_slots_1B00 ; [1] $E4BD
+E35D: E3 DA                    FDB    formation_move ; [2] $E3DA
+E35F: E3 69                    FDB    formation_sprite_codes ; [3] $E369
+E361: E3 DA                    FDB    formation_move ; [4] $E3DA
+E363: E4 BD                    FDB    formation_slots_1B00 ; [5] $E4BD
+E365: E3 DA                    FDB    formation_move ; [6] $E3DA
+E367: E4 B5                    FDB    formation_scan_next ; [7] $E4B5
 
 ;------------------------------------------------------------------------------
-; sub_E369  ($E369)
+; formation_sprite_codes  ($E369) ; JS: sub_E369
+; -> src/game/sub/gp2_6_stage.js
+; This frame's formation sprite codes into $0E02-$0E2F.
+; QUIRK: stage tables indexed with a signed A,X offset from $106E * 2.
 ; Jumped to from: $E343
 ; Table entry at: $E35F
 ;------------------------------------------------------------------------------
-sub_E369:
+formation_sprite_codes:
 E369: 96 6E           LDA    <$6E            ; [$106E]
 E36B: 48              ASLA
 E36C: 10 8E E2 ED     LDY    #dat_E2ED
@@ -4145,25 +4879,27 @@ E3BF: 96 70           LDA    <$70            ; [$1070]
 E3C1: 48              ASLA
 E3C2: EC 86           LDD    A,X
 E3C4: FD 0E 2E        STD    sprite_shadow_1+46 ; [$0E2E]
-E3C7: 96 AC           LDA    <$AC            ; [$10AC]
-E3C9: 27 0F           BEQ    sub_E3DA
-E3CB: 7E E4 B5        JMP    sub_E4B5
+E3C7: 96 AC           LDA    <formation_started ; [$10AC]
+E3C9: 27 0F           BEQ    formation_move
+E3CB: 7E E4 B5        JMP    formation_scan_next
 
-; Referenced from: $E3BC sub_E369
+; Referenced from: $E3BC formation_sprite_codes
 dat_E3CE:
 E3CE: 00 04 00 19 00 17 00 14  FCB    $00,$04,$00,$19,$00,$17,$00,$14
 E3D6: 00 16 00 3E              FCB    $00,$16,$00,$3E
 
 ;------------------------------------------------------------------------------
-; sub_E3DA  ($E3DA)
+; formation_move  ($E3DA) ; JS: sub_E3DA
+; -> src/game/sub/gp2_6_stage.js
+; Step the formation along its path ($1082), lay out $1602-$1631.
 ; Jumped to from: $E3C9
 ; Table entry at: $E359, $E35D, $E361, $E365
 ;------------------------------------------------------------------------------
-sub_E3DA:
+formation_move:
 E3DA: 86 55           LDA    #$55
-E3DC: 97 AC           STA    <$AC            ; [$10AC]
-E3DE: DE 82           LDU    <$82            ; [$1082]
-E3E0: E6 C4           LDB    ,U
+E3DC: 97 AC           STA    <formation_started ; [$10AC]
+E3DE: DE 82           LDU    <formation_path_ptr ; [$1082]
+E3E0: E6 C4           LDB    ,U              ; the high part of the Y step
 E3E2: 54              LSRB
 E3E3: 54              LSRB
 E3E4: 54              LSRB
@@ -4176,20 +4912,20 @@ E3EF: A6 41           LDA    $1,U
 E3F1: BB 0E 88        ADDA   $0E88
 E3F4: B7 0E 88        STA    $0E88
 E3F7: B6 1E 88        LDA    $1E88
-E3FA: B9 16 88        ADCA   $1688
-E3FD: B7 16 88        STA    $1688
+E3FA: B9 16 88        ADCA   formation_y     ; [$1688]
+E3FD: B7 16 88        STA    formation_y     ; [$1688]
 E400: 20 11           BRA    lE413
 
 lE402:
 E402: B6 0E 88        LDA    $0E88
 E405: A0 41           SUBA   $1,U
 E407: B7 0E 88        STA    $0E88
-E40A: B6 16 88        LDA    $1688
+E40A: B6 16 88        LDA    formation_y     ; [$1688]
 E40D: B2 1E 88        SBCA   $1E88
-E410: B7 16 88        STA    $1688
+E410: B7 16 88        STA    formation_y     ; [$1688]
 
 lE413:
-E413: E6 C4           LDB    ,U
+E413: E6 C4           LDB    ,U              ; the high part of the X step
 E415: C4 0F           ANDB   #$0F
 E417: F7 1E 88        STB    $1E88
 E41A: A6 43           LDA    $3,U
@@ -4199,17 +4935,17 @@ E420: A6 42           LDA    $2,U
 E422: BB 0E 89        ADDA   $0E89
 E425: B7 0E 89        STA    $0E89
 E428: B6 1E 88        LDA    $1E88
-E42B: B9 16 89        ADCA   $1689
-E42E: B7 16 89        STA    $1689
+E42B: B9 16 89        ADCA   formation_x     ; [$1689]
+E42E: B7 16 89        STA    formation_x     ; [$1689]
 E431: 20 11           BRA    lE444
 
 lE433:
 E433: B6 0E 89        LDA    $0E89
 E436: A0 42           SUBA   $2,U
 E438: B7 0E 89        STA    $0E89
-E43B: B6 16 89        LDA    $1689
+E43B: B6 16 89        LDA    formation_x     ; [$1689]
 E43E: B2 1E 88        SBCA   $1E88
-E441: B7 16 89        STA    $1689
+E441: B7 16 89        STA    formation_x     ; [$1689]
 
 lE444:
 E444: 33 44           LEAU   $4,U
@@ -4219,22 +4955,22 @@ E44A: 26 0F           BNE    lE45B
 E44C: CC 00 00        LDD    #$0000
 E44F: FD 0E 88        STD    $0E88
 E452: CC 28 A8        LDD    #$28A8
-E455: FD 16 88        STD    $1688
-E458: CE AD CF        LDU    #dat_ADCF
+E455: FD 16 88        STD    formation_y     ; [$1688]
+E458: CE AD CF        LDU    #formation_path
 
 lE45B:
-E45B: DF 82           STU    <$82            ; [$1082]
+E45B: DF 82           STU    <formation_path_ptr ; [$1082]
 E45D: 86 01           LDA    #$01
-E45F: 97 BF           STA    <$BF            ; [$10BF]
+E45F: 97 BF           STA    <formation_sprites_dirty ; [$10BF]
 E461: CE 16 02        LDU    #$1602
-E464: FC 16 88        LDD    $1688
+E464: FC 16 88        LDD    formation_y     ; [$1688]
 
 lE467:
 E467: ED C1           STD    ,U++
 E469: 8B 20           ADDA   #$20
 E46B: 11 83 16 0C     CMPU   #$160C
 E46F: 26 F6           BNE    lE467
-E471: FC 16 88        LDD    $1688
+E471: FC 16 88        LDD    formation_y     ; [$1688]
 E474: C0 10           SUBB   #$10
 
 lE476:
@@ -4242,7 +4978,7 @@ E476: ED C1           STD    ,U++
 E478: 8B 20           ADDA   #$20
 E47A: 11 83 16 16     CMPU   #$1616
 E47E: 26 F6           BNE    lE476
-E480: FC 16 88        LDD    $1688
+E480: FC 16 88        LDD    formation_y     ; [$1688]
 E483: C0 20           SUBB   #$20
 
 lE485:
@@ -4250,7 +4986,7 @@ E485: ED C1           STD    ,U++
 E487: 8B 20           ADDA   #$20
 E489: 11 83 16 20     CMPU   #$1620
 E48D: 26 F6           BNE    lE485
-E48F: FC 16 88        LDD    $1688
+E48F: FC 16 88        LDD    formation_y     ; [$1688]
 E492: C0 30           SUBB   #$30
 E494: 8B 10           ADDA   #$10
 
@@ -4259,7 +4995,7 @@ E496: ED C1           STD    ,U++
 E498: 8B 20           ADDA   #$20
 E49A: 11 83 16 28     CMPU   #$1628
 E49E: 26 F6           BNE    lE496
-E4A0: FC 16 88        LDD    $1688
+E4A0: FC 16 88        LDD    formation_y     ; [$1688]
 E4A3: C0 40           SUBB   #$40
 E4A5: 8B 28           ADDA   #$28
 E4A7: ED C1           STD    ,U++
@@ -4271,29 +5007,33 @@ E4B1: C0 10           SUBB   #$10
 E4B3: ED C4           STD    ,U
 
 ;------------------------------------------------------------------------------
-; sub_E4B5  ($E4B5)
+; formation_scan_next  ($E4B5) ; JS: sub_E4B5
+; -> src/game/sub/gp2_6_stage.js
+; JSR scan_formation, then the next task.
 ; Jumped to from: $E3CB, $E519
 ; Table entry at: $E367
 ;------------------------------------------------------------------------------
-sub_E4B5:
+formation_scan_next:
 E4B5: BD E5 1C        JSR    scan_formation
 E4B8: 0C 7A           INC    <sub_task       ; [$107A]
 E4BA: 7E E0 EC        JMP    task_dispatch_sub
 
 ;------------------------------------------------------------------------------
-; sub_E4BD  ($E4BD)
+; formation_slots_1B00  ($E4BD) ; JS: sub_E4BD
+; -> src/game/sub/gp2_6_stage.js
+; Formation slot positions at $1B00-$1B5F.
 ; Table entry at: $E35B, $E363
 ;------------------------------------------------------------------------------
-sub_E4BD:
+formation_slots_1B00:
 E4BD: CE 1B 00        LDU    #$1B00
-E4C0: FC 16 88        LDD    $1688
+E4C0: FC 16 88        LDD    formation_y     ; [$1688]
 
 lE4C3:
 E4C3: ED C1           STD    ,U++
 E4C5: 8B 10           ADDA   #$10
 E4C7: 11 83 1B 14     CMPU   #$1B14
 E4CB: 26 F6           BNE    lE4C3
-E4CD: FC 16 88        LDD    $1688
+E4CD: FC 16 88        LDD    formation_y     ; [$1688]
 E4D0: C0 10           SUBB   #$10
 
 lE4D2:
@@ -4301,7 +5041,7 @@ E4D2: ED C1           STD    ,U++
 E4D4: 8B 10           ADDA   #$10
 E4D6: 11 83 1B 28     CMPU   #$1B28
 E4DA: 26 F6           BNE    lE4D2
-E4DC: FC 16 88        LDD    $1688
+E4DC: FC 16 88        LDD    formation_y     ; [$1688]
 E4DF: C0 20           SUBB   #$20
 
 lE4E1:
@@ -4309,7 +5049,7 @@ E4E1: ED C1           STD    ,U++
 E4E3: 8B 10           ADDA   #$10
 E4E5: 11 83 1B 3C     CMPU   #$1B3C
 E4E9: 26 F6           BNE    lE4E1
-E4EB: FC 16 88        LDD    $1688
+E4EB: FC 16 88        LDD    formation_y     ; [$1688]
 E4EE: C0 30           SUBB   #$30
 E4F0: 8B 10           ADDA   #$10
 
@@ -4318,7 +5058,7 @@ E4F2: ED C1           STD    ,U++
 E4F4: 8B 10           ADDA   #$10
 E4F6: 11 83 1B 4C     CMPU   #$1B4C
 E4FA: 26 F6           BNE    lE4F2
-E4FC: FC 16 88        LDD    $1688
+E4FC: FC 16 88        LDD    formation_y     ; [$1688]
 E4FF: C0 40           SUBB   #$40
 E501: 8B 28           ADDA   #$28
 E503: ED C1           STD    ,U++
@@ -4332,11 +5072,15 @@ E511: 80 20           SUBA   #$20
 E513: ED C1           STD    ,U++
 E515: C0 10           SUBB   #$10
 E517: ED C4           STD    ,U
-E519: 7E E4 B5        JMP    sub_E4B5
+E519: 7E E4 B5        JMP    formation_scan_next
 
 ;------------------------------------------------------------------------------
 ; scan_formation  ($E51C)
-; Called from: $E4B5 sub_E4B5
+; -> src/game/sub/gp2_6_stage.js
+; For each formation entry with bit 4: copy its slot position ($1B00+2n) to
+; $1630+2n and step its sprite code $18F0+n through dat_E591; reaching 0 clears
+; the entry and its sprite.
+; Called from: $E4B5 formation_scan_next
 ;------------------------------------------------------------------------------
 scan_formation:
 E51C: 8E 18 60        LDX    #formation_flags ; [#$1860]
@@ -4353,7 +5097,8 @@ E52E: CE 1B 00        LDU    #$1B00
 E531: 10 AE C5        LDY    B,U
 E534: CE 16 30        LDU    #$1630
 E537: 10 AF C5        STY    B,U
-E53A: A6 89 00 8F     LDA    TILE_RAM+$8F,X  ; [$008F]
+E53A: A6 89 00 8F     LDA    TILE_RAM+$8F,X  ; x is one past the entry, so
+                                             ; $18F0 + n [$008F]
 E53E: 26 10           BNE    lE550
 
 lE540:
@@ -4370,7 +5115,7 @@ E54A: 6F 89 00 8F     CLR    TILE_RAM+$8F,X  ; [$008F]
 E54E: 20 F0           BRA    lE540
 
 lE550:
-E550: CE E5 91        LDU    #dat_E591
+E550: CE E5 91        LDU    #formation_code_seq
 
 lE553:
 E553: 11 83 E5 A9     CMPU   #dat_E5A9
@@ -4402,8 +5147,9 @@ E58B: AA C5           ORA    B,U
 E58D: A7 C5           STA    B,U
 E58F: 20 90           BRA    lE521
 
+; scan_formation: sprite code sequence $21..$2B, $10, $0B..$00.
 ; Referenced from: $E550 scan_formation
-dat_E591:
+formation_code_seq:
 E591: 21 22 23 24 25 26 27 28  FCB    $21,$22,$23,$24,$25,$26,$27,$28
 E599: 29 2A 2B 10 0B 0A 09 08  FCB    $29,$2A,$2B,$10,$0B,$0A,$09,$08
 E5A1: 07 06 05 04 03 02 01 00  FCB    $07,$06,$05,$04,$03,$02,$01,$00
@@ -4413,11 +5159,14 @@ dat_E5A9:
 E5A9: 00                       FCB    $00
 
 ;------------------------------------------------------------------------------
-; sub_E5AA  ($E5AA)
+; copy_slot42_flag  ($E5AA) ; JS: sub_E5AA
+; -> src/game/sub/gp2_6_e5.js
+; If formation slot 42 ($188A) has bit 0 set, copy it into slot 43 ($188B);
+; next task.
 ; Jumped to from: $E5CB
 ; Table entry at: $E117
 ;------------------------------------------------------------------------------
-sub_E5AA:
+copy_slot42_flag:
 E5AA: B6 18 8A        LDA    formation_flags+42 ; [$188A]
 E5AD: 84 01           ANDA   #$01
 E5AF: 10 27 00 7C     LBEQ   lE62F
@@ -4425,10 +5174,14 @@ E5B3: B7 18 8B        STA    formation_flags+43 ; [$188B]
 E5B6: 20 77           BRA    lE62F
 
 ;------------------------------------------------------------------------------
-; sub_E5B8  ($E5B8)
+; task_slot42_timer  ($E5B8) ; JS: sub_E5B8
+; -> src/game/sub/gp2_6_e5.js
+; Count $112C down; at 0 step the slot pair 42/43 ($188A/$188B) through its
+; states, set up the sprite at $0E84-$0E8B / $0F2C, or flag capture_state /
+; $1018.
 ; Table entry at: $E155
 ;------------------------------------------------------------------------------
-sub_E5B8:
+task_slot42_timer:
 E5B8: B6 11 2C        LDA    $112C
 E5BB: 27 05           BEQ    lE5C2
 E5BD: 7A 11 2C        DEC    $112C
@@ -4436,10 +5189,10 @@ E5C0: 20 6D           BRA    lE62F
 
 lE5C2:
 E5C2: CC 18 8C        LDD    #$188C
-E5C5: FD 11 2D        STD    $112D
-E5C8: B6 11 0F        LDA    $110F
-E5CB: 26 DD           BNE    sub_E5AA
-E5CD: FC 18 8A        LDD    formation_flags+42 ; [$188A]
+E5C5: FD 11 2D        STD    formation_end   ; [$112D]
+E5C8: B6 11 0F        LDA    player_exploding ; [$110F]
+E5CB: 26 DD           BNE    copy_slot42_flag
+E5CD: FC 18 8A        LDD    formation_flags+42 ; B keeps $188B [$188A]
 E5D0: 84 01           ANDA   #$01
 E5D2: 27 5B           BEQ    lE62F
 E5D4: B6 11 2B        LDA    $112B
@@ -4447,12 +5200,12 @@ E5D7: 84 01           ANDA   #$01
 E5D9: 26 30           BNE    lE60B
 E5DB: 7C 11 2B        INC    $112B
 E5DE: CC 18 8B        LDD    #$188B
-E5E1: FD 11 2D        STD    $112D
+E5E1: FD 11 2D        STD    formation_end   ; [$112D]
 E5E4: B6 18 8B        LDA    formation_flags+43 ; [$188B]
 E5E7: B7 18 8A        STA    formation_flags+42 ; [$188A]
 E5EA: 84 02           ANDA   #$02
 E5EC: 27 06           BEQ    lE5F4
-E5EE: B6 11 0B        LDA    $110B
+E5EE: B6 11 0B        LDA    effect_flags    ; [$110B]
 E5F1: B7 1E 85        STA    $1E85
 
 lE5F4:
@@ -4465,14 +5218,14 @@ E600: B7 0E 85        STA    $0E85
 E603: B7 0E 2D        STA    sprite_shadow_1+45 ; [$0E2D]
 E606: 20 27           BRA    lE62F
 
-; Referenced from: $E5FB sub_E5B8
+; Referenced from: $E5FB task_slot42_timer
 dat_E608:
 E608: 3B 3C 3D                 FCB    $3B,$3C,$3D
 
 lE60B:
 E60B: C4 02           ANDB   #$02
 E60D: 27 25           BEQ    lE634
-E60F: C6 01           LDB    #$01
+E60F: C6 01           LDB    #$01            ; A is still 1 from the anda
 E611: FD 18 8A        STD    formation_flags+42 ; [$188A]
 E614: B6 0E 86        LDA    $0E86
 E617: 84 20           ANDA   #$20
@@ -4484,7 +5237,7 @@ E622: FD 16 8A        STD    $168A
 E625: FC 1E 86        LDD    $1E86
 E628: FD 1E 8A        STD    $1E8A
 E62B: 86 01           LDA    #$01
-E62D: 97 CE           STA    <$CE            ; [$10CE]
+E62D: 97 CE           STA    <capture_state  ; [$10CE]
 
 lE62F:
 E62F: 0C 7A           INC    <sub_task       ; [$107A]
@@ -4503,36 +5256,40 @@ E645: FD 17 2C        STD    $172C
 E648: FC 1E 86        LDD    $1E86
 E64B: FD 1F 2C        STD    $1F2C
 E64E: 86 18           LDA    #$18
-E650: 97 18           STA    <$18            ; [$1018]
+E650: 97 18           STA    <seq_step       ; [$1018]
 E652: 20 DB           BRA    lE62F
 
 ;------------------------------------------------------------------------------
-; sub_E654  ($E654)
+; task_capture_steer  ($E654) ; JS: sub_E654
+; -> src/game/sub/gp2_6_e5.js
+; Capture, capture_state 1: animate $0E8A from dat_E6F9 (capture_anim_idx),
+; move the player towards $168A and the beam sprite towards X - 5.
+; QUIRK: $E6EF discards the SUBB (LDD / SUBB / STA).
 ; Table entry at: $E157
 ;------------------------------------------------------------------------------
-sub_E654:
-E654: 96 CE           LDA    <$CE            ; [$10CE]
+task_capture_steer:
+E654: 96 CE           LDA    <capture_state  ; [$10CE]
 E656: 27 76           BEQ    lE6CE
 E658: 81 02           CMPA   #$02
 E65A: 10 27 00 8B     LBEQ   lE6E9
 E65E: 81 03           CMPA   #$03
 E660: 10 27 00 8B     LBEQ   lE6EF
-E664: 8E E6 F9        LDX    #dat_E6F9
-E667: 96 CD           LDA    <$CD            ; [$10CD]
+E664: 8E E6 F9        LDX    #capture_anim
+E667: 96 CD           LDA    <capture_anim_idx ; [$10CD]
 E669: EC 86           LDD    A,X
 E66B: B7 0E 8A        STA    $0E8A
 E66E: F7 1E 8A        STB    $1E8A
-E671: 96 CD           LDA    <$CD            ; [$10CD]
+E671: 96 CD           LDA    <capture_anim_idx ; [$10CD]
 E673: 8B 02           ADDA   #$02
 E675: 81 30           CMPA   #$30
 E677: 26 01           BNE    lE67A
 E679: 4F              CLRA
 
 lE67A:
-E67A: 97 CD           STA    <$CD            ; [$10CD]
+E67A: 97 CD           STA    <capture_anim_idx ; [$10CD]
 E67C: B6 16 00        LDA    player_y        ; [$1600]
 E67F: 97 1A           STA    <$1A            ; [$101A]
-E681: 97 D9           STA    <$D9            ; [$10D9]
+E681: 97 D9           STA    <player_frozen  ; [$10D9]
 E683: B7 11 11        STA    $1111
 E686: 97 E9           STA    <$E9            ; [$10E9]
 E688: B1 16 8A        CMPA   $168A
@@ -4588,22 +5345,26 @@ E6DC: 81 40           CMPA   #$40
 E6DE: 26 EE           BNE    lE6CE
 E6E0: B6 0E 8A        LDA    $0E8A
 E6E3: 26 E9           BNE    lE6CE
-E6E5: 0C CE           INC    <$CE            ; [$10CE]
+E6E5: 0C CE           INC    <capture_state  ; [$10CE]
 E6E7: 20 E5           BRA    lE6CE
 
 lE6E9:
-E6E9: 0C CE           INC    <$CE            ; [$10CE]
+E6E9: 0C CE           INC    <capture_state  ; [$10CE]
 E6EB: 86 01           LDA    #$01
 E6ED: 97 CF           STA    <$CF            ; [$10CF]
 
 lE6EF:
-E6EF: FC 16 00        LDD    player_y        ; [$1600]
-E6F2: C0 05           SUBB   #$05
+E6EF: FC 16 00        LDD    player_y        ; the SUBB is dead: A (player_y)
+                                             ; is what gets stored. The LDD
+                                             ; also reads $1601 [$1600]
+E6F2: C0 05           SUBB   #$05            ; QUIRK: dead SUBB: A (from $1600)
+                                             ; is what gets stored
 E6F4: B7 16 8A        STA    $168A
 E6F7: 20 D5           BRA    lE6CE
 
-; Referenced from: $E664 sub_E654
-dat_E6F9:
+; task_capture_steer: beam animation words (index step 2, wraps at $30).
+; Referenced from: $E664 task_capture_steer
+capture_anim:
 E6F9: 00 40 01 40 02 40 03 40  FCB    $00,$40,$01,$40,$02,$40,$03,$40
 E701: 04 40 05 40 06 40 07 40  FCB    $04,$40,$05,$40,$06,$40,$07,$40
 E709: 08 40 09 40 0A 40 0B 40  FCB    $08,$40,$09,$40,$0A,$40,$0B,$40
@@ -4612,23 +5373,28 @@ E719: 08 42 07 42 06 42 05 42  FCB    $08,$42,$07,$42,$06,$42,$05,$42
 E721: 04 42 03 42 02 42 01 42  FCB    $04,$42,$03,$42,$02,$42,$01,$42
 
 ;------------------------------------------------------------------------------
-; sub_E729  ($E729)
+; capture_window  ($E729) ; JS: sub_E729
+; -> src/game/sub/gp2_6_e5.js
+; When $10D6: every formation slot with b1 within the X window (<$D7..<$D8) and
+; Y +-5 of the player is caught (b6, Y pinned to the player's).
+; QUIRK: the borrow of SUBB #$10 is lost at $E737.
 ; Table entry at: $E15B
 ;------------------------------------------------------------------------------
-sub_E729:
+capture_window:
 E729: 96 D6           LDA    <$D6            ; [$10D6]
 E72B: 10 27 00 B9     LBEQ   lE7E8
 E72F: B6 1E 01        LDA    $1E01
 E732: F6 16 01        LDB    player_x        ; [$1601]
 E735: C0 10           SUBB   #$10
-E737: 44              LSRA
+E737: 44              LSRA                   ; QUIRK: the borrow of SUBB #$10
+                                             ; is lost (LSRA overwrites C)
 E738: 56              RORB
-E739: D7 D7           STB    <$D7            ; [$10D7]
+E739: D7 D7           STB    <capture_x_hi   ; [$10D7]
 E73B: B6 1E 93        LDA    $1E93
 E73E: F6 16 93        LDB    $1693
 E741: 44              LSRA
 E742: 56              RORB
-E743: D7 D8           STB    <$D8            ; [$10D8]
+E743: D7 D8           STB    <capture_x_lo   ; [$10D8]
 E745: 8E 18 5F        LDX    #$185F
 E748: CE 16 2E        LDU    #$162E
 
@@ -4654,9 +5420,9 @@ E771: A6 41           LDA    $1,U
 E773: E6 C9 08 01     LDB    $0801,U
 E777: 54              LSRB
 E778: 46              RORA
-E779: 91 D8           CMPA   <$D8            ; [$10D8]
+E779: 91 D8           CMPA   <capture_x_lo   ; [$10D8]
 E77B: 25 CE           BCS    lE74B
-E77D: 91 D7           CMPA   <$D7            ; [$10D7]
+E77D: 91 D7           CMPA   <capture_x_hi   ; [$10D7]
 E77F: 24 CA           BCC    lE74B
 E781: 86 40           LDA    #$40
 E783: AA 84           ORA    ,X
@@ -4709,38 +5475,43 @@ E7E8: 0C 7A           INC    <sub_task       ; [$107A]
 E7EA: 7E E0 EC        JMP    task_dispatch_sub
 
 ;------------------------------------------------------------------------------
-; sub_E7ED  ($E7ED)
+; task_capture_dispatch  ($E7ED) ; JS: sub_E7ED
+; -> src/game/sub/gp2_6_e5.js
+; Capture sub-state machine: JMP through tbl_E7F5[capture_substate].
 ; Table entry at: $E15D
 ;------------------------------------------------------------------------------
-sub_E7ED:
+task_capture_dispatch:
 E7ED: 8E E7 F5        LDX    #tbl_E7F5
-E7F0: 96 DA           LDA    <$DA            ; [$10DA]
+E7F0: 96 DA           LDA    <capture_substate ; [$10DA]
 E7F2: 48              ASLA
 E7F3: 6E 96           JMP    [A,X]           ; [table tbl_E7F5]
 
-; Referenced from: $E7ED sub_E7ED
+; Referenced from: $E7ED task_capture_dispatch
 tbl_E7F5:
-E7F5: E8 B0                    FDB    sub_E8B0 ; [0] $E8B0
-E7F7: E8 D7                    FDB    sub_E8D7 ; [1] $E8D7
-E7F9: E7 FF                    FDB    sub_E7FF ; [2] $E7FF
-E7FB: E9 34                    FDB    sub_E934 ; [3] $E934
-E7FD: E9 E8                    FDB    sub_E9E8 ; [4] $E9E8
+E7F5: E8 B0                    FDB    capture_state0 ; [0] $E8B0
+E7F7: E8 D7                    FDB    capture_collect ; [1] $E8D7
+E7F9: E7 FF                    FDB    capture_state2 ; [2] $E7FF
+E7FB: E9 34                    FDB    capture_home_y ; [3] $E934
+E7FD: E9 E8                    FDB    capture_leave_x ; [4] $E9E8
 
 ;------------------------------------------------------------------------------
-; sub_E7FF  ($E7FF)
+; capture_state2  ($E7FF) ; JS: sub_E7FF
+; -> src/game/sub/gp2_6_e5.js
+; Capture sub-state 2: window from $1693/$1E93, <$D8 three down (min $70);
+; catch slots within Y +8/-7 of the player.
 ; Table entry at: $E7F9
 ;------------------------------------------------------------------------------
-sub_E7FF:
+capture_state2:
 E7FF: B6 1E 93        LDA    $1E93
 E802: F6 16 93        LDB    $1693
 E805: 44              LSRA
 E806: 56              RORB
-E807: D7 D7           STB    <$D7            ; [$10D7]
-E809: 96 D8           LDA    <$D8            ; [$10D8]
+E807: D7 D7           STB    <capture_x_hi   ; [$10D7]
+E809: 96 D8           LDA    <capture_x_lo   ; [$10D8]
 E80B: 80 03           SUBA   #$03
 E80D: 81 70           CMPA   #$70
 E80F: 25 02           BCS    lE813
-E811: 97 D8           STA    <$D8            ; [$10D8]
+E811: 97 D8           STA    <capture_x_lo   ; [$10D8]
 
 lE813:
 E813: 8E 18 5F        LDX    #$185F
@@ -4765,9 +5536,9 @@ E839: A6 41           LDA    $1,U
 E83B: E6 C9 08 01     LDB    $0801,U
 E83F: 54              LSRB
 E840: 46              RORA
-E841: 91 D8           CMPA   <$D8            ; [$10D8]
+E841: 91 D8           CMPA   <capture_x_lo   ; [$10D8]
 E843: 25 D4           BCS    lE819
-E845: 91 D7           CMPA   <$D7            ; [$10D7]
+E845: 91 D7           CMPA   <capture_x_hi   ; [$10D7]
 E847: 24 D0           BCC    lE819
 E849: B6 16 00        LDA    player_y        ; [$1600]
 E84C: A7 C4           STA    ,U
@@ -4816,15 +5587,20 @@ E8A9: A7 C9 F8 00     STA    -$0800,U
 E8AD: 7E E8 19        JMP    lE819
 
 ;------------------------------------------------------------------------------
-; sub_E8B0  ($E8B0)
+; capture_state0  ($E8B0) ; JS: sub_E8B0
+; -> src/game/sub/gp2_6_e5.js
+; Capture sub-state 0: <$D8 = $1E93:$1693 >> 1 (see the BUG), next task.
+; BUG: stores A, not the halved B ($E8B8): always 0 when $1E93 is 0 or 1.
 ; Table entry at: $E7F5
 ;------------------------------------------------------------------------------
-sub_E8B0:
+capture_state0:
 E8B0: B6 1E 93        LDA    $1E93
 E8B3: F6 16 93        LDB    $1693
 E8B6: 44              LSRA
 E8B7: 56              RORB
-E8B8: 97 D8           STA    <$D8            ; [$10D8]
+E8B8: 97 D8           STA    <capture_x_lo   ; BUG: stores A (bit 8 shifted
+                                             ; out) where the siblings store
+                                             ; the halved B [$10D8]
 
 lE8BA:
 E8BA: 0C 7A           INC    <sub_task       ; [$107A]
@@ -4835,10 +5611,13 @@ E8C7: 29 2A 2B 10 0B 0A 09 08  FCB    $29,$2A,$2B,$10,$0B,$0A,$09,$08
 E8CF: 07 06 05 04 03 02 01 00  FCB    $07,$06,$05,$04,$03,$02,$01,$00
 
 ;------------------------------------------------------------------------------
-; sub_E8D7  ($E8D7)
+; capture_collect  ($E8D7) ; JS: sub_E8D7
+; -> src/game/sub/gp2_6_e5.js
+; Capture sub-state 1: each caught slot (b6) is copied to the next of the six
+; captured-ship sprites $0EC2-$0ECD; capture_substate += 2.
 ; Table entry at: $E7F7
 ;------------------------------------------------------------------------------
-sub_E8D7:
+capture_collect:
 E8D7: 10 8E 0E C2     LDY    #$0EC2
 E8DB: 8E 18 5F        LDX    #$185F
 E8DE: C6 FE           LDB    #$FE
@@ -4872,8 +5651,8 @@ E922: A7 A0           STA    ,Y+
 E924: 20 BA           BRA    lE8E0
 
 lE926:
-E926: 0C DA           INC    <$DA            ; [$10DA]
-E928: 0C DA           INC    <$DA            ; [$10DA]
+E926: 0C DA           INC    <capture_substate ; [$10DA]
+E928: 0C DA           INC    <capture_substate ; [$10DA]
 E92A: 20 8E           BRA    lE8BA
 
 lE92C:
@@ -4883,10 +5662,13 @@ E930: A7 84           STA    ,X
 E932: 20 AC           BRA    lE8E0
 
 ;------------------------------------------------------------------------------
-; sub_E934  ($E934)
+; capture_home_y  ($E934) ; JS: sub_E934
+; -> src/game/sub/gp2_6_e5.js
+; Capture sub-state 3: move each captured sprite one step towards the player's
+; Y + offset; when none moved, next sub-state.
 ; Table entry at: $E7FB
 ;------------------------------------------------------------------------------
-sub_E934:
+capture_home_y:
 E934: C6 06           LDB    #$06
 E936: 8E 16 C2        LDX    #$16C2
 E939: A6 89 08 01     LDA    $0801,X
@@ -4993,14 +5775,19 @@ E9DB: 6A 1E           DEC    -$2,X
 lE9DD:
 E9DD: C1 06           CMPB   #$06
 E9DF: 10 26 FE D7     LBNE   lE8BA
-E9E3: 0C DA           INC    <$DA            ; [$10DA]
+E9E3: 0C DA           INC    <capture_substate ; [$10DA]
 E9E5: 7E E8 BA        JMP    lE8BA
 
 ;------------------------------------------------------------------------------
-; sub_E9E8  ($E9E8)
+; capture_leave_x  ($E9E8) ; JS: sub_E9E8
+; -> src/game/sub/gp2_6_e5.js
+; Capture sub-state 4: move the captured sprites in X to the player's X; when
+; none moved clear the capture state, dual_fighter = 1 if one of the first five
+; is in use.
+; QUIRK: DECB before the test ($EA3E): 5 of 6 entries tested.
 ; Table entry at: $E7FD
 ;------------------------------------------------------------------------------
-sub_E9E8:
+capture_leave_x:
 E9E8: 8E 16 C1        LDX    #$16C1
 E9EB: 5F              CLRB
 E9EC: 86 30           LDA    #$30
@@ -5037,8 +5824,8 @@ EA28: 20 C6           BRA    lE9F0
 lEA2A:
 EA2A: C1 00           CMPB   #$00
 EA2C: 26 1B           BNE    lEA49
-EA2E: 0F DA           CLR    <$DA            ; [$10DA]
-EA30: 0F D9           CLR    <$D9            ; [$10D9]
+EA2E: 0F DA           CLR    <capture_substate ; [$10DA]
+EA30: 0F D9           CLR    <player_frozen  ; [$10D9]
 EA32: 7F 11 11        CLR    $1111
 EA35: 0F E9           CLR    <$E9            ; [$10E9]
 EA37: 8E 1E C3        LDX    #$1EC3
@@ -5046,7 +5833,9 @@ EA3A: C6 06           LDB    #$06
 
 lEA3C:
 EA3C: A6 81           LDA    ,X++
-EA3E: 5A              DECB
+EA3E: 5A              DECB                   ; QUIRK: DECB before the test:
+                                             ; only 5 of the 6 entries are
+                                             ; tested
 EA3F: 27 08           BEQ    lEA49
 EA41: 84 80           ANDA   #$80
 EA43: 27 F7           BEQ    lEA3C
@@ -5057,22 +5846,27 @@ lEA49:
 EA49: 7E E8 BA        JMP    lE8BA
 
 ;------------------------------------------------------------------------------
-; sub_EA4C  ($EA4C)
+; task_formation_refill  ($EA4C) ; JS: sub_EA4C
+; -> src/game/sub/gp2_6_e5.js
+; On even frames while a refill is due fly a sprite in (dat_EB2C paths,
+; dat_F0C1 frames); at step $18 put an enemy into the first empty formation
+; slot from frame_counter & $3F mod $27.
+; QUIRK: with no free formation slot the search at $EB29 loops forever.
 ; Table entry at: $E15F
 ;------------------------------------------------------------------------------
-sub_EA4C:
-EA4C: 96 16           LDA    <frame_counter  ; [$1016]
+task_formation_refill:
+EA4C: 96 16           LDA    <frame_counter  ; odd frames: nothing [$1016]
 EA4E: 84 01           ANDA   #$01
 EA50: 10 26 00 55     LBNE   lEAA9
-EA54: 96 FC           LDA    <$FC            ; [$10FC]
+EA54: 96 FC           LDA    <refill_step    ; [$10FC]
 EA56: 26 0C           BNE    lEA64
-EA58: 96 F8           LDA    <$F8            ; [$10F8]
+EA58: 96 F8           LDA    <refill_request ; [$10F8]
 EA5A: 10 27 00 4B     LBEQ   lEAA9
-EA5E: 96 71           LDA    <$71            ; [$1071]
+EA5E: 96 71           LDA    <refill_left    ; [$1071]
 EA60: 10 27 00 45     LBEQ   lEAA9
 
 lEA64:
-EA64: 96 FC           LDA    <$FC            ; [$10FC]
+EA64: 96 FC           LDA    <refill_step    ; [$10FC]
 EA66: 27 0B           BEQ    lEA73
 EA68: 48              ASLA
 EA69: 81 2E           CMPA   #$2E
@@ -5089,7 +5883,7 @@ EA7A: 84 07           ANDA   #$07
 EA7C: 48              ASLA
 EA7D: 8E EB 2C        LDX    #dat_EB2C
 EA80: AE 86           LDX    A,X
-EA82: 96 71           LDA    <$71            ; [$1071]
+EA82: 96 71           LDA    <refill_left    ; [$1071]
 EA84: 48              ASLA
 EA85: EC 86           LDD    A,X
 EA87: FD 17 1E        STD    $171E
@@ -5099,11 +5893,11 @@ EA90: CC 40 10        LDD    #$4010
 
 lEA93:
 EA93: FD 0F 1E        STD    $0F1E
-EA96: 0C FC           INC    <$FC            ; [$10FC]
+EA96: 0C FC           INC    <refill_step    ; [$10FC]
 EA98: 7E EA A9        JMP    lEAA9
 
 lEA9B:
-EA9B: 8E F0 C1        LDX    #dat_F0C1
+EA9B: 8E F0 C1        LDX    #flyin_frames
 EA9E: 80 02           SUBA   #$02
 EAA0: EC 86           LDD    A,X
 EAA2: 26 EF           BNE    lEA93
@@ -5115,17 +5909,17 @@ EAA9: 0C 7A           INC    <sub_task       ; [$107A]
 EAAB: 7E E0 EC        JMP    task_dispatch_sub
 
 lEAAE:
-EAAE: 0C FC           INC    <$FC            ; [$10FC]
+EAAE: 0C FC           INC    <refill_step    ; [$10FC]
 EAB0: 86 04           LDA    #$04
-EAB2: 97 FD           STA    <$FD            ; [$10FD]
+EAB2: 97 FD           STA    <refill_count   ; [$10FD]
 EAB4: 20 F3           BRA    lEAA9
 
 lEAB6:
-EAB6: 0C FF           INC    <$FF            ; [$10FF]
-EAB8: 96 FF           LDA    <$FF            ; [$10FF]
+EAB6: 0C FF           INC    <refill_delay   ; [$10FF]
+EAB8: 96 FF           LDA    <refill_delay   ; [$10FF]
 EABA: 81 04           CMPA   #$04
 EABC: 26 EB           BNE    lEAA9
-EABE: 0F FF           CLR    <$FF            ; [$10FF]
+EABE: 0F FF           CLR    <refill_delay   ; [$10FF]
 EAC0: D6 16           LDB    <frame_counter  ; [$1016]
 EAC2: C4 3F           ANDB   #$3F
 EAC4: C1 27           CMPB   #$27
@@ -5150,7 +5944,7 @@ EAE1: 84 07           ANDA   #$07
 EAE3: 48              ASLA
 EAE4: 10 8E EB 8C     LDY    #dat_EB8C
 EAE8: 10 AE A6        LDY    A,Y
-EAEB: 96 71           LDA    <$71            ; [$1071]
+EAEB: 96 71           LDA    <refill_left    ; [$1071]
 EAED: 48              ASLA
 EAEE: EC A6           LDD    A,Y
 EAF0: ED C9 01 D0     STD    TILE_RAM+$1D0,U ; [$01D0]
@@ -5159,19 +5953,19 @@ EAF6: 84 07           ANDA   #$07
 EAF8: 48              ASLA
 EAF9: 10 8E EB 2C     LDY    #dat_EB2C
 EAFD: 10 AE A6        LDY    A,Y
-EB00: 96 71           LDA    <$71            ; [$1071]
+EB00: 96 71           LDA    <refill_left    ; [$1071]
 EB02: 48              ASLA
 EB03: EC A6           LDD    A,Y
 EB05: ED C4           STD    ,U
 EB07: 86 80           LDA    #$80
 EB09: A7 C9 08 01     STA    $0801,U
-EB0D: 0A FD           DEC    <$FD            ; [$10FD]
+EB0D: 0A FD           DEC    <refill_count   ; [$10FD]
 EB0F: 26 98           BNE    lEAA9
-EB11: 0F F8           CLR    <$F8            ; [$10F8]
-EB13: 0F FC           CLR    <$FC            ; [$10FC]
-EB15: 96 71           LDA    <$71            ; [$1071]
+EB11: 0F F8           CLR    <refill_request ; [$10F8]
+EB13: 0F FC           CLR    <refill_step    ; [$10FC]
+EB15: 96 71           LDA    <refill_left    ; [$1071]
 EB17: 10 27 FF 8E     LBEQ   lEAA9
-EB1B: 0A 71           DEC    <$71            ; [$1071]
+EB1B: 0A 71           DEC    <refill_left    ; [$1071]
 EB1D: 7E EA A9        JMP    lEAA9
 
 lEB20:
@@ -5179,10 +5973,12 @@ EB20: 33 42           LEAU   $2,U
 EB22: 30 01           LEAX   $1,X
 EB24: 8C 18 8A        CMPX   #$188A
 EB27: 26 AC           BNE    lEAD5
-EB29: 5F              CLRB
+EB29: 5F              CLRB                   ; QUIRK: no free slot: the search
+                                             ; loops forever (only the main CPU
+                                             ; can end it)
 EB2A: 20 9E           BRA    lEACA
 
-; Referenced from: $EA7D sub_EA4C, $EAF9 sub_EA4C
+; Referenced from: $EA7D task_formation_refill, $EAF9 task_formation_refill
 dat_EB2C:
 EB2C: EB 3C EB 46 EB 50 EB 5A  FCB    $EB,$3C,$EB,$46,$EB,$50,$EB,$5A
 EB34: EB 64 EB 6E EB 78 EB 82  FCB    $EB,$64,$EB,$6E,$EB,$78,$EB,$82
@@ -5197,7 +5993,7 @@ EB74: 20 FF D0 FF 20 FF D0 B0  FCB    $20,$FF,$D0,$FF,$20,$FF,$D0,$B0
 EB7C: 20 B0 D0 B0 20 F8 D0 FF  FCB    $20,$B0,$D0,$B0,$20,$F8,$D0,$FF
 EB84: 20 B0 D0 B0 20 FF 20 B0  FCB    $20,$B0,$D0,$B0,$20,$FF,$20,$B0
 
-; Referenced from: $EAE4 sub_EA4C
+; Referenced from: $EAE4 task_formation_refill
 dat_EB8C:
 EB8C: EB 9C EB A6 EB B0 EB BA  FCB    $EB,$9C,$EB,$A6,$EB,$B0,$EB,$BA
 EB94: EB C4 EB CE EB D8 EB E2  FCB    $EB,$C4,$EB,$CE,$EB,$D8,$EB,$E2
@@ -5213,11 +6009,15 @@ EBDC: D6 68 D5 AD A7 7D D1 C4  FCB    $D6,$68,$D5,$AD,$A7,$7D,$D1,$C4
 EBE4: CF 0D D5 4A A6 6A D6 CB  FCB    $CF,$0D,$D5,$4A,$A6,$6A,$D6,$CB
 
 ;------------------------------------------------------------------------------
-; sub_EBEC  ($EBEC)
+; task_escort_flyin_a  ($EBEC) ; JS: sub_EBEC
+; -> src/game/sub/gp2_6_eb.js
+; Mode 3: step counter $1116: sprite $0F1E start position, animation from
+; dat_F0C1, then place the wing sprites from the stage tables one every 5
+; frames; CWAI at $ED16, then game_mode + 1.
 ; Table entry at: $E123
 ;------------------------------------------------------------------------------
-sub_EBEC:
-EBEC: B6 11 16        LDA    $1116
+task_escort_flyin_a:
+EBEC: B6 11 16        LDA    escort_step     ; [$1116]
 EBEF: 27 12           BEQ    lEC03
 EBF1: 48              ASLA
 EBF2: 81 02           CMPA   #$02
@@ -5226,7 +6026,7 @@ EBF6: 81 2E           CMPA   #$2E
 EBF8: 27 71           BEQ    lEC6B
 EBFA: 20 61           BRA    lEC5D
 
-; Referenced from: $EC16 sub_EBEC, $ECA6 sub_EBEC
+; Referenced from: $EC16 task_escort_flyin_a, $ECA6 task_escort_flyin_a
 dat_EBFC:
 EBFC: 12 1C 26 30 3A 44 00     FCB    $12,$1C,$26,$30,$3A,$44,$00
 
@@ -5255,7 +6055,7 @@ EC29: 48              ASLA
 EC2A: AE 86           LDX    A,X
 
 lEC2C:
-EC2C: B6 11 18        LDA    $1118
+EC2C: B6 11 18        LDA    wing_group      ; [$1118]
 EC2F: 48              ASLA
 EC30: F6 16 01        LDB    player_x        ; [$1601]
 EC33: C1 10           CMPB   #$10
@@ -5272,7 +6072,7 @@ EC46: CC 40 10        LDD    #$4010
 
 lEC49:
 EC49: FD 0F 1E        STD    $0F1E
-EC4C: 7C 11 16        INC    $1116
+EC4C: 7C 11 16        INC    escort_step     ; [$1116]
 EC4F: 7E EC DF        JMP    lECDF
 
 lEC52:
@@ -5285,7 +6085,7 @@ EC58: C6 01           LDB    #$01
 EC5A: F7 08 4C        STB    $084C
 
 lEC5D:
-EC5D: 8E F0 C1        LDX    #dat_F0C1
+EC5D: 8E F0 C1        LDX    #flyin_frames
 EC60: 80 02           SUBA   #$02
 EC62: EC 86           LDD    A,X
 EC64: 26 E3           BNE    lEC49
@@ -5293,7 +6093,8 @@ EC66: 7F 1F 1F        CLR    $1F1F
 EC69: 20 DE           BRA    lEC49
 
 lEC6B:
-EC6B: 96 16           LDA    <frame_counter  ; [$1016]
+EC6B: 96 16           LDA    <frame_counter  ; only on frame_counter & 15 = 0,
+                                             ; 5, 10 [$1016]
 EC6D: 84 0F           ANDA   #$0F
 EC6F: 27 08           BEQ    lEC79
 EC71: 81 0A           CMPA   #$0A
@@ -5303,15 +6104,15 @@ EC77: 26 66           BNE    lECDF
 
 lEC79:
 EC79: CE ED 7F        LDU    #dat_ED7F
-EC7C: F6 11 18        LDB    $1118
+EC7C: F6 11 18        LDB    wing_group      ; [$1118]
 EC7F: 58              ASLB
 EC80: EE C5           LDU    B,U
-EC82: B6 11 17        LDA    $1117
+EC82: B6 11 17        LDA    wing_sprite_idx ; [$1117]
 EC85: 48              ASLA
 EC86: EE C6           LDU    A,U
 EC88: 27 5A           BEQ    lECE4
-EC8A: 7C 11 17        INC    $1117
-EC8D: 8E ED D1        LDX    #dat_EDD1
+EC8A: 7C 11 17        INC    wing_sprite_idx ; [$1117]
+EC8D: 8E ED D1        LDX    #dat_EDD1       ; the formation flag byte
 EC90: AE 85           LDX    B,X
 EC92: AE 86           LDX    A,X
 EC94: 10 8E EF D3     LDY    #dat_EFD3
@@ -5338,7 +6139,7 @@ ECBF: 58              ASLB
 ECC0: 10 AE A5        LDY    B,Y
 
 lECC3:
-ECC3: F6 11 18        LDB    $1118
+ECC3: F6 11 18        LDB    wing_group      ; [$1118]
 ECC6: 58              ASLB
 ECC7: 10 AE A5        LDY    B,Y
 ECCA: EC A6           LDD    A,Y
@@ -5355,16 +6156,16 @@ ECDF: 0C 7A           INC    <sub_task       ; [$107A]
 ECE1: 7E E0 EC        JMP    task_dispatch_sub
 
 lECE4:
-ECE4: B6 11 18        LDA    $1118
+ECE4: B6 11 18        LDA    wing_group      ; [$1118]
 ECE7: 81 06           CMPA   #$06
 ECE9: 27 15           BEQ    lED00
 ECEB: B6 18 6E        LDA    formation_flags+14 ; [$186E]
 ECEE: B4 18 6F        ANDA   formation_flags+15 ; [$186F]
 ECF1: 84 01           ANDA   #$01
 ECF3: 27 EA           BEQ    lECDF
-ECF5: 7C 11 18        INC    $1118
-ECF8: 7F 11 16        CLR    $1116
-ECFB: 7F 11 17        CLR    $1117
+ECF5: 7C 11 18        INC    wing_group      ; [$1118]
+ECF8: 7F 11 16        CLR    escort_step     ; [$1116]
+ECFB: 7F 11 17        CLR    wing_sprite_idx ; [$1117]
 ECFE: 20 DF           BRA    lECDF
 
 lED00:
@@ -5372,16 +6173,16 @@ ED00: B6 18 6E        LDA    formation_flags+14 ; [$186E]
 ED03: BA 18 6F        ORA    formation_flags+15 ; [$186F]
 ED06: 84 02           ANDA   #$02
 ED08: 26 D5           BNE    lECDF
-ED0A: 7F 11 18        CLR    $1118
-ED0D: 7F 11 17        CLR    $1117
-ED10: 7F 11 16        CLR    $1116
-ED13: 17 03 D7        LBSR   sub_F0ED
-ED16: 3C EF           CWAI   #$EF
+ED0A: 7F 11 18        CLR    wing_group      ; [$1118]
+ED0D: 7F 11 17        CLR    wing_sprite_idx ; [$1117]
+ED10: 7F 11 16        CLR    escort_step     ; [$1116]
+ED13: 17 03 D7        LBSR   reset_formation_rows
+ED16: 3C EF           CWAI   #$EF            ; wait for vblank
 ED18: 0C 2F           INC    <game_mode      ; [$102F]
 ED1A: 0F 7A           CLR    <sub_task       ; [$107A]
 ED1C: 7E E0 EC        JMP    task_dispatch_sub
 
-; Referenced from: $EC23 sub_EBEC
+; Referenced from: $EC23 task_escort_flyin_a
 dat_ED1F:
 ED1F: ED 2B ED 39 ED 47 ED 55  FCB    $ED,$2B,$ED,$39,$ED,$47,$ED,$55
 ED27: ED 63 ED 71 20 FF 58 58  FCB    $ED,$63,$ED,$71,$20,$FF,$58,$58
@@ -5396,7 +6197,7 @@ ED67: D0 70 20 FF D0 70 20 FF  FCB    $D0,$70,$20,$FF,$D0,$70,$20,$FF
 ED6F: 20 FF D0 70 20 FF 58 58  FCB    $20,$FF,$D0,$70,$20,$FF,$58,$58
 ED77: 20 FF D0 70 20 FF 20 FF  FCB    $20,$FF,$D0,$70,$20,$FF,$20,$FF
 
-; Referenced from: $EC79 sub_EBEC
+; Referenced from: $EC79 task_escort_flyin_a
 dat_ED7F:
 ED7F: ED 8D ED 97 ED A1 ED AB  FCB    $ED,$8D,$ED,$97,$ED,$A1,$ED,$AB
 ED87: ED B5 ED BF ED C9 16 64  FCB    $ED,$B5,$ED,$BF,$ED,$C9,$16,$64
@@ -5410,7 +6211,7 @@ EDBF: 16 80 16 4E 16 76 16 3A  FCB    $16,$80,$16,$4E,$16,$76,$16,$3A
 EDC7: 00 00 16 82 16 74 16 4E  FCB    $00,$00,$16,$82,$16,$74,$16,$4E
 EDCF: 00 00                    FCB    $00,$00
 
-; Referenced from: $EC8D sub_EBEC
+; Referenced from: $EC8D task_escort_flyin_a
 dat_EDD1:
 EDD1: ED DF ED E7 ED EF ED F7  FCB    $ED,$DF,$ED,$E7,$ED,$EF,$ED,$F7
 EDD9: ED FF EE 07 EE 0F 18 7A  FCB    $ED,$FF,$EE,$07,$EE,$0F,$18,$7A
@@ -5422,7 +6223,7 @@ EE01: 18 6F 18 79 18 73 18 88  FCB    $18,$6F,$18,$79,$18,$73,$18,$88
 EE09: 18 6F 18 83 18 65 18 89  FCB    $18,$6F,$18,$83,$18,$65,$18,$89
 EE11: 18 82 18 6F              FCB    $18,$82,$18,$6F
 
-; Referenced from: $ECB8 sub_EBEC
+; Referenced from: $ECB8 task_escort_flyin_a
 dat_EE15:
 EE15: EE 21 EE 67 EE AD EE F3  FCB    $EE,$21,$EE,$67,$EE,$AD,$EE,$F3
 EE1D: EF 39 EF 7F EE 2F EE 37  FCB    $EF,$39,$EF,$7F,$EE,$2F,$EE,$37
@@ -5479,12 +6280,12 @@ EFAD: D3 9A D4 0F D3 9A D3 9A  FCB    $D3,$9A,$D4,$0F,$D3,$9A,$D3,$9A
 EFB5: CF EE D0 59 CF EE CF EE  FCB    $CF,$EE,$D0,$59,$CF,$EE,$CF,$EE
 EFBD: CF EE CF EE CF EE CF EE  FCB    $CF,$EE,$CF,$EE,$CF,$EE,$CF,$EE
 
-; Referenced from: $EC03 sub_EBEC
+; Referenced from: $EC03 task_escort_flyin_a
 dat_EFC5:
 EFC5: 20 FF 50 68 20 FF 20 FF  FCB    $20,$FF,$50,$68,$20,$FF,$20,$FF
 EFCD: D0 88 20 FF 20 FF        FCB    $D0,$88,$20,$FF,$20,$FF
 
-; Referenced from: $EC94 sub_EBEC
+; Referenced from: $EC94 task_escort_flyin_a
 dat_EFD3:
 EFD3: EF E1 EF E9 EF F1 EF F9  FCB    $EF,$E1,$EF,$E9,$EF,$F1,$EF,$F9
 EFDB: F0 01 F0 09 F0 11 A0 00  FCB    $F0,$01,$F0,$09,$F0,$11,$A0,$00
@@ -5500,12 +6301,12 @@ F008: 0E DE 08 DE 08 DE 08 DE  FCB    $0E,$DE,$08,$DE,$08,$DE,$08,$DE
 F010: 08 DE 08 DE 08 DE 08 DE  FCB    $08,$DE,$08,$DE,$08,$DE,$08,$DE
 F018: 08                       FCB    $08
 
-; Referenced from: $EC0C sub_EBEC
+; Referenced from: $EC0C task_escort_flyin_a
 dat_F019:
 F019: 50 68 20 FF 50 68 D0 88  FCB    $50,$68,$20,$FF,$50,$68,$D0,$88
 F021: 20 FF 20 FF D0 88        FCB    $20,$FF,$20,$FF,$D0,$88
 
-; Referenced from: $EC9E sub_EBEC
+; Referenced from: $EC9E task_escort_flyin_a
 dat_F027:
 F027: F0 35 F0 3D F0 45 F0 4D  FCB    $F0,$35,$F0,$3D,$F0,$45,$F0,$4D
 F02F: F0 55 F0 5D F0 65 DD 44  FCB    $F0,$55,$F0,$5D,$F0,$65,$DD,$44
@@ -5517,12 +6318,12 @@ F057: DE 08 DE 08 DE 08 DE 08  FCB    $DE,$08,$DE,$08,$DE,$08,$DE,$08
 F05F: DE 08 DE 08 DE 08 DC 0E  FCB    $DE,$08,$DE,$08,$DE,$08,$DC,$0E
 F067: DC 0E DC 0E DC 0E        FCB    $DC,$0E,$DC,$0E,$DC,$0E
 
-; Referenced from: $EC13 sub_EBEC
+; Referenced from: $EC13 task_escort_flyin_a
 dat_F06D:
 F06D: 50 68 20 FF 20 FF D0 68  FCB    $50,$68,$20,$FF,$20,$FF,$D0,$68
 F075: 20 FF 50 68 D0 88        FCB    $20,$FF,$50,$68,$D0,$88
 
-; Referenced from: $ECB2 sub_EBEC
+; Referenced from: $ECB2 task_escort_flyin_a
 dat_F07B:
 F07B: F0 89 F0 91 F0 99 F0 A1  FCB    $F0,$89,$F0,$91,$F0,$99,$F0,$A1
 F083: F0 A9 F0 B1 F0 B9 DD 44  FCB    $F0,$A9,$F0,$B1,$F0,$B9,$DD,$44
@@ -5534,9 +6335,11 @@ F0AB: DE 08 DE 08 DE 08 DD 44  FCB    $DE,$08,$DE,$08,$DE,$08,$DD,$44
 F0B3: DD 44 DD 44 DD 44 DC 0E  FCB    $DD,$44,$DD,$44,$DD,$44,$DC,$0E
 F0BB: DC 0E DC 0E DC 0E        FCB    $DC,$0E,$DC,$0E,$DC,$0E
 
-; Referenced from: $BBE1 sub_BB96, $EA9B sub_EA4C, $EC5D sub_EBEC, $F17B
-; sub_F116, $F5D3 sub_F5A5, $F66D sub_F60B, $FEBB sub_FE82
-dat_F0C1:
+; Sprite code/colour words of the fly-in / bonus animations, $0000 ends.
+; Referenced from: $BBE1 task_challenge_seq, $EA9B task_formation_refill, $EC5D
+; task_escort_flyin_a, $F17B task_escort_flyin_b, $F5D3 task_stage_entry_seq,
+; $F66D task_bonus_sequence, $FEBB task_score_anim
+flyin_frames:
 F0C1: 41 10 42 10 40 10 41 10  FCB    $41,$10,$42,$10,$40,$10,$41,$10
 F0C9: 42 10 40 10 41 10 42 10  FCB    $42,$10,$40,$10,$41,$10,$42,$10
 F0D1: 43 10 44 10 45 11 46 11  FCB    $43,$10,$44,$10,$45,$11,$46,$11
@@ -5545,10 +6348,13 @@ F0E1: 44 10 43 10 42 10 41 10  FCB    $44,$10,$43,$10,$42,$10,$41,$10
 F0E9: 40 10 00 00              FCB    $40,$10,$00,$00
 
 ;------------------------------------------------------------------------------
-; sub_F0ED  ($F0ED)
-; Called from: $ED13 sub_EBEC
+; reset_formation_rows  ($F0ED) ; JS: sub_F0ED
+; -> src/game/sub/gp2_6_eb.js
+; Fill $18C0-$18EB and $19E0-$1A0B (interleaved) with <$10; path pointers
+; $184C-$1853 = $C0E9, $1854-$1857 = $C000.
+; Called from: $ED13 task_escort_flyin_a
 ;------------------------------------------------------------------------------
-sub_F0ED:
+reset_formation_rows:
 F0ED: CE 19 E0        LDU    #$19E0
 F0F0: 8E 18 C0        LDX    #$18C0
 F0F3: 96 10           LDA    <$10            ; [$1010]
@@ -5574,18 +6380,22 @@ F113: 26 F9           BNE    lF10E
 F115: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_F116  ($F116)
+; task_escort_flyin_b  ($F116) ; JS: sub_F116
+; -> src/game/sub/gp2_6_eb.js
+; Mode 3: the $0F20-slot twin of task_escort_flyin_a's first steps, reading
+; $1116-$1118 without changing them.
+; QUIRK: never advances $1116-$1118 (task_escort_flyin_a does).
 ; Table entry at: $E121
 ;------------------------------------------------------------------------------
-sub_F116:
-F116: B6 11 16        LDA    $1116
+task_escort_flyin_b:
+F116: B6 11 16        LDA    escort_step     ; [$1116]
 F119: 27 0E           BEQ    lF129
 F11B: 48              ASLA
 F11C: 81 2E           CMPA   #$2E
 F11E: 27 69           BEQ    lF189
 F120: 20 59           BRA    lF17B
 
-; Referenced from: $F13C sub_F116, $F1C5 sub_F116
+; Referenced from: $F13C task_escort_flyin_b, $F1C5 task_escort_flyin_b
 dat_F122:
 F122: 12 1C 26 30 3A 44 00     FCB    $12,$1C,$26,$30,$3A,$44,$00
 
@@ -5614,7 +6424,7 @@ F14F: 48              ASLA
 F150: AE 86           LDX    A,X
 
 lF152:
-F152: B6 11 18        LDA    $1118
+F152: B6 11 18        LDA    wing_group      ; [$1118]
 F155: 48              ASLA
 F156: F6 16 01        LDB    player_x        ; [$1601]
 F159: C1 10           CMPB   #$10
@@ -5639,7 +6449,7 @@ F177: C0 20           SUBB   #$20
 F179: 20 E8           BRA    lF163
 
 lF17B:
-F17B: 8E F0 C1        LDX    #dat_F0C1
+F17B: 8E F0 C1        LDX    #flyin_frames
 F17E: 80 02           SUBA   #$02
 F180: EC 86           LDD    A,X
 F182: 26 EB           BNE    lF16F
@@ -5657,12 +6467,12 @@ F195: 26 67           BNE    lF1FE
 
 lF197:
 F197: CE F2 63        LDU    #dat_F263
-F19A: F6 11 18        LDB    $1118
+F19A: F6 11 18        LDB    wing_group      ; [$1118]
 F19D: C1 07           CMPB   #$07
 F19F: 24 5D           BCC    lF1FE
 F1A1: 58              ASLB
 F1A2: EE C5           LDU    B,U
-F1A4: B6 11 17        LDA    $1117
+F1A4: B6 11 17        LDA    wing_sprite_idx ; [$1117]
 F1A7: 48              ASLA
 F1A8: EE C6           LDU    A,U
 F1AA: 27 52           BEQ    lF1FE
@@ -5693,7 +6503,7 @@ F1DE: 58              ASLB
 F1DF: 10 AE A5        LDY    B,Y
 
 lF1E2:
-F1E2: F6 11 18        LDB    $1118
+F1E2: F6 11 18        LDB    wing_group      ; [$1118]
 F1E5: 58              ASLB
 F1E6: 10 AE A5        LDY    B,Y
 F1E9: EC A6           LDD    A,Y
@@ -5709,7 +6519,7 @@ lF1FE:
 F1FE: 0C 7A           INC    <sub_task       ; [$107A]
 F200: 7E E0 EC        JMP    task_dispatch_sub
 
-; Referenced from: $F149 sub_F116
+; Referenced from: $F149 task_escort_flyin_b
 dat_F203:
 F203: F2 0F F2 1D F2 2B F2 39  FCB    $F2,$0F,$F2,$1D,$F2,$2B,$F2,$39
 F20B: F2 47 F2 55 D0 FF 88 58  FCB    $F2,$47,$F2,$55,$D0,$FF,$88,$58
@@ -5724,7 +6534,7 @@ F24B: 20 70 D0 FF D0 FF 20 70  FCB    $20,$70,$D0,$FF,$D0,$FF,$20,$70
 F253: D0 FF 20 70 D0 FF 88 58  FCB    $D0,$FF,$20,$70,$D0,$FF,$88,$58
 F25B: D0 FF D0 FF 88 58 D0 FF  FCB    $D0,$FF,$D0,$FF,$88,$58,$D0,$FF
 
-; Referenced from: $F197 sub_F116
+; Referenced from: $F197 task_escort_flyin_b
 dat_F263:
 F263: F2 71 F2 7B F2 85 F2 8F  FCB    $F2,$71,$F2,$7B,$F2,$85,$F2,$8F
 F26B: F2 99 F2 A3 F2 AD 16 5E  FCB    $F2,$99,$F2,$A3,$F2,$AD,$16,$5E
@@ -5738,7 +6548,7 @@ F2A3: 16 7E 16 4C 16 70 16 38  FCB    $16,$7E,$16,$4C,$16,$70,$16,$38
 F2AB: 00 00 16 7C 16 72 16 4C  FCB    $00,$00,$16,$7C,$16,$72,$16,$4C
 F2B3: 00 00                    FCB    $00,$00
 
-; Referenced from: $F1AC sub_F116
+; Referenced from: $F1AC task_escort_flyin_b
 dat_F2B5:
 F2B5: F2 C3 F2 CB F2 D3 F2 DB  FCB    $F2,$C3,$F2,$CB,$F2,$D3,$F2,$DB
 F2BD: F2 E3 F2 EB F2 F3 18 77  FCB    $F2,$E3,$F2,$EB,$F2,$F3,$18,$77
@@ -5750,7 +6560,7 @@ F2E5: 18 6E 18 78 18 6A 18 87  FCB    $18,$6E,$18,$78,$18,$6A,$18,$87
 F2ED: 18 6E 18 80 18 64 18 86  FCB    $18,$6E,$18,$80,$18,$64,$18,$86
 F2F5: 18 81 18 6E              FCB    $18,$81,$18,$6E
 
-; Referenced from: $F1D7 sub_F116
+; Referenced from: $F1D7 task_escort_flyin_b
 dat_F2F9:
 F2F9: F3 05 F3 4B F3 91 F3 D7  FCB    $F3,$05,$F3,$4B,$F3,$91,$F3,$D7
 F301: F4 1D F4 63 F3 13 F3 1B  FCB    $F4,$1D,$F4,$63,$F3,$13,$F3,$1B
@@ -5807,12 +6617,12 @@ F491: D8 83 D8 C2 D8 83 D8 83  FCB    $D8,$83,$D8,$C2,$D8,$83,$D8,$83
 F499: D2 BB D3 1D D2 BB D2 BB  FCB    $D2,$BB,$D3,$1D,$D2,$BB,$D2,$BB
 F4A1: D1 C4 D1 C4 D1 C4 D1 C4  FCB    $D1,$C4,$D1,$C4,$D1,$C4,$D1,$C4
 
-; Referenced from: $F129 sub_F116
+; Referenced from: $F129 task_escort_flyin_b
 dat_F4A9:
 F4A9: D0 FF 90 68 D0 FF 20 88  FCB    $D0,$FF,$90,$68,$D0,$FF,$20,$88
 F4B1: D0 FF D0 FF 20 88        FCB    $D0,$FF,$D0,$FF,$20,$88
 
-; Referenced from: $F1B3 sub_F116
+; Referenced from: $F1B3 task_escort_flyin_b
 dat_F4B7:
 F4B7: F4 C5 F4 CD F4 D5 F4 DD  FCB    $F4,$C5,$F4,$CD,$F4,$D5,$F4,$DD
 F4BF: F4 E5 F4 ED F4 F5 A3 A0  FCB    $F4,$E5,$F4,$ED,$F4,$F5,$A3,$A0
@@ -5824,12 +6634,12 @@ F4E7: A2 AD A2 AD A2 AD A2 AD  FCB    $A2,$AD,$A2,$AD,$A2,$AD,$A2,$AD
 F4EF: A2 AD A2 AD A2 AD A0 AB  FCB    $A2,$AD,$A2,$AD,$A2,$AD,$A0,$AB
 F4F7: A0 AB A0 AB A0 AB        FCB    $A0,$AB,$A0,$AB,$A0,$AB
 
-; Referenced from: $F132 sub_F116
+; Referenced from: $F132 task_escort_flyin_b
 dat_F4FD:
 F4FD: 90 68 D0 FF 90 68 D0 FF  FCB    $90,$68,$D0,$FF,$90,$68,$D0,$FF
 F505: 20 88 D0 FF D0 FF        FCB    $20,$88,$D0,$FF,$D0,$FF
 
-; Referenced from: $F1BD sub_F116
+; Referenced from: $F1BD task_escort_flyin_b
 dat_F50B:
 F50B: F5 19 F5 21 F5 29 F5 31  FCB    $F5,$19,$F5,$21,$F5,$29,$F5,$31
 F513: F5 39 F5 41 F5 49 A1 E8  FCB    $F5,$39,$F5,$41,$F5,$49,$A1,$E8
@@ -5841,12 +6651,12 @@ F53B: A0 AB A0 AB A0 AB A2 AD  FCB    $A0,$AB,$A0,$AB,$A0,$AB,$A2,$AD
 F543: A2 AD A2 AD A2 AD A2 AD  FCB    $A2,$AD,$A2,$AD,$A2,$AD,$A2,$AD
 F54B: A2 AD A2 AD A2 AD        FCB    $A2,$AD,$A2,$AD,$A2,$AD
 
-; Referenced from: $F139 sub_F116
+; Referenced from: $F139 task_escort_flyin_b
 dat_F551:
 F551: D0 FF 90 68 D0 FF D0 FF  FCB    $D0,$FF,$90,$68,$D0,$FF,$D0,$FF
 F559: 20 88 20 88 90 68        FCB    $20,$88,$20,$88,$90,$68
 
-; Referenced from: $F1D1 sub_F116
+; Referenced from: $F1D1 task_escort_flyin_b
 dat_F55F:
 F55F: F5 6D F5 75 F5 7D F5 85  FCB    $F5,$6D,$F5,$75,$F5,$7D,$F5,$85
 F567: F5 8D F5 95 F5 9D A2 AD  FCB    $F5,$8D,$F5,$95,$F5,$9D,$A2,$AD
@@ -5859,11 +6669,14 @@ F597: A0 AB A0 AB A0 AB A1 E8  FCB    $A0,$AB,$A0,$AB,$A0,$AB,$A1,$E8
 F59F: A1 E8 A1 E8 A1 E8        FCB    $A1,$E8,$A1,$E8,$A1,$E8
 
 ;------------------------------------------------------------------------------
-; sub_F5A5  ($F5A5)
+; task_stage_entry_seq  ($F5A5) ; JS: sub_F5A5
+; -> src/game/sub/gp2_6_f5.js
+; Mode 4: step seq_step: two sprites at $0F1E/$0F20 animated through dat_F0C1
+; until its $0000 word; CWAI at $F5FE, clear frame_counter, game_mode + 1.
 ; Table entry at: $E133
 ;------------------------------------------------------------------------------
-sub_F5A5:
-F5A5: 96 18           LDA    <$18            ; [$1018]
+task_stage_entry_seq:
+F5A5: 96 18           LDA    <seq_step       ; [$1018]
 F5A7: 27 07           BEQ    lF5B0
 F5A9: 48              ASLA
 F5AA: 81 2E           CMPA   #$2E
@@ -5883,17 +6696,17 @@ F5C2: FC 1B 54        LDD    $1B54
 F5C5: FD 17 1E        STD    $171E
 F5C8: FC 1B 56        LDD    $1B56
 F5CB: FD 17 20        STD    $1720
-F5CE: 0C 18           INC    <$18            ; [$1018]
+F5CE: 0C 18           INC    <seq_step       ; [$1018]
 F5D0: 7E F5 F9        JMP    lF5F9
 
 lF5D3:
-F5D3: 8E F0 C1        LDX    #dat_F0C1
+F5D3: 8E F0 C1        LDX    #flyin_frames
 F5D6: 80 02           SUBA   #$02
 F5D8: EC 86           LDD    A,X
 F5DA: 26 E0           BNE    lF5BC
 F5DC: 7F 1F 1F        CLR    $1F1F
 F5DF: 7F 1F 21        CLR    $1F21
-F5E2: 0C 18           INC    <$18            ; [$1018]
+F5E2: 0C 18           INC    <seq_step       ; [$1018]
 F5E4: C6 00           LDB    #$00
 F5E6: F7 18 8A        STB    formation_flags+42 ; [$188A]
 F5E9: 96 6F           LDA    <$6F            ; [$106F]
@@ -5912,42 +6725,50 @@ F5FB: 7E E0 EC        JMP    task_dispatch_sub
 lF5FE:
 F5FE: 3C EF           CWAI   #$EF
 F600: 0F 16           CLR    <frame_counter  ; [$1016]
-F602: 0F 18           CLR    <$18            ; [$1018]
+F602: 0F 18           CLR    <seq_step       ; [$1018]
 F604: 0C 2F           INC    <game_mode      ; [$102F]
 F606: 0F 7A           CLR    <sub_task       ; [$107A]
 F608: 7E E0 EC        JMP    task_dispatch_sub
 
 ;------------------------------------------------------------------------------
-; sub_F60B  ($F60B)
+; task_bonus_sequence  ($F60B) ; JS: sub_F60B
+; -> src/game/sub/gp2_6_f5.js
+; Mode 5: when the score parity changes (score_parity) start the same sprite
+; sequence; later steps go through tbl_F62B (bonus sprite drops into place,
+; extra life).
+; QUIRK: 8-bit ASLA ($F621): steps from $1C jump through data past tbl_F62B.
 ; Table entry at: $E161
 ;------------------------------------------------------------------------------
-sub_F60B:
-F60B: 96 18           LDA    <$18            ; [$1018]
+task_bonus_sequence:
+F60B: 96 18           LDA    <seq_step       ; [$1018]
 F60D: 26 10           BNE    lF61F
 F60F: B6 09 B1        LDA    score_p1+1      ; [$09B1]
 F612: B8 09 B4        EORA   score_p2+1      ; [$09B4]
 F615: 84 01           ANDA   #$01
-F617: 91 17           CMPA   <$17            ; [$1017]
+F617: 91 17           CMPA   <score_parity   ; [$1017]
 F619: 10 27 00 B7     LBEQ   lF6D4
-F61D: 96 18           LDA    <$18            ; [$1018]
+F61D: 96 18           LDA    <seq_step       ; [$1018]
 
 lF61F:
 F61F: 27 1A           BEQ    lF63B
-F621: 48              ASLA
+F621: 48              ASLA                   ; QUIRK: 8-bit ASLA: steps $80-$9B
+                                             ; act as $00-$1B; $1C+ jump
+                                             ; through data
 F622: 80 2E           SUBA   #$2E
 F624: 25 44           BCS    lF66A
-F626: 8E F6 2B        LDX    #tbl_F62B
+F626: 8E F6 2B        LDX    #tbl_F62B       ; a is a signed offset
 F629: 6E 96           JMP    [A,X]           ; [table tbl_F62B]
 
-; Referenced from: $F626 sub_F60B
+; Referenced from: $F626 task_bonus_sequence
 tbl_F62B:
-F62B: F6 C7                    FDB    sub_F6C7 ; [0] $F6C7
-F62D: F6 D9                    FDB    sub_F6D9 ; [1] $F6D9
-F62F: F7 2C                    FDB    sub_F72C ; [2] $F72C
-F631: F7 5D                    FDB    sub_F75D ; [3] $F75D
-F633: F7 9D                    FDB    sub_F79D ; [4] $F79D
+F62B: F6 C7                    FDB    bonus_seq_pick ; [0] $F6C7
+F62D: F6 D9                    FDB    bonus_seq_fall ; [1] $F6D9
+F62F: F7 2C                    FDB    bonus_seq_place ; [2] $F72C
+F631: F7 5D                    FDB    bonus_seq_extend ; [3] $F75D
+F633: F7 9D                    FDB    bonus_seq_next ; [4] $F79D
 
-; Referenced from: $F699 sub_F60B, $F6CA sub_F6C7, $F71D sub_F6D9
+; Referenced from: $F699 task_bonus_sequence, $F6CA bonus_seq_pick, $F71D
+; bonus_seq_fall
 dat_F635:
 F635: 27 03 30 04 37 03        FCB    $27,$03,$30,$04,$37,$03
 
@@ -5968,13 +6789,13 @@ F659: FC 1B 54        LDD    $1B54
 F65C: FD 17 1E        STD    $171E
 F65F: FC 1B 56        LDD    $1B56
 F662: FD 17 20        STD    $1720
-F665: 0C 18           INC    <$18            ; [$1018]
+F665: 0C 18           INC    <seq_step       ; [$1018]
 F667: 7E F6 D4        JMP    lF6D4
 
 lF66A:
-F66A: 96 18           LDA    <$18            ; [$1018]
+F66A: 96 18           LDA    <seq_step       ; [$1018]
 F66C: 48              ASLA
-F66D: 8E F0 C1        LDX    #dat_F0C1
+F66D: 8E F0 C1        LDX    #flyin_frames
 F670: 80 02           SUBA   #$02
 F672: EC 86           LDD    A,X
 F674: 26 DD           BNE    lF653
@@ -5982,7 +6803,7 @@ F676: B6 1A 0A        LDA    $1A0A
 F679: B7 1A 0B        STA    $1A0B
 F67C: 7F 1F 1F        CLR    $1F1F
 F67F: 7F 1F 21        CLR    $1F21
-F682: 0C 18           INC    <$18            ; [$1018]
+F682: 0C 18           INC    <seq_step       ; [$1018]
 F684: 8E 1F 27        LDX    #$1F27
 F687: 4F              CLRA
 
@@ -5996,7 +6817,7 @@ F693: 4C              INCA
 F694: 20 F2           BRA    lF688
 
 lF696:
-F696: 97 74           STA    <$74            ; [$1074]
+F696: 97 74           STA    <bonus_slots_used ; [$1074]
 F698: 48              ASLA
 F699: 8E F6 35        LDX    #dat_F635
 F69C: EC 86           LDD    A,X
@@ -6015,51 +6836,56 @@ lF6B9:
 F6B9: B6 09 B1        LDA    score_p1+1      ; [$09B1]
 F6BC: B8 09 B4        EORA   score_p2+1      ; [$09B4]
 F6BF: 84 01           ANDA   #$01
-F6C1: 97 17           STA    <$17            ; [$1017]
-F6C3: 0F 18           CLR    <$18            ; [$1018]
+F6C1: 97 17           STA    <score_parity   ; [$1017]
+F6C3: 0F 18           CLR    <seq_step       ; [$1018]
 F6C5: 20 0D           BRA    lF6D4
 
 ;------------------------------------------------------------------------------
-; sub_F6C7  ($F6C7)
+; bonus_seq_pick  ($F6C7) ; JS: sub_F6C7
+; -> src/game/sub/gp2_6_f5.js
+; tbl_F62B[0]: sprite $0E86 = dat_F635[bonus_slots_used], bonus_anim_idx = 0.
 ; Table entry at: $F62B
 ;------------------------------------------------------------------------------
-sub_F6C7:
-F6C7: 96 74           LDA    <$74            ; [$1074]
+bonus_seq_pick:
+F6C7: 96 74           LDA    <bonus_slots_used ; [$1074]
 F6C9: 48              ASLA
 F6CA: 8E F6 35        LDX    #dat_F635
 F6CD: EC 86           LDD    A,X
 F6CF: FD 0E 86        STD    $0E86
-F6D2: 0F 1D           CLR    <$1D            ; [$101D]
+F6D2: 0F 1D           CLR    <bonus_anim_idx ; [$101D]
 
 lF6D4:
 F6D4: 0C 7A           INC    <sub_task       ; [$107A]
 F6D6: 7E E0 EC        JMP    task_dispatch_sub
 
 ;------------------------------------------------------------------------------
-; sub_F6D9  ($F6D9)
+; bonus_seq_fall  ($F6D9) ; JS: sub_F6D9
+; -> src/game/sub/gp2_6_f5.js
+; tbl_F62B[1]: animate $0F2C through dat_F7AE (24 frames), move it down a
+; pixel; at Y $158/$159 end the step.
 ; Table entry at: $F62D
 ;------------------------------------------------------------------------------
-sub_F6D9:
+bonus_seq_fall:
 F6D9: 86 01           LDA    #$01
 F6DB: B7 08 50        STA    $0850
-F6DE: 96 74           LDA    <$74            ; [$1074]
+F6DE: 96 74           LDA    <bonus_slots_used ; [$1074]
 F6E0: 48              ASLA
 F6E1: 8E F7 AE        LDX    #dat_F7AE
 F6E4: AE 86           LDX    A,X
-F6E6: 96 1D           LDA    <$1D            ; [$101D]
+F6E6: 96 1D           LDA    <bonus_anim_idx ; [$101D]
 F6E8: 48              ASLA
 F6E9: EC 86           LDD    A,X
 F6EB: B7 0F 2C        STA    $0F2C
 F6EE: F7 1F 2C        STB    $1F2C
-F6F1: 96 1D           LDA    <$1D            ; [$101D]
+F6F1: 96 1D           LDA    <bonus_anim_idx ; [$101D]
 F6F3: 4C              INCA
 F6F4: 81 18           CMPA   #$18
 F6F6: 26 01           BNE    lF6F9
 F6F8: 4F              CLRA
 
 lF6F9:
-F6F9: 97 1D           STA    <$1D            ; [$101D]
-F6FB: B6 17 2D        LDA    $172D
+F6F9: 97 1D           STA    <bonus_anim_idx ; [$101D]
+F6FB: B6 17 2D        LDA    $172D           ; carry into $1F2D
 F6FE: 8B 01           ADDA   #$01
 F700: B7 17 2D        STA    $172D
 F703: 24 03           BCC    lF708
@@ -6073,8 +6899,8 @@ F70F: B6 17 2D        LDA    $172D
 F712: 84 FE           ANDA   #$FE
 F714: 81 58           CMPA   #$58
 F716: 26 BC           BNE    lF6D4
-F718: 0C 18           INC    <$18            ; [$1018]
-F71A: 96 74           LDA    <$74            ; [$1074]
+F718: 0C 18           INC    <seq_step       ; [$1018]
+F71A: 96 74           LDA    <bonus_slots_used ; [$1074]
 F71C: 48              ASLA
 F71D: 8E F6 35        LDX    #dat_F635
 F720: EC 86           LDD    A,X
@@ -6084,18 +6910,21 @@ F727: B7 1F 2C        STA    $1F2C
 F72A: 20 A8           BRA    lF6D4
 
 ;------------------------------------------------------------------------------
-; sub_F72C  ($F72C)
+; bonus_seq_place  ($F72C) ; JS: sub_F72C
+; -> src/game/sub/gp2_6_f5.js
+; tbl_F62B[2]: step $172C to dat_F7A5[n], then copy sprite $0F2C to slot
+; dat_F7A8[n] and clear $1F2D.
 ; Table entry at: $F62F
 ;------------------------------------------------------------------------------
-sub_F72C:
-F72C: D6 74           LDB    <$74            ; [$1074]
+bonus_seq_place:
+F72C: D6 74           LDB    <bonus_slots_used ; [$1074]
 F72E: 8E F7 A5        LDX    #dat_F7A5
 F731: B6 17 2C        LDA    $172C
 F734: 4C              INCA
 F735: B7 17 2C        STA    $172C
 F738: A1 85           CMPA   B,X
 F73A: 26 98           BNE    lF6D4
-F73C: 0C 18           INC    <$18            ; [$1018]
+F73C: 0C 18           INC    <seq_step       ; [$1018]
 F73E: 8E F7 A8        LDX    #dat_F7A8
 F741: 58              ASLB
 F742: AE 85           LDX    B,X
@@ -6109,11 +6938,15 @@ F757: 7F 1F 2D        CLR    $1F2D
 F75A: 7E F6 D4        JMP    lF6D4
 
 ;------------------------------------------------------------------------------
-; sub_F75D  ($F75D)
+; bonus_seq_extend  ($F75D) ; JS: sub_F75D
+; -> src/game/sub/gp2_6_f5.js
+; tbl_F62B[3]: all three of $1F27/$1F29/$1F2B set -> flag an extra reserve ship
+; ($1F17..), sound $0855, a life; re-latch score_parity.
+; QUIRK: never tests slot $1F1F (the last one is taken unchecked).
 ; Table entry at: $F631
 ;------------------------------------------------------------------------------
-sub_F75D:
-F75D: 0C 18           INC    <$18            ; [$1018]
+bonus_seq_extend:
+F75D: 0C 18           INC    <seq_step       ; [$1018]
 F75F: 8E 1F 27        LDX    #$1F27
 F762: A6 81           LDA    ,X++
 F764: A4 81           ANDA   ,X++
@@ -6145,28 +6978,30 @@ lF793:
 F793: B6 09 B1        LDA    score_p1+1      ; [$09B1]
 F796: B8 09 B4        EORA   score_p2+1      ; [$09B4]
 F799: 84 01           ANDA   #$01
-F79B: 97 17           STA    <$17            ; [$1017]
+F79B: 97 17           STA    <score_parity   ; [$1017]
 
 ;------------------------------------------------------------------------------
-; sub_F79D  ($F79D)
+; bonus_seq_next  ($F79D) ; JS: sub_F79D
+; -> src/game/sub/gp2_6_f5.js
+; tbl_F62B[4]: JMP $F6D4, only the next task.
 ; Table entry at: $F633
 ;------------------------------------------------------------------------------
-sub_F79D:
+bonus_seq_next:
 F79D: 7E F6 D4        JMP    lF6D4
 
 lF7A0:
 F7A0: 7C 11 04        INC    lives_p1        ; [$1104]
 F7A3: 20 EE           BRA    lF793
 
-; Referenced from: $F72E sub_F72C
+; Referenced from: $F72E bonus_seq_place
 dat_F7A5:
 F7A5: B8 CB D8                 FCB    $B8,$CB,$D8
 
-; Referenced from: $F73E sub_F72C
+; Referenced from: $F73E bonus_seq_place
 dat_F7A8:
 F7A8: 0F 26 0F 28 0F 2A        FCB    $0F,$26,$0F,$28,$0F,$2A
 
-; Referenced from: $F6E1 sub_F6D9
+; Referenced from: $F6E1 bonus_seq_fall
 dat_F7AE:
 F7AE: F7 B4 F7 E4 F8 14 27 40  FCB    $F7,$B4,$F7,$E4,$F8,$14,$27,$40
 F7B6: 28 40 29 40 2A 40 2B 40  FCB    $28,$40,$29,$40,$2A,$40,$2B,$40
@@ -6189,10 +7024,15 @@ F836: 3C 43 3D 42 3C 42 3B 42  FCB    $3C,$43,$3D,$42,$3C,$42,$3B,$42
 F83E: 3A 42 39 42 38 42        FCB    $3A,$42,$39,$42,$38,$42
 
 ;------------------------------------------------------------------------------
-; sub_F844  ($F844)
+; task_enemy_shots  ($F844) ; JS: sub_F844
+; -> src/game/sub/gp2_6_f5.js
+; Modes 3-5: the first formation member diving at Y $A0 or $C0 fires once
+; (shot_fired_flags): a shot sprite in a free slot of $0ECE..[$1064] with
+; shot_velocity.
+; QUIRK: the free-slot search stops only on an exact match with $1064 ($F8A6).
 ; Table entry at: $E11D, $E12F, $E13F
 ;------------------------------------------------------------------------------
-sub_F844:
+task_enemy_shots:
 F844: B6 09 F4        LDA    attract_flag    ; [$09F4]
 F847: 10 26 00 39     LBNE   lF884
 F84B: 96 35           LDA    <stage          ; [$1035]
@@ -6230,7 +7070,7 @@ F884: 0C 7A           INC    <sub_task       ; [$107A]
 F886: 7E E0 EC        JMP    task_dispatch_sub
 
 lF889:
-F889: CE 1A 10        LDU    #$1A10
+F889: CE 1A 10        LDU    #shot_fired_flags ; [#$1A10]
 F88C: C6 42           LDB    #$42
 
 lF88E:
@@ -6241,7 +7081,7 @@ F893: 20 EF           BRA    lF884
 
 lF895:
 F895: 30 C4           LEAX   ,U
-F897: CE 1A 10        LDU    #$1A10
+F897: CE 1A 10        LDU    #shot_fired_flags ; [#$1A10]
 F89A: 54              LSRB
 F89B: A6 C5           LDA    B,U
 F89D: 26 E5           BNE    lF884
@@ -6250,25 +7090,31 @@ F8A1: CE 0E CC        LDU    #$0ECC
 
 lF8A4:
 F8A4: 33 42           LEAU   $2,U
-F8A6: 11 93 64        CMPU   <$64            ; [$1064]
+F8A6: 11 93 64        CMPU   <$64            ; QUIRK: the free-slot search
+                                             ; stops only on an exact match
+                                             ; with $1064 [$1064]
 F8A9: 27 D9           BEQ    lF884
 F8AB: A6 C9 10 01     LDA    $1001,U
 F8AF: 84 80           ANDA   #$80
 F8B1: 26 F1           BNE    lF8A4
 F8B3: CC 4E 00        LDD    #$4E00
 F8B6: ED C4           STD    ,U
-F8B8: EC 1F           LDD    -$1,X
+F8B8: EC 1F           LDD    -$1,X           ; the byte before the member's Y,
+                                             ; then its Y
 F8BA: ED C9 08 00     STD    $0800,U
 F8BE: CC 00 80        LDD    #$0080
 F8C1: ED C9 10 00     STD    $1000,U
-F8C5: 8D 02           BSR    sub_F8C9
+F8C5: 8D 02           BSR    shot_velocity
 F8C7: 20 BB           BRA    lF884
 
 ;------------------------------------------------------------------------------
-; sub_F8C9  ($F8C9)
-; Called from: $F8C5 sub_F844
+; shot_velocity  ($F8C9) ; JS: sub_F8C9
+; -> src/game/sub/gp2_6_f5.js
+; Shot speed word into [$0C92,U]: B = min((Y + $50 - player_y) / 8, 20), table
+; by X (< $A0, < $D0, else) and stage (dat_F932...dat_F9DA).
+; Called from: $F8C5 task_enemy_shots
 ;------------------------------------------------------------------------------
-sub_F8C9:
+shot_velocity:
 F8C9: 4F              CLRA
 F8CA: E6 C9 08 00     LDB    $0800,U
 F8CE: C3 00 50        ADDD   #$0050
@@ -6299,7 +7145,7 @@ F8F4: 81 06           CMPA   #$06
 F8F6: 27 20           BEQ    lF918
 
 lF8F8:
-F8F8: 10 8E F9 32     LDY    #dat_F932
+F8F8: 10 8E F9 32     LDY    #shot_speeds_a
 F8FC: A6 C9 08 01     LDA    $0801,U
 F900: 81 A0           CMPA   #$A0
 F902: 25 0C           BCS    lF910
@@ -6325,8 +7171,9 @@ F92A: 25 E4           BCS    lF910
 F92C: 10 8E F9 DA     LDY    #dat_F9DA
 F930: 20 DE           BRA    lF910
 
-; Referenced from: $F8F8 sub_F8C9
-dat_F932:
+; shot_velocity: speed words, 21 per table (dat_F932..dat_F9DA).
+; Referenced from: $F8F8 shot_velocity
+shot_speeds_a:
 F932: 01 49 01 2D 01 0F 00 EF  FCB    $01,$49,$01,$2D,$01,$0F,$00,$EF
 F93A: 00 CF 00 AE 00 8D 00 7B  FCB    $00,$CF,$00,$AE,$00,$8D,$00,$7B
 F942: 00 47 00 24 00 00 80 24  FCB    $00,$47,$00,$24,$00,$00,$80,$24
@@ -6334,7 +7181,7 @@ F94A: 80 47 80 7B 80 8D 80 AE  FCB    $80,$47,$80,$7B,$80,$8D,$80,$AE
 F952: 80 CF 80 EF 81 0F 81 2D  FCB    $80,$CF,$80,$EF,$81,$0F,$81,$2D
 F95A: 81 49                    FCB    $81,$49
 
-; Referenced from: $F904 sub_F8C9
+; Referenced from: $F904 shot_velocity
 dat_F95C:
 F95C: 01 BB 01 9E 01 7C 01 56  FCB    $01,$BB,$01,$9E,$01,$7C,$01,$56
 F964: 01 2D 01 00 00 CF 00 9E  FCB    $01,$2D,$01,$00,$00,$CF,$00,$9E
@@ -6343,7 +7190,7 @@ F974: 80 6A 80 9E 80 CF 81 00  FCB    $80,$6A,$80,$9E,$80,$CF,$81,$00
 F97C: 81 2D 81 56 81 7C 81 9E  FCB    $81,$2D,$81,$56,$81,$7C,$81,$9E
 F984: 81 BB                    FCB    $81,$BB
 
-; Referenced from: $F90C sub_F8C9, $F918 sub_F8C9
+; Referenced from: $F90C shot_velocity, $F918 shot_velocity
 dat_F986:
 F986: 02 30 02 00 01 F7 01 E0  FCB    $02,$30,$02,$00,$01,$F7,$01,$E0
 F98E: 01 BB 01 88 01 49 01 00  FCB    $01,$BB,$01,$88,$01,$49,$01,$00
@@ -6352,7 +7199,7 @@ F99E: 80 AE 81 00 81 49 81 88  FCB    $80,$AE,$81,$00,$81,$49,$81,$88
 F9A6: 81 BB 81 E0 81 F7 82 00  FCB    $81,$BB,$81,$E0,$81,$F7,$82,$00
 F9AE: 82 30                    FCB    $82,$30
 
-; Referenced from: $F924 sub_F8C9
+; Referenced from: $F924 shot_velocity
 dat_F9B0:
 F9B0: 02 49 02 2D 02 0F 01 EF  FCB    $02,$49,$02,$2D,$02,$0F,$01,$EF
 F9B8: 01 CF 01 AE 01 8D 01 7B  FCB    $01,$CF,$01,$AE,$01,$8D,$01,$7B
@@ -6361,7 +7208,7 @@ F9C8: 81 47 81 7B 81 8D 81 AE  FCB    $81,$47,$81,$7B,$81,$8D,$81,$AE
 F9D0: 81 CF 81 EF 82 0F 82 2D  FCB    $81,$CF,$81,$EF,$82,$0F,$82,$2D
 F9D8: 82 49                    FCB    $82,$49
 
-; Referenced from: $F92C sub_F8C9
+; Referenced from: $F92C shot_velocity
 dat_F9DA:
 F9DA: 02 BB 02 9E 02 7C 02 56  FCB    $02,$BB,$02,$9E,$02,$7C,$02,$56
 F9E2: 02 2D 02 00 01 CF 01 9E  FCB    $02,$2D,$02,$00,$01,$CF,$01,$9E
@@ -6376,17 +7223,22 @@ FA22: 82 88 82 BB 82 E0 82 F7  FCB    $82,$88,$82,$BB,$82,$E0,$82,$F7
 FA2A: 83 00 83 30              FCB    $83,$00,$83,$30
 
 ;------------------------------------------------------------------------------
-; sub_FA2E  ($FA2E)
+; task_move_enemy_shots  ($FA2E) ; JS: sub_FA2E
+; -> src/game/sub/gp2_6_fa.js
+; Move the seven shots $0ECE-$0EDA: X + 2 or 3 by frame parity until $160 (then
+; freed), Y by the signed 8.8 speed at $1B60+n; while $1114 runs flip their
+; pictures.
+; Alias: proposed as task_move_bonus_objects.
 ; Table entry at: $E10D, $E111, $E115, $E11F, $E131, $E141, $E16B
 ;------------------------------------------------------------------------------
-sub_FA2E:
+task_move_enemy_shots:
 FA2E: CE 0E CC        LDU    #$0ECC
 
 lFA31:
 FA31: 33 42           LEAU   $2,U
 FA33: 11 83 0E DC     CMPU   #$0EDC
 FA37: 27 74           BEQ    lFAAD
-FA39: A6 C9 10 01     LDA    $1001,U
+FA39: A6 C9 10 01     LDA    $1001,U         ; slot unused
 FA3D: 84 80           ANDA   #$80
 FA3F: 27 F0           BEQ    lFA31
 FA41: A6 C9 08 01     LDA    $0801,U
@@ -6437,15 +7289,15 @@ FAA7: A7 C9 08 00     STA    $0800,U
 FAAB: 20 84           BRA    lFA31
 
 lFAAD:
-FAAD: B6 11 14        LDA    $1114
+FAAD: B6 11 14        LDA    bonus_obj_count ; only while 1..$32 [$1114]
 FAB0: 27 52           BEQ    lFB04
 FAB2: 81 33           CMPA   #$33
 FAB4: 24 4E           BCC    lFB04
-FAB6: 7C 11 15        INC    $1115
-FAB9: B6 11 15        LDA    $1115
+FAB6: 7C 11 15        INC    bonus_obj_div5  ; [$1115]
+FAB9: B6 11 15        LDA    bonus_obj_div5  ; [$1115]
 FABC: 81 05           CMPA   #$05
 FABE: 26 44           BNE    lFB04
-FAC0: 7F 11 15        CLR    $1115
+FAC0: 7F 11 15        CLR    bonus_obj_div5  ; [$1115]
 FAC3: 8E 0E CC        LDX    #$0ECC
 
 lFAC6:
@@ -6473,7 +7325,7 @@ FAF2: 6F 89 10 00     CLR    $1000,X
 FAF6: 6F 89 10 01     CLR    $1001,X
 FAFA: CC 4E 00        LDD    #$4E00
 FAFD: ED 84           STD    ,X
-FAFF: 7A 11 14        DEC    $1114
+FAFF: 7A 11 14        DEC    bonus_obj_count ; [$1114]
 FB02: 20 C2           BRA    lFAC6
 
 lFB04:
@@ -6481,13 +7333,16 @@ FB04: 0C 7A           INC    <sub_task       ; [$107A]
 FB06: 7E E0 EC        JMP    task_dispatch_sub
 
 ;------------------------------------------------------------------------------
-; sub_FB09  ($FB09)
+; task_refresh_formation_sprites  ($FB09) ; JS: sub_FB09
+; -> src/game/sub/gp2_6_fa.js
+; When formation_sprites_dirty: refresh the 21 formation sprites $0E02-$0E2A
+; from the flag pairs $1860-$1889 (size, shown/hidden).
 ; Table entry at: $E129, $E139, $E151
 ;------------------------------------------------------------------------------
-sub_FB09:
-FB09: 96 BF           LDA    <$BF            ; [$10BF]
+task_refresh_formation_sprites:
+FB09: 96 BF           LDA    <formation_sprites_dirty ; [$10BF]
 FB0B: 27 22           BEQ    lFB2F
-FB0D: 0F BF           CLR    <$BF            ; [$10BF]
+FB0D: 0F BF           CLR    <formation_sprites_dirty ; [$10BF]
 FB0F: 8E 0E 02        LDX    #sprite_shadow_1+2 ; [#$0E02]
 FB12: CE 18 60        LDU    #formation_flags ; [#$1860]
 
@@ -6533,10 +7388,13 @@ FB52: E7 89 10 00     STB    $1000,X
 FB56: 20 CD           BRA    lFB25
 
 ;------------------------------------------------------------------------------
-; sub_FB58  ($FB58)
+; task_show_188A_pair  ($FB58) ; JS: sub_FB58
+; -> src/game/sub/gp2_6_fa.js
+; Show ($80) or hide the sprites $1E2D/$1E2F from the low bits of
+; formation_flags+42/+43.
 ; Table entry at: $E12B, $E13B, $E153
 ;------------------------------------------------------------------------------
-sub_FB58:
+task_show_188A_pair:
 FB58: B6 18 8A        LDA    formation_flags+42 ; [$188A]
 FB5B: C6 80           LDB    #$80
 FB5D: 84 03           ANDA   #$03
@@ -6557,26 +7415,34 @@ FB72: 0C 7A           INC    <sub_task       ; [$107A]
 FB74: 7E E0 EC        JMP    task_dispatch_sub
 
 ;------------------------------------------------------------------------------
-; sub_FB77  ($FB77)
+; task_launch_group1  ($FB77) ; JS: sub_FB77
+; -> src/game/sub/gp2_6_fa.js
+; Unless $112A/$10FE/$1013: count group1_timer; every 64th frame bump
+; group1_count and go on through tbl_FBA8 (threshold word at U + 2B).
+; QUIRK: the index from group1_count is overwritten ($FB9F): the thresholds at
+; U+2/U+4 are dead.
 ; Table entry at: $E147
 ;------------------------------------------------------------------------------
-sub_FB77:
-FB77: B6 11 2A        LDA    $112A
+task_launch_group1:
+FB77: B6 11 2A        LDA    ready_active    ; [$112A]
 FB7A: 26 79           BNE    lFBF5
-FB7C: 96 FE           LDA    <$FE            ; [$10FE]
+FB7C: 96 FE           LDA    <player_dying   ; [$10FE]
 FB7E: 26 75           BNE    lFBF5
 FB80: 96 13           LDA    <$13            ; [$1013]
 FB82: 26 71           BNE    lFBF5
-FB84: 0C B2           INC    <$B2            ; [$10B2]
+FB84: 0C B2           INC    <group1_timer+1 ; a 16-bit count, big-endian
+                                             ; [$10B2]
 FB86: 26 02           BNE    lFB8A
-FB88: 0C B1           INC    <$B1            ; [$10B1]
+FB88: 0C B1           INC    <group1_timer   ; [$10B1]
 
 lFB8A:
 FB8A: 96 16           LDA    <frame_counter  ; [$1016]
 FB8C: 84 3F           ANDA   #$3F
 FB8E: 26 65           BNE    lFBF5
-FB90: 0C B0           INC    <$B0            ; [$10B0]
-FB92: 96 B0           LDA    <$B0            ; [$10B0]
+FB90: 0C B0           INC    <group1_count   ; [$10B0]
+FB92: 96 B0           LDA    <group1_count   ; B counts down to 0; the shifted
+                                             ; A is then lost to `lda <$B4`
+                                             ; [$10B0]
 FB94: 84 60           ANDA   #$60
 FB96: C6 04           LDB    #$04
 
@@ -6584,61 +7450,73 @@ lFB98:
 FB98: 44              LSRA
 FB99: 5A              DECB
 FB9A: 26 FC           BNE    lFB98
-FB9C: CE 10 4A        LDU    #$104A
-FB9F: 96 B4           LDA    <$B4            ; [$10B4]
-FBA1: 26 0D           BNE    sub_FBB0
-FBA3: 8E FB A8        LDX    #tbl_FBA8
+FB9C: CE 10 4A        LDU    #stage_params+20 ; [#$104A]
+FB9F: 96 B4           LDA    <group1_mode    ; QUIRK: overwrites the index from
+                                             ; $10B0: the table takes entry 0
+                                             ; or 3 [$10B4]
+FBA1: 26 0D           BNE    launch_group1_b3
+FBA3: 8E FB A8        LDX    #tbl_FBA8       ; A is 0 here
 FBA6: 6E 96           JMP    [A,X]           ; [table tbl_FBA8]
 
-; Referenced from: $FBA3 sub_FB77
+; Referenced from: $FBA3 task_launch_group1
 tbl_FBA8:
-FBA8: FB B3                    FDB    sub_FBB3 ; [0] $FBB3
-FBAA: FB B2                    FDB    sub_FBB2 ; [1] $FBB2
-FBAC: FB B1                    FDB    sub_FBB1 ; [2] $FBB1
-FBAE: FB B0                    FDB    sub_FBB0 ; [3] $FBB0
+FBA8: FB B3                    FDB    launch_group1_tail ; [0] $FBB3
+FBAA: FB B2                    FDB    launch_group1_b1 ; [1] $FBB2
+FBAC: FB B1                    FDB    launch_group1_b2 ; [2] $FBB1
+FBAE: FB B0                    FDB    launch_group1_b3 ; [3] $FBB0
 
 ;------------------------------------------------------------------------------
-; sub_FBB0  ($FBB0)
+; launch_group1_b3  ($FBB0) ; JS: sub_FBB0
+; -> src/game/sub/gp2_6_fa.js
+; INCB, falls into launch_group1_b2.
 ; Jumped to from: $FBA1
 ; Table entry at: $FBAE
 ;------------------------------------------------------------------------------
-sub_FBB0:
+launch_group1_b3:
 FBB0: 5C              INCB
 
 ;------------------------------------------------------------------------------
-; sub_FBB1  ($FBB1)
+; launch_group1_b2  ($FBB1) ; JS: sub_FBB1
+; -> src/game/sub/gp2_6_fa.js
+; INCB, falls into launch_group1_b1.
 ; Table entry at: $FBAC
 ;------------------------------------------------------------------------------
-sub_FBB1:
+launch_group1_b2:
 FBB1: 5C              INCB
 
 ;------------------------------------------------------------------------------
-; sub_FBB2  ($FBB2)
+; launch_group1_b1  ($FBB2) ; JS: sub_FBB2
+; -> src/game/sub/gp2_6_fa.js
+; INCB, falls into launch_group1_tail.
 ; Table entry at: $FBAA
 ;------------------------------------------------------------------------------
-sub_FBB2:
+launch_group1_b1:
 FBB2: 5C              INCB
 
 ;------------------------------------------------------------------------------
-; sub_FBB3  ($FBB3)
+; launch_group1_tail  ($FBB3) ; JS: sub_FBB3
+; -> src/game/sub/gp2_6_fa.js
+; When group1_timer reaches the word at U + 2B: restart it and launch the next
+; free position of dat_FC09 (flag 2, path from $1052/$1054, or $DD44 with
+; $1020).
 ; Table entry at: $FBA8
 ;------------------------------------------------------------------------------
-sub_FBB3:
+launch_group1_tail:
 FBB3: 58              ASLB
 FBB4: 33 C5           LEAU   B,U
-FBB6: DC B1           LDD    <$B1            ; [$10B1]
+FBB6: DC B1           LDD    <group1_timer   ; [$10B1]
 FBB8: 10 A3 C4        CMPD   ,U
 FBBB: 25 38           BCS    lFBF5
-FBBD: 0F B1           CLR    <$B1            ; [$10B1]
-FBBF: 0F B2           CLR    <$B2            ; [$10B2]
-FBC1: 96 B3           LDA    <$B3            ; [$10B3]
+FBBD: 0F B1           CLR    <group1_timer   ; [$10B1]
+FBBF: 0F B2           CLR    <group1_timer+1 ; [$10B2]
+FBC1: 96 B3           LDA    <group1_index   ; [$10B3]
 FBC3: 81 14           CMPA   #$14
 FBC5: 25 03           BCS    lFBCA
-FBC7: 0F B3           CLR    <$B3            ; [$10B3]
+FBC7: 0F B3           CLR    <group1_index   ; [$10B3]
 FBC9: 4F              CLRA
 
 lFBCA:
-FBCA: 8E FC 09        LDX    #dat_FC09
+FBCA: 8E FC 09        LDX    #group1_positions
 FBCD: 48              ASLA
 FBCE: E6 96           LDB    [A,X]
 FBD0: C4 03           ANDB   #$03
@@ -6650,18 +7528,18 @@ FBD6: E7 96           STB    [A,X]
 FBD8: 8E FC 59        LDX    #dat_FC59
 FBDB: 44              LSRA
 FBDC: E6 86           LDB    A,X
-FBDE: CE 10 52        LDU    #$1052
+FBDE: CE 10 52        LDU    #stage_params+28 ; [#$1052]
 FBE1: EE C5           LDU    B,U
 FBE3: D6 20           LDB    <$20            ; [$1020]
 FBE5: 27 03           BEQ    lFBEA
-FBE7: CE DD 44        LDU    #dat_DD44
+FBE7: CE DD 44        LDU    #path_DD44
 
 lFBEA:
 FBEA: 8E FC 31        LDX    #dat_FC31
 FBED: 48              ASLA
 FBEE: EF 96           STU    [A,X]
 FBF0: 7C 08 4D        INC    $084D
-FBF3: 0C B3           INC    <$B3            ; [$10B3]
+FBF3: 0C B3           INC    <group1_index   ; [$10B3]
 
 lFBF5:
 FBF5: 0C 7A           INC    <sub_task       ; [$107A]
@@ -6679,15 +7557,16 @@ FC03: 81 28           CMPA   #$28
 FC05: 26 F4           BNE    lFBFB
 FC07: 20 EC           BRA    lFBF5
 
-; Referenced from: $FBCA sub_FBB3
-dat_FC09:
+; task_launch_group1: 20 formation positions.
+; Referenced from: $FBCA launch_group1_tail
+group1_positions:
 FC09: 18 73 18 60 18 6A 18 69  FCB    $18,$73,$18,$60,$18,$6A,$18,$69
 FC11: 18 6B 18 68 18 61 18 72  FCB    $18,$6B,$18,$68,$18,$61,$18,$72
 FC19: 18 6C 18 67 18 71 18 62  FCB    $18,$6C,$18,$67,$18,$71,$18,$62
 FC21: 18 6D 18 66 18 63 18 70  FCB    $18,$6D,$18,$66,$18,$63,$18,$70
 FC29: 18 64 18 6E 18 65 18 6F  FCB    $18,$64,$18,$6E,$18,$65,$18,$6F
 
-; Referenced from: $FBEA sub_FBB3
+; Referenced from: $FBEA launch_group1_tail
 dat_FC31:
 FC31: 18 26 18 00 18 14 18 12  FCB    $18,$26,$18,$00,$18,$14,$18,$12
 FC39: 18 16 18 10 18 02 18 24  FCB    $18,$16,$18,$10,$18,$02,$18,$24
@@ -6695,20 +7574,24 @@ FC41: 18 18 18 0E 18 22 18 04  FCB    $18,$18,$18,$0E,$18,$22,$18,$04
 FC49: 18 1A 18 0C 18 06 18 20  FCB    $18,$1A,$18,$0C,$18,$06,$18,$20
 FC51: 18 08 18 1C 18 0A 18 1E  FCB    $18,$08,$18,$1C,$18,$0A,$18,$1E
 
-; Referenced from: $FBD8 sub_FBB3
+; Referenced from: $FBD8 launch_group1_tail
 dat_FC59:
 FC59: 02 00 00 02 00 02 00 02  FCB    $02,$00,$00,$02,$00,$02,$00,$02
 FC61: 00 02 02 00 00 02 00 02  FCB    $00,$02,$02,$00,$00,$02,$00,$02
 FC69: 00 00 02 02              FCB    $00,$00,$02,$02
 
 ;------------------------------------------------------------------------------
-; sub_FC6D  ($FC6D)
+; task_launch_group2  ($FC6D) ; JS: sub_FC6D
+; -> src/game/sub/gp2_6_fa.js
+; The twin of task_launch_group1 for the second group ($10B5-$10B9, thresholds
+; from $1042, tbl_FC9E).
+; QUIRK: the same dead index as task_launch_group1 ($FC95).
 ; Table entry at: $E149
 ;------------------------------------------------------------------------------
-sub_FC6D:
-FC6D: B6 11 2A        LDA    $112A
+task_launch_group2:
+FC6D: B6 11 2A        LDA    ready_active    ; [$112A]
 FC70: 26 79           BNE    lFCEB
-FC72: 96 FE           LDA    <$FE            ; [$10FE]
+FC72: 96 FE           LDA    <player_dying   ; [$10FE]
 FC74: 26 75           BNE    lFCEB
 FC76: 96 13           LDA    <$13            ; [$1013]
 FC78: 26 71           BNE    lFCEB
@@ -6720,8 +7603,8 @@ lFC80:
 FC80: 96 16           LDA    <frame_counter  ; [$1016]
 FC82: 84 3F           ANDA   #$3F
 FC84: 26 65           BNE    lFCEB
-FC86: 0C B5           INC    <$B5            ; [$10B5]
-FC88: 96 B5           LDA    <$B5            ; [$10B5]
+FC86: 0C B5           INC    <group2_count   ; [$10B5]
+FC88: 96 B5           LDA    <group2_count   ; [$10B5]
 FC8A: 84 60           ANDA   #$60
 FC8C: C6 04           LDB    #$04
 
@@ -6729,46 +7612,58 @@ lFC8E:
 FC8E: 44              LSRA
 FC8F: 5A              DECB
 FC90: 26 FC           BNE    lFC8E
-FC92: CE 10 42        LDU    #$1042
-FC95: 96 B9           LDA    <$B9            ; [$10B9]
-FC97: 26 0D           BNE    sub_FCA6
-FC99: 8E FC 9E        LDX    #tbl_FC9E
+FC92: CE 10 42        LDU    #stage_params+12 ; [#$1042]
+FC95: 96 B9           LDA    <$B9            ; QUIRK: overwrites the index from
+                                             ; $10B5: the table takes entry 0
+                                             ; or 3 [$10B9]
+FC97: 26 0D           BNE    launch_group2_b3
+FC99: 8E FC 9E        LDX    #tbl_FC9E       ; A is 0 here
 FC9C: 6E 96           JMP    [A,X]           ; [table tbl_FC9E]
 
-; Referenced from: $FC99 sub_FC6D
+; Referenced from: $FC99 task_launch_group2
 tbl_FC9E:
-FC9E: FC A9                    FDB    sub_FCA9 ; [0] $FCA9
-FCA0: FC A8                    FDB    sub_FCA8 ; [1] $FCA8
-FCA2: FC A7                    FDB    sub_FCA7 ; [2] $FCA7
-FCA4: FC A6                    FDB    sub_FCA6 ; [3] $FCA6
+FC9E: FC A9                    FDB    launch_group2_tail ; [0] $FCA9
+FCA0: FC A8                    FDB    launch_group2_b1 ; [1] $FCA8
+FCA2: FC A7                    FDB    launch_group2_b2 ; [2] $FCA7
+FCA4: FC A6                    FDB    launch_group2_b3 ; [3] $FCA6
 
 ;------------------------------------------------------------------------------
-; sub_FCA6  ($FCA6)
+; launch_group2_b3  ($FCA6) ; JS: sub_FCA6
+; -> src/game/sub/gp2_6_fa.js
+; INCB, falls into launch_group2_b2.
 ; Jumped to from: $FC97
 ; Table entry at: $FCA4
 ;------------------------------------------------------------------------------
-sub_FCA6:
+launch_group2_b3:
 FCA6: 5C              INCB
 
 ;------------------------------------------------------------------------------
-; sub_FCA7  ($FCA7)
+; launch_group2_b2  ($FCA7) ; JS: sub_FCA7
+; -> src/game/sub/gp2_6_fa.js
+; INCB, falls into launch_group2_b1.
 ; Table entry at: $FCA2
 ;------------------------------------------------------------------------------
-sub_FCA7:
+launch_group2_b2:
 FCA7: 5C              INCB
 
 ;------------------------------------------------------------------------------
-; sub_FCA8  ($FCA8)
+; launch_group2_b1  ($FCA8) ; JS: sub_FCA8
+; -> src/game/sub/gp2_6_fa.js
+; INCB, falls into launch_group2_tail.
 ; Table entry at: $FCA0
 ;------------------------------------------------------------------------------
-sub_FCA8:
+launch_group2_b1:
 FCA8: 5C              INCB
 
 ;------------------------------------------------------------------------------
-; sub_FCA9  ($FCA9)
+; launch_group2_tail  ($FCA9) ; JS: sub_FCA9
+; -> src/game/sub/gp2_6_fa.js
+; As launch_group1_tail for the 18 positions of dat_FCFF (index $10B8),
+; pointers $1056/$1058.
+; QUIRK: STB $084D ($FCE6) where launch_group1_tail does INC.
 ; Table entry at: $FC9E
 ;------------------------------------------------------------------------------
-sub_FCA9:
+launch_group2_tail:
 FCA9: 58              ASLB
 FCAA: 33 C5           LEAU   B,U
 FCAC: DC B6           LDD    <$B6            ; [$10B6]
@@ -6783,7 +7678,7 @@ FCBD: 0F B8           CLR    <$B8            ; [$10B8]
 FCBF: 4F              CLRA
 
 lFCC0:
-FCC0: 8E FC FF        LDX    #dat_FCFF
+FCC0: 8E FC FF        LDX    #group2_positions
 FCC3: 48              ASLA
 FCC4: E6 96           LDB    [A,X]
 FCC6: C4 03           ANDB   #$03
@@ -6795,17 +7690,20 @@ FCCC: E7 96           STB    [A,X]
 FCCE: 8E FD 47        LDX    #dat_FD47
 FCD1: 44              LSRA
 FCD2: E6 86           LDB    A,X
-FCD4: CE 10 52        LDU    #$1052
+FCD4: CE 10 52        LDU    #stage_params+28 ; [#$1052]
 FCD7: EE C5           LDU    B,U
-FCD9: D6 20           LDB    <$20            ; [$1020]
+FCD9: D6 20           LDB    <$20            ; B keeps $1020 for the stb
+                                             ; [$1020]
 FCDB: 27 03           BEQ    lFCE0
-FCDD: CE DD 44        LDU    #dat_DD44
+FCDD: CE DD 44        LDU    #path_DD44
 
 lFCE0:
 FCE0: 8E FD 23        LDX    #dat_FD23
 FCE3: 48              ASLA
 FCE4: EF 96           STU    [A,X]
-FCE6: F7 08 4D        STB    $084D
+FCE6: F7 08 4D        STB    $084D           ; QUIRK: STB where
+                                             ; launch_group1_tail does INC
+                                             ; $084D
 FCE9: 0C B8           INC    <$B8            ; [$10B8]
 
 lFCEB:
@@ -6824,15 +7722,16 @@ FCF9: 81 24           CMPA   #$24
 FCFB: 26 F4           BNE    lFCF1
 FCFD: 20 EC           BRA    lFCEB
 
-; Referenced from: $FCC0 sub_FCA9
-dat_FCFF:
+; task_launch_group2: 18 formation positions.
+; Referenced from: $FCC0 launch_group2_tail
+group2_positions:
 FCFF: 18 74 18 7D 18 85 18 75  FCB    $18,$74,$18,$7D,$18,$85,$18,$75
 FD07: 18 7C 18 7E 18 7B 18 7F  FCB    $18,$7C,$18,$7E,$18,$7B,$18,$7F
 FD0F: 18 84 18 76 18 83 18 77  FCB    $18,$84,$18,$76,$18,$83,$18,$77
 FD17: 18 7A 18 80 18 79 18 81  FCB    $18,$7A,$18,$80,$18,$79,$18,$81
 FD1F: 18 78 18 82              FCB    $18,$78,$18,$82
 
-; Referenced from: $FCE0 sub_FCA9
+; Referenced from: $FCE0 launch_group2_tail
 dat_FD23:
 FD23: 18 28 18 3A 18 4A 18 2A  FCB    $18,$28,$18,$3A,$18,$4A,$18,$2A
 FD2B: 18 38 18 3C 18 36 18 3E  FCB    $18,$38,$18,$3C,$18,$36,$18,$3E
@@ -6840,29 +7739,36 @@ FD33: 18 48 18 2C 18 46 18 2E  FCB    $18,$48,$18,$2C,$18,$46,$18,$2E
 FD3B: 18 34 18 40 18 32 18 42  FCB    $18,$34,$18,$40,$18,$32,$18,$42
 FD43: 18 30 18 44              FCB    $18,$30,$18,$44
 
-; Referenced from: $FCCE sub_FCA9
+; Referenced from: $FCCE launch_group2_tail
 dat_FD47:
 FD47: 04 06 06 04 06 04 06 04  FCB    $04,$06,$06,$04,$06,$04,$06,$04
 FD4F: 06 04 06 04 06 04 06 04  FCB    $06,$04,$06,$04,$06,$04,$06,$04
 FD57: 04 06                    FCB    $04,$06
 
 ;------------------------------------------------------------------------------
-; sub_FD59  ($FD59)
+; task_launch_trio  ($FD59) ; JS: sub_FD59
+; -> src/game/sub/gp2_6_fa.js
+; Unless $112A/$10FE/$1013: count trio_timer and the free slots; at the
+; threshold ($103A + 0-6) launch the 3 positions of the next group of dat_FDE9
+; (paths dat_FE19).
+; QUIRK: reads $188B but exits before testing it.
 ; Table entry at: $E14B
 ;------------------------------------------------------------------------------
-sub_FD59:
-FD59: B6 11 2A        LDA    $112A
+task_launch_trio:
+FD59: B6 11 2A        LDA    ready_active    ; [$112A]
 FD5C: 10 26 00 82     LBNE   lFDE2
-FD60: 96 FE           LDA    <$FE            ; [$10FE]
+FD60: 96 FE           LDA    <player_dying   ; [$10FE]
 FD62: 26 7E           BNE    lFDE2
 FD64: 96 13           LDA    <$13            ; [$1013]
 FD66: 26 7A           BNE    lFDE2
-FD68: 0C BB           INC    <$BB            ; [$10BB]
+FD68: 0C BB           INC    <trio_timer+1   ; [$10BB]
 FD6A: 26 02           BNE    lFD6E
-FD6C: 0C BA           INC    <$BA            ; [$10BA]
+FD6C: 0C BA           INC    <trio_timer     ; [$10BA]
 
 lFD6E:
-FD6E: 8E 18 60        LDX    #formation_flags ; [#$1860]
+FD6E: 8E 18 60        LDX    #formation_flags ; the byte at $188B is read but
+                                             ; the loop ends before testing it
+                                             ; [#$1860]
 
 lFD71:
 FD71: A6 80           LDA    ,X+
@@ -6870,12 +7776,12 @@ FD73: 8C 18 8C        CMPX   #$188C
 FD76: 27 08           BEQ    lFD80
 FD78: 84 01           ANDA   #$01
 FD7A: 26 F5           BNE    lFD71
-FD7C: 0C BC           INC    <$BC            ; [$10BC]
+FD7C: 0C BC           INC    <trio_free_count ; [$10BC]
 FD7E: 20 F1           BRA    lFD71
 
 lFD80:
 FD80: 5F              CLRB
-FD81: 96 BC           LDA    <$BC            ; [$10BC]
+FD81: 96 BC           LDA    <trio_free_count ; [$10BC]
 FD83: 81 1E           CMPA   #$1E
 FD85: 24 0E           BCC    lFD95
 FD87: CB 02           ADDB   #$02
@@ -6887,14 +7793,14 @@ FD91: 24 02           BCC    lFD95
 FD93: CB 02           ADDB   #$02
 
 lFD95:
-FD95: DE BA           LDU    <$BA            ; [$10BA]
-FD97: 8E 10 3A        LDX    #$103A
+FD95: DE BA           LDU    <trio_timer     ; [$10BA]
+FD97: 8E 10 3A        LDX    #stage_params+4 ; [#$103A]
 FD9A: 11 A3 85        CMPU   B,X
 FD9D: 25 43           BCS    lFDE2
-FD9F: 0C BD           INC    <$BD            ; [$10BD]
-FDA1: 8E FD E9        LDX    #dat_FDE9
-FDA4: CE FE 01        LDU    #dat_FE01
-FDA7: 96 BD           LDA    <$BD            ; [$10BD]
+FD9F: 0C BD           INC    <trio_group     ; [$10BD]
+FDA1: 8E FD E9        LDX    #trio_groups
+FDA4: CE FE 01        LDU    #trio_paths
+FDA7: 96 BD           LDA    <trio_group     ; [$10BD]
 FDA9: 84 03           ANDA   #$03
 FDAB: 48              ASLA
 FDAC: C6 03           LDB    #$03
@@ -6907,7 +7813,7 @@ FDB7: 84 03           ANDA   #$03
 FDB9: 26 23           BNE    lFDDE
 
 lFDBB:
-FDBB: A6 94           LDA    [,X]
+FDBB: A6 94           LDA    [,X]            ; this one busy
 FDBD: 84 03           ANDA   #$03
 FDBF: 26 16           BNE    lFDD7
 FDC1: 86 02           LDA    #$02
@@ -6916,7 +7822,7 @@ FDC5: B7 08 4D        STA    $084D
 FDC8: 10 AE C8 18     LDY    $18,U
 FDCC: 96 20           LDA    <$20            ; [$1020]
 FDCE: 27 04           BEQ    lFDD4
-FDD0: 10 8E DD 44     LDY    #dat_DD44
+FDD0: 10 8E DD 44     LDY    #path_DD44
 
 lFDD4:
 FDD4: 10 AF D4        STY    [,U]
@@ -6928,22 +7834,24 @@ FDDB: 5A              DECB
 FDDC: 26 DD           BNE    lFDBB
 
 lFDDE:
-FDDE: 0F BA           CLR    <$BA            ; [$10BA]
-FDE0: 0F BB           CLR    <$BB            ; [$10BB]
+FDDE: 0F BA           CLR    <trio_timer     ; [$10BA]
+FDE0: 0F BB           CLR    <trio_timer+1   ; [$10BB]
 
 lFDE2:
-FDE2: 0F BC           CLR    <$BC            ; [$10BC]
+FDE2: 0F BC           CLR    <trio_free_count ; [$10BC]
 FDE4: 0C 7A           INC    <sub_task       ; [$107A]
 FDE6: 7E E0 EC        JMP    task_dispatch_sub
 
-; Referenced from: $FDA1 sub_FD59
-dat_FDE9:
+; task_launch_trio: 4 groups of 3 positions.
+; Referenced from: $FDA1 task_launch_trio
+trio_groups:
 FDE9: 18 89 18 83 18 85 18 86  FCB    $18,$89,$18,$83,$18,$85,$18,$86
 FDF1: 18 7E 18 80 18 88 18 82  FCB    $18,$7E,$18,$80,$18,$88,$18,$82
 FDF9: 18 84 18 87 18 7F 18 81  FCB    $18,$84,$18,$87,$18,$7F,$18,$81
 
-; Referenced from: $FDA4 sub_FD59
-dat_FE01:
+; task_launch_trio: path pointers (12 at $FE19).
+; Referenced from: $FDA4 task_launch_trio
+trio_paths:
 FE01: 18 52 18 46 18 4A 18 4C  FCB    $18,$52,$18,$46,$18,$4A,$18,$4C
 FE09: 18 3C 18 40 18 50 18 44  FCB    $18,$3C,$18,$40,$18,$50,$18,$44
 FE11: 18 48 18 4E 18 3E 18 42  FCB    $18,$48,$18,$4E,$18,$3E,$18,$42
@@ -6952,24 +7860,27 @@ FE21: C1 B0 C2 AB C9 7D CE 12  FCB    $C1,$B0,$C2,$AB,$C9,$7D,$CE,$12
 FE29: C7 A1 C0 E9 C1 B0 C2 AB  FCB    $C7,$A1,$C0,$E9,$C1,$B0,$C2,$AB
 
 ;------------------------------------------------------------------------------
-; sub_FE31  ($FE31)
+; task_start_188A_object  ($FE31) ; JS: sub_FE31
+; -> src/game/sub/gp2_6_fa.js
+; Every 64th frame count obj188A_count; at set counts (or with $10F8) start the
+; object at formation_flags+42 if idle ($084E = sound trigger).
 ; Table entry at: $E14D
 ;------------------------------------------------------------------------------
-sub_FE31:
-FE31: 96 F8           LDA    <$F8            ; [$10F8]
+task_start_188A_object:
+FE31: 96 F8           LDA    <refill_request ; [$10F8]
 FE33: 26 29           BNE    lFE5E
-FE35: 96 C1           LDA    <$C1            ; [$10C1]
+FE35: 96 C1           LDA    <obj188A_done   ; [$10C1]
 FE37: 26 1C           BNE    lFE55
-FE39: 96 FE           LDA    <$FE            ; [$10FE]
+FE39: 96 FE           LDA    <player_dying   ; [$10FE]
 FE3B: 26 18           BNE    lFE55
 FE3D: 96 16           LDA    <frame_counter  ; [$1016]
 FE3F: 84 3F           ANDA   #$3F
 FE41: 26 12           BNE    lFE55
-FE43: 0C C0           INC    <$C0            ; [$10C0]
+FE43: 0C C0           INC    <obj188A_count  ; [$10C0]
 FE45: 96 70           LDA    <$70            ; [$1070]
 FE47: 81 01           CMPA   #$01
 FE49: 26 2B           BNE    lFE76
-FE4B: 96 C0           LDA    <$C0            ; [$10C0]
+FE4B: 96 C0           LDA    <obj188A_count  ; [$10C0]
 FE4D: 81 01           CMPA   #$01
 FE4F: 27 0D           BEQ    lFE5E
 FE51: 81 07           CMPA   #$07
@@ -6980,8 +7891,8 @@ FE55: 0C 7A           INC    <sub_task       ; [$107A]
 FE57: 7E E0 EC        JMP    task_dispatch_sub
 
 lFE5A:
-FE5A: 0C C1           INC    <$C1            ; [$10C1]
-FE5C: 0F C0           CLR    <$C0            ; [$10C0]
+FE5A: 0C C1           INC    <obj188A_done   ; [$10C1]
+FE5C: 0F C0           CLR    <obj188A_count  ; [$10C0]
 
 lFE5E:
 FE5E: B6 18 8A        LDA    formation_flags+42 ; [$188A]
@@ -6998,7 +7909,7 @@ FE71: B7 08 4E        STA    $084E
 FE74: 20 DF           BRA    lFE55
 
 lFE76:
-FE76: 96 C0           LDA    <$C0            ; [$10C0]
+FE76: 96 C0           LDA    <obj188A_count  ; [$10C0]
 FE78: 81 02           CMPA   #$02
 FE7A: 27 E2           BEQ    lFE5E
 FE7C: 81 0C           CMPA   #$0C
@@ -7006,14 +7917,20 @@ FE7E: 27 DA           BEQ    lFE5A
 FE80: 20 D3           BRA    lFE55
 
 ;------------------------------------------------------------------------------
-; sub_FE82  ($FE82)
+; task_score_anim  ($FE82) ; JS: sub_FE82
+; -> src/game/sub/gp2_6_fa.js
+; Once score_anim_step is non-zero, or when the scores are "round", show the
+; next word of dat_F0C1 as sprite $0F12 moving by $0403; ends for good
+; (score_anim_done) on the carry.
+; QUIRK: the first frame indexes dat_F0C1 with the score byte just compared
+; ($FEBE).
 ; Jumped to from: $FEC7
 ; Table entry at: $E167
 ;------------------------------------------------------------------------------
-sub_FE82:
-FE82: B6 11 76        LDA    $1176
+task_score_anim:
+FE82: B6 11 76        LDA    score_anim_done ; [$1176]
 FE85: 26 60           BNE    lFEE7
-FE87: 96 1E           LDA    <$1E            ; [$101E]
+FE87: 96 1E           LDA    <score_anim_step ; [$101E]
 FE89: 26 30           BNE    lFEBB
 FE8B: CC 00 40        LDD    #$0040
 FE8E: FD 17 12        STD    $1712
@@ -7028,26 +7945,28 @@ FEA3: 26 42           BNE    lFEE7
 FEA5: B6 09 B2        LDA    score_p1+2      ; [$09B2]
 FEA8: B1 09 B5        CMPA   score_p2+2      ; [$09B5]
 FEAB: 26 3A           BNE    lFEE7
-FEAD: 0C 1E           INC    <$1E            ; [$101E]
+FEAD: 0C 1E           INC    <score_anim_step ; [$101E]
 FEAF: 20 0A           BRA    lFEBB
 
 lFEB1:
 FEB1: B6 09 B0        LDA    score_p1        ; [$09B0]
 FEB4: B1 09 B1        CMPA   score_p1+1      ; [$09B1]
 FEB7: 26 2E           BNE    lFEE7
-FEB9: 0C 1E           INC    <$1E            ; [$101E]
+FEB9: 0C 1E           INC    <score_anim_step ; [$101E]
 
 lFEBB:
-FEBB: 8E F0 C1        LDX    #dat_F0C1
-FEBE: 48              ASLA
+FEBB: 8E F0 C1        LDX    #flyin_frames
+FEBE: 48              ASLA                   ; QUIRK: first frame: A is the
+                                             ; score byte just compared, not
+                                             ; $101E
 FEBF: EC 86           LDD    A,X
 FEC1: 26 06           BNE    lFEC9
 FEC3: 86 01           LDA    #$01
-FEC5: 97 1E           STA    <$1E            ; [$101E]
-FEC7: 20 B9           BRA    sub_FE82
+FEC5: 97 1E           STA    <score_anim_step ; [$101E]
+FEC7: 20 B9           BRA    task_score_anim
 
 lFEC9:
-FEC9: 0C 1E           INC    <$1E            ; [$101E]
+FEC9: 0C 1E           INC    <score_anim_step ; [$101E]
 FECB: FD 0F 12        STD    $0F12
 FECE: CC 40 80        LDD    #$4080
 FED1: FD 1F 12        STD    $1F12
@@ -7055,45 +7974,44 @@ FED4: CC 04 03        LDD    #$0403
 FED7: F3 17 12        ADDD   $1712
 FEDA: FD 17 12        STD    $1712
 FEDD: 24 08           BCC    lFEE7
-FEDF: 0F 1E           CLR    <$1E            ; [$101E]
+FEDF: 0F 1E           CLR    <score_anim_step ; [$101E]
 FEE1: 7F 1F 13        CLR    $1F13
-FEE4: 7C 11 76        INC    $1176
+FEE4: 7C 11 76        INC    score_anim_done ; [$1176]
 
 lFEE7:
 FEE7: 0C 7A           INC    <sub_task       ; [$107A]
 FEE9: 7E E0 EC        JMP    task_dispatch_sub
+
+; Path stream in gp2-6 (186 headings, F0 FE EC), used by bonus_paths.
+path_FEEC:
 FEEC: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
-                                             ; [unreached]
 FEF4: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
 FEFC: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
-FF04: 87                       FCB    $87
-FF05: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
-                                             ; [fill $00 x 51]
-FF0D: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
-FF15: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
-FF1D: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
-FF25: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
-FF2D: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
-FF35: 00 00 00                 FCB    $00,$00,$00
-FF38: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
-                                             ; [unreached]
-FF40: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
-FF48: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
-FF50: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
-FF58: 87 87 87 87 87 87 87 5A  FCB    $87,$87,$87,$87,$87,$87,$87,$5A
-FF60: 5A 5A 5A 5A 5A 5A 5A 5A  FCB    $5A,$5A,$5A,$5A,$5A,$5A,$5A,$5A
-FF68: 5A 5A 5A 5A 5A 5A 5A 5A  FCB    $5A,$5A,$5A,$5A,$5A,$5A,$5A,$5A
-FF70: 5A 5A 5A 5A 5A 5A 5A 5A  FCB    $5A,$5A,$5A,$5A,$5A,$5A,$5A,$5A
-FF78: 5A 5A 5A 5A 5A 5A 5A 5A  FCB    $5A,$5A,$5A,$5A,$5A,$5A,$5A,$5A
-FF80: 5A 5A 5A 5A 5A 5A 5A 5A  FCB    $5A,$5A,$5A,$5A,$5A,$5A,$5A,$5A
-FF88: 5A 5A 5A 5A 5A 5A 5A 5A  FCB    $5A,$5A,$5A,$5A,$5A,$5A,$5A,$5A
-FF90: 5A 5A 5A 5A 5A 5A 5A 5A  FCB    $5A,$5A,$5A,$5A,$5A,$5A,$5A,$5A
-FF98: 5A 5A 5A 5A 5A 5A 5A 5A  FCB    $5A,$5A,$5A,$5A,$5A,$5A,$5A,$5A
-FFA0: 5A 5A 5A 5A 5A 5A F0 FE  FCB    $5A,$5A,$5A,$5A,$5A,$5A,$F0,$FE
-FFA8: EC 31 39 38 34 20 4E 41  FCB    $EC,$31,$39,$38,$34,$20,$4E,$41
-FFB0: 4D 43 4F 20 41 4C 4C 20  FCB    $4D,$43,$4F,$20,$41,$4C,$4C,$20
-FFB8: 52 49 47 48 54 53 20 52  FCB    $52,$49,$47,$48,$54,$53,$20,$52
-FFC0: 45 53 45 52 56 45 44     FCB    $45,$53,$45,$52,$56,$45,$44
+FF04: 87 00 00 00 00 00 00 00  FCB    $87,$00,$00,$00,$00,$00,$00,$00
+FF0C: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
+FF14: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
+FF1C: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
+FF24: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
+FF2C: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
+FF34: 00 00 00 00 87 87 87 87  FCB    $00,$00,$00,$00,$87,$87,$87,$87
+FF3C: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
+FF44: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
+FF4C: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
+FF54: 87 87 87 87 87 87 87 87  FCB    $87,$87,$87,$87,$87,$87,$87,$87
+FF5C: 87 87 87 5A 5A 5A 5A 5A  FCB    $87,$87,$87,$5A,$5A,$5A,$5A,$5A
+FF64: 5A 5A 5A 5A 5A 5A 5A 5A  FCB    $5A,$5A,$5A,$5A,$5A,$5A,$5A,$5A
+FF6C: 5A 5A 5A 5A 5A 5A 5A 5A  FCB    $5A,$5A,$5A,$5A,$5A,$5A,$5A,$5A
+FF74: 5A 5A 5A 5A 5A 5A 5A 5A  FCB    $5A,$5A,$5A,$5A,$5A,$5A,$5A,$5A
+FF7C: 5A 5A 5A 5A 5A 5A 5A 5A  FCB    $5A,$5A,$5A,$5A,$5A,$5A,$5A,$5A
+FF84: 5A 5A 5A 5A 5A 5A 5A 5A  FCB    $5A,$5A,$5A,$5A,$5A,$5A,$5A,$5A
+FF8C: 5A 5A 5A 5A 5A 5A 5A 5A  FCB    $5A,$5A,$5A,$5A,$5A,$5A,$5A,$5A
+FF94: 5A 5A 5A 5A 5A 5A 5A 5A  FCB    $5A,$5A,$5A,$5A,$5A,$5A,$5A,$5A
+FF9C: 5A 5A 5A 5A 5A 5A 5A 5A  FCB    $5A,$5A,$5A,$5A,$5A,$5A,$5A,$5A
+FFA4: 5A 5A F0 FE EC 31 39 38  FCB    $5A,$5A,$F0,$FE,$EC,$31,$39,$38
+FFAC: 34 20 4E 41 4D 43 4F 20  FCB    $34,$20,$4E,$41,$4D,$43,$4F,$20
+FFB4: 41 4C 4C 20 52 49 47 48  FCB    $41,$4C,$4C,$20,$52,$49,$47,$48
+FFBC: 54 53 20 52 45 53 45 52  FCB    $54,$53,$20,$52,$45,$53,$45,$52
+FFC4: 56 45 44                 FCB    $56,$45,$44
 FFC7: FF FF FF FF FF FF FF FF  FCB    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
                                              ; [fill $FF x 40]
 FFCF: FF FF FF FF FF FF FF FF  FCB    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF

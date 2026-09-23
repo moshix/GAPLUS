@@ -8,7 +8,7 @@
 ; timers, main/sub frame handshake), attract mode, the game-mode task
 ; scheduler at $FEB5, scoring and all sound requests (the sub CPU cannot
 ; reach the sound RAM). DP is $10 everywhere after boot.
-; 13945 code bytes, 10631 data bytes, 150 routines, 23 dispatch tables.
+; 13945 code bytes, 10631 data bytes, 159 routines, 23 dispatch tables.
 ; Coverage input: 4308 executed addresses.
 
 ; Hardware (docs/hardware.md section 3)
@@ -36,11 +36,16 @@ hiscore_table    EQU   $0900                 ; 5 x 16: score as 8 tile digits
                                              ; (80 bytes)
 hiscore_names    EQU   $0950                 ; 5 x 16: 14 name characters (80
                                              ; bytes)
+entry_blank_ptr  EQU   $09A0                 ; name entry: 3 cells blanked a
+                                             ; frame once the cursor passes the
+                                             ; last field (2 bytes)
 entry_cursor     EQU   $09A2                 ; name entry: tile address (2
                                              ; bytes)
-entry_fire_latch EQU   $09A4
-entry_timer      EQU   $09A5
-entry_rank       EQU   $09A6
+entry_fire_latch EQU   $09A4                 ; name entry: fire edge latch
+entry_timer      EQU   $09A5                 ; name entry: time left
+entry_rank       EQU   $09A6                 ; name entry: rank of the new
+                                             ; entry, counted down while
+                                             ; shifting
 entry_music_ptr  EQU   $09A7                 ; sound request to set (2 bytes)
 score_p1         EQU   $09B0                 ; BCD, least significant byte
                                              ; first (3 bytes)
@@ -55,68 +60,227 @@ demo_stick       EQU   $09F1                 ; demo joystick nibble
 demo_ptr         EQU   $09F2                 ; demo input script pointer (2
                                              ; bytes)
 attract_flag     EQU   $09F4                 ; 1 = attract mode / demo game
-demo_fire        EQU   $09F5
+demo_fire        EQU   $09F5                 ; demo fire button state
 clock_frames     EQU   $09F8                 ; BCD play clock 0-59
 clock_seconds    EQU   $09F9                 ; BCD
 clock_minutes    EQU   $09FA                 ; BCD
 clock_hours      EQU   $09FB                 ; BCD 0-23
 p1_time          EQU   $09FC                 ; frames, seconds, minutes (3
                                              ; bytes)
-var_0C00         EQU   $0C00                 ; (2 bytes)
+stats_blank_count EQU   $09FF                ; operator stats: frame counter,
+                                             ; blanks the text every 8th
+var_0C00         EQU   $0C00                 ; $0C00-$0C03: written only by the
+                                             ; dead code at $D04C (2 bytes)
 sprite_shadow_1  EQU   $0E00                 ; code/colour, 154 sprites; +$0800
                                              ; Y/X, +$1000 flags (308 bytes)
 lives_setting    EQU   $1000                 ; from DSW
 bonus_first      EQU   $1001                 ; BCD x 10000
-bonus_second     EQU   $1002
-bonus_every      EQU   $1003
+bonus_second     EQU   $1002                 ; bonus life: second threshold,
+                                             ; BCD x 10000
+bonus_every      EQU   $1003                 ; bonus life: every further one,
+                                             ; BCD x 10000 (0 = none)
 difficulty       EQU   $1004                 ; 0-7 from DSW
 cabinet          EQU   $1005                 ; 62XX bit 2: upright
 boot_switches    EQU   $1006                 ; 56XX mode 1 nibbles at boot (4
                                              ; bytes)
-var_100A         EQU   $100A                 ; service: sound number; stage
-                                             ; start: temp
+stage_text_timer EQU   $100A                 ; stage start text timer; service
+                                             ; mode: the sound-test number (was
+                                             ; var_100A)
 frame_hi         EQU   $1015                 ; saturates at $FF
 frame_counter    EQU   $1016                 ; +1 per main IRQ; also the game's
                                              ; randomness
-fire_held        EQU   $1019
+seq_step         EQU   $1018                 ; sprite sequence step of
+                                             ; $F5A5/$F60B
+fire_held        EQU   $1019                 ; fire button held (edge detection
+                                             ; for task_player_fire)
+ready_timer_p1   EQU   $1023                 ; READY message timer of P1
+ready_timer_p2   EQU   $1024                 ; READY message timer of P2
 coinage_a        EQU   $1025                 ; coins, credits (2 bytes)
 coinage_b        EQU   $1027                 ; coins, credits (2 bytes)
 attract_timer    EQU   $1029                 ; +$20 per attract pass
-attract_step     EQU   $102A
+attract_step     EQU   $102A                 ; attract timer high byte
 attract_phase    EQU   $102B                 ; b0-1 select attract_phases
 flip_screen      EQU   $102C                 ; player 2 on a cocktail cabinet
 cur_player       EQU   $102D                 ; 0 = P1, 1 = P2
-two_players      EQU   $102E
+two_players      EQU   $102E                 ; 1 = two-player game
 game_mode        EQU   $102F                 ; scheduler mode 0-9 (both CPUs)
 main_task        EQU   $1030                 ; main scheduler task index
-player_speed     EQU   $1032
+player_speed     EQU   $1032                 ; fighter movement speed
 stage            EQU   $1035                 ; effective stage (< 60)
-player_xmin      EQU   $1078
-player_xmax      EQU   $1079
+stage_params     EQU   $1036                 ; load_stage_params: $1036 attack
+                                             ; counts, $103A trio thresholds,
+                                             ; $1042/$104A group thresholds,
+                                             ; $1052 dive paths (36 bytes)
+boss_bonus_idx   EQU   $1066                 ; index into boss_bonus_sprites,
+                                             ; +1 per boss hit
+refill_left      EQU   $1071                 ; refills left this stage
+                                             ; (load_stage_params)
+shots_to_clear   EQU   $1076                 ; shots that hit this pass: b0
+                                             ; slot 1, b1 slot 2 (stored, not
+                                             ; OR-ed)
+player_xmin      EQU   $1078                 ; leftmost fighter X
+                                             ; (player_limits)
+player_xmax      EQU   $1079                 ; rightmost fighter X
+                                             ; (player_limits)
 sub_task         EQU   $107A                 ; sub scheduler task index
+formation_path_ptr EQU   $1082               ; formation path, 4-byte steps,
+                                             ; restarts at formation_path on
+                                             ; $FF (2 bytes)
+ready_timer      EQU   $10AB                 ; the current player's ready timer
+                                             ; (copy of $1023/$1024)
+formation_started EQU   $10AC                ; 0 until formation_move first
+                                             ; runs ($55)
 frame_sync       EQU   $10AF                 ; $11 = sub done, $22 = main done
-player_step      EQU   $10D1
-shot_speed       EQU   $10D2
-shot_slots_end   EQU   $10D3                 ; (2 bytes)
-dual_fighter     EQU   $10DB
-lives_p1         EQU   $1104
-lives_p2         EQU   $1105
+group1_count     EQU   $10B0                 ; launch group 1: 64-frame counter
+obj188A_count    EQU   $10C0                 ; slot-42 object: 64-frame counter
+obj188A_done     EQU   $10C1                 ; slot-42 object: no more starts
+shot_ptr         EQU   $10C2                 ; task_shot_hits: pointer to the
+                                             ; shot flag being tested (2 bytes)
+slot_index       EQU   $10C4                 ; task_shot_hits: formation slot
+                                             ; counter
+hit_diving       EQU   $10C5                 ; task_shot_hits: the hit enemy
+                                             ; was diving (type for $110B)
+hitbox           EQU   $10C6                 ; task_shot_hits: shot box y max,
+                                             ; y min, x max, x min; alias
+                                             ; hit_box (4 bytes)
+hit_xhi          EQU   $10CA                 ; task_shot_hits: the shot's X bit
+                                             ; 8 (screen half)
+capture_state    EQU   $10CE                 ; 0 idle, 1 steer, 2/3 latch
+                                             ; target Y
+player_step      EQU   $10D1                 ; fighter step per frame
+shot_speed       EQU   $10D2                 ; shot Y step per frame
+shot_slots_end   EQU   $10D3                 ; end of the player shot slots
+                                             ; ($0EA6, or $0EA8) (2 bytes)
+player_frozen    EQU   $10D9                 ; non-zero: the player cannot move
+                                             ; (capture, effects)
+capture_substate EQU   $10DA                 ; index into tbl_E7F5
+dual_fighter     EQU   $10DB                 ; dual fighter active
+fighter_count    EQU   $10DC                 ; dual-fighter sprites in use
+                                             ; ($1EC3-$1ECD), 0-5
+fighter_offsets  EQU   $10DD                 ; formation hitbox offsets for
+                                             ; fighter_count (dat_D907) (2
+                                             ; bytes)
+refill_request   EQU   $10F8                 ; formation refill due
+refill_step      EQU   $10FC                 ; refill fly-in step
+player_dying     EQU   $10FE                 ; non-zero while the player dies
+                                             ; (sounds gated)
+lives_p1         EQU   $1104                 ; player 1 reserve lives
+lives_p2         EQU   $1105                 ; player 2 reserve lives
 stage_p1         EQU   $1106                 ; 0-based
-stage_p2         EQU   $1107
-results_step     EQU   $1160
-hiscore_step     EQU   $11FF
+stage_p2         EQU   $1107                 ; player 2 stage, 0-based
+effect_request   EQU   $1108                 ; effect spawn requests pending
+                                             ; (task_spawn_effect)
+effect_pos       EQU   $1109                 ; position (Y, X) of the requested
+                                             ; effect (2 bytes)
+effect_flags     EQU   $110B                 ; flags ($80 | type) of the
+                                             ; requested effect
+effect_step      EQU   $110C                 ; step of effect slots 0-2 (0 =
+                                             ; free) (3 bytes)
+player_exploding EQU   $110F                 ; the player explosion is running;
+                                             ; alias player_hit
+explosion_step   EQU   $1110                 ; player explosion step (tbl_F6FC)
+boss_chain       EQU   $1112                 ; boss hit chain: 1, doubled per
+                                             ; boss hit up to $40
+hit_points       EQU   $1113                 ; score multiplier of the last hit
+                                             ; (boss_chain, or 1-4 by row)
+bonus_obj_count  EQU   $1114                 ; countdown ($32) during which
+                                             ; shots flip pictures
+escort_step      EQU   $1116                 ; escort fly-in step
+wing_sprite_idx  EQU   $1117                 ; escort fly-in: wing sprites
+                                             ; placed
+wing_group       EQU   $1118                 ; escort fly-in: wing group
+bonus_step_p1    EQU   $1124                 ; bonus life step of P1
+                                             ; (bonus_steps_p1)
+bonus_step_p2    EQU   $1125                 ; bonus life step of P2
+                                             ; (bonus_steps_p2)
+ready_active     EQU   $112A                 ; 1 while READY counts; also $55 =
+                                             ; formation attacks allowed (sub
+                                             ; $B385)
+formation_end    EQU   $112D                 ; end of the formation scan ($188D
+                                             ; after stage start) (2 bytes)
+p1_saved_mode    EQU   $112F                 ; player 1's game_mode saved at a
+                                             ; turn switch
+p2_saved_mode    EQU   $1130                 ; player 2's game_mode saved at a
+                                             ; turn switch
+boss_chain_timer EQU   $1131                 ; $20 after a boss hit, counts
+                                             ; down; at 0 the chain restarts
+bonus_state      EQU   $1132                 ; sub: challenging-stage bonus
+                                             ; object states (tbl_BEDD) (5
+                                             ; bytes)
+bonus_free       EQU   $113A                 ; sub: 1 = bonus object k
+                                             ; done/free (5 bytes)
+challenge_step   EQU   $115A                 ; sub: challenging-stage sequencer
+                                             ; step ($BB96)
+results_delay    EQU   $115B                 ; results screen: frames before
+                                             ; the next step
+results_step     EQU   $1160                 ; results screen step
+                                             ; (results_steps)
+results_blink    EQU   $1161                 ; results screen: blink counter
+results_hits_left EQU   $1162                ; results screen: hit markers
+                                             ; still to draw
+results_hits100  EQU   $1163                 ; results screen: 100-point hits
+                                             ; (BCD)
+results_count    EQU   $1164                 ; hits counted in the challenging
+                                             ; stage / results
+clear_delay      EQU   $1165                 ; frames before the next mode once
+                                             ; the stage is empty
+results_bonus_kind EQU   $1166               ; bonus kind 0-7 (BONUS, GAPLUS,
+                                             ; DOUBLE, ...)
+results_bcd_tmp  EQU   $1167                 ; results screen: BCD scratch
+results_earnings EQU   $1169                 ; results screen: earnings (BCD
+                                             ; hundreds)
+results_timer    EQU   $116A                 ; results screen: step timer
+results_hits200  EQU   $116B                 ; results screen: 200-point hits
+                                             ; (BCD)
+entry_char_index EQU   $116C                 ; name entry: index into the
+                                             ; current field's alphabet
+entry_repeat     EQU   $116D                 ; name entry: stick auto-repeat
+                                             ; delay (8 frames)
+event_step       EQU   $116E                 ; stage event step (tbl_EABA /
+                                             ; tbl_EB82)
+event_timer      EQU   $116F                 ; frames within the event step
+star_dir_flags   EQU   $1170                 ; starfield direction mode for
+                                             ; irq_starfield (0-2); alias
+                                             ; event_star_mode
+bonus_kind_p1    EQU   $1171                 ; player 1's challenging pattern /
+                                             ; bonus kind
+bonus_kind_p2    EQU   $1172                 ; player 2's challenging pattern /
+                                             ; bonus kind
+bonus_ship_out   EQU   $1175                 ; the bonus ship has appeared this
+                                             ; stage
+score_anim_done  EQU   $1176                 ; task_score_anim has finished for
+                                             ; good
+logo_anim_step   EQU   $117A                 ; title logo animation step 0-3
+                                             ; (tbl_C9C9)
+next_bonus_p1    EQU   $117B                 ; P1's next bonus-life score (BCD)
+                                             ; (2 bytes)
+next_bonus_p2    EQU   $117D                 ; P2's next bonus-life score (BCD)
+                                             ; (2 bytes)
+p1_out_flag      EQU   $117F                 ; player 1 is out of lives
+p2_out_flag      EQU   $1180                 ; player 2 is out of lives
+hiscore_step     EQU   $11FF                 ; mode 9 step (hiscore_steps)
 player_y         EQU   $1600                 ; sprite shadow bank 2, slot 0
-player_x         EQU   $1601
+player_x         EQU   $1601                 ; fighter X, low 8 bits (bit 8 in
+                                             ; $1E01)
+formation_y      EQU   $1688                 ; formation block Y, integer part
+                                             ; (fraction $0E88)
 formation_flags  EQU   $1860                 ; b0: slot occupied (45 bytes)
+p1_saved_formation EQU   $1C30               ; player 1's formation flags saved
+                                             ; at a turn switch (47 bytes)
+p2_saved_formation EQU   $1C60               ; player 2's formation flags saved
+                                             ; at a turn switch (47 bytes)
 snd_request      EQU   $6040                 ; sound n: main writes 1 (sound:
                                              ; boot handshake at +0) (32 bytes)
 snd_active       EQU   $6060                 ; sound n started (32 bytes)
 snd_rom_error    EQU   $6380                 ; 1 = sound ROM checksum error
 
 
-; Referenced from: $B862 fill_tilemap_00_20, $E2D6 sub_E2D0, $E302 sub_E2D0,
-; $E405 sub_E3FF, $EA39 sub_EA21, $EA6E sub_EA21
-dat_A000:
+; Challenging-stage mark patterns: 8 pointers to lists of tile addresses (>=
+; $1000: other bank); also the start of the ROM checksum.
+; Referenced from: $B862 fill_tilemap_00_20, $E2D6 results_markers, $E302
+; results_markers, $E405 results_count_one, $EA39 task_challenge_marks, $EA6E
+; task_challenge_marks
+mark_patterns:
 A000: A0 10 A1 60 A2 BC A4 16  FCB    $A0,$10,$A1,$60,$A2,$BC,$A4,$16
 A008: A5 60 A6 B6 A8 1A A9 7A  FCB    $A5,$60,$A6,$B6,$A8,$1A,$A9,$7A
 A010: 03 6B 03 6A 03 69 03 68  FCB    $03,$6B,$03,$6A,$03,$69,$03,$68
@@ -256,7 +420,7 @@ A438: 02 AB 02 85 02 65 02 46  FCB    $02,$AB,$02,$85,$02,$65,$02,$46
 A440: 02 47 02 68 02 88 02 49  FCB    $02,$47,$02,$68,$02,$88,$02,$49
 A448: 02 4A 02                 FCB    $02,$4A,$02
 
-; Referenced from: $DD5C sub_DC1C, $DE45 sub_DC1C
+; Referenced from: $DD5C print_string_attr_r, $DE45 print_string_attr_r
 dat_A44B:
 A44B: 4B 02 05 02 06 02 07 02  FCB    $4B,$02,$05,$02,$06,$02,$07,$02
 A453: 08 02 09 02 0A 02 0B 01  FCB    $08,$02,$09,$02,$0A,$02,$0B,$01
@@ -469,8 +633,10 @@ AAC3: E4 11 C4 11 A4 11 84 11  FCB    $E4,$11,$C4,$11,$A4,$11,$84,$11
 AACB: 64 11 44 11 24 11 04 10  FCB    $64,$11,$44,$11,$24,$11,$04,$10
 AAD3: E4 10 C4 10 A4 10 84     FCB    $E4,$10,$C4,$10,$A4,$10,$84
 
+; Demo input script (stage 1 demo): bytes = stick << 1 | fire, each held for
+; the duration byte $100 further on; $F0 ends the demo.
 ; Referenced from: $CEC4 start_game_2p
-dat_AADA:
+demo_script_1:
 AADA: 00 02 12 02 12 02 00 04  FCB    $00,$02,$12,$02,$12,$02,$00,$04
 AAE2: 0C 0D 0C 04 06 07 06 04  FCB    $0C,$0D,$0C,$04,$06,$07,$06,$04
 AAEA: 00 10 11 01 00 10 18 00  FCB    $00,$10,$11,$01,$00,$10,$18,$00
@@ -533,8 +699,10 @@ ACAA: F0 F0 00 00 00 00 00 00  FCB    $F0,$F0,$00,$00,$00,$00,$00,$00
 ACB2: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
 ACBA: F0 F0                    FCB    $F0,$F0
 
+; Demo input script of the stage-2 (challenging) demo, same format as
+; demo_script_1.
 ; Referenced from: $CECE start_game_2p
-dat_ACBC:
+demo_script_2:
 ACBC: 00 10 12 02 00 01 00 01  FCB    $00,$10,$12,$02,$00,$01,$00,$01
 ACC4: 00 01 00 04 00 01 00 10  FCB    $00,$01,$00,$04,$00,$01,$00,$10
 ACCC: 00 04 06 04 00 10 18 10  FCB    $00,$04,$06,$04,$00,$10,$18,$10
@@ -571,7 +739,7 @@ ADBC: 25 04 0C 01 10 18 10 12  FCB    $25,$04,$0C,$01,$10,$18,$10,$12
 ADC4: 07 05 23 21 1B 07 05 29  FCB    $07,$05,$23,$21,$1B,$07,$05,$29
 ADCC: 30 11 06                 FCB    $30,$11,$06
 
-; Referenced from: $DD82 sub_DC1C, $DE6B sub_DC1C
+; Referenced from: $DD82 print_string_attr_r, $DE6B print_string_attr_r
 dat_ADCF:
 ADCF: 02 16 07 06 06 29 05 04  FCB    $02,$16,$07,$06,$06,$29,$05,$04
 ADD7: 05 04 05 03 05 0C 2B 0B  FCB    $05,$04,$05,$03,$05,$0C,$2B,$0B
@@ -598,8 +766,8 @@ AE77: 02 03 24 04 01 01 02 17  FCB    $02,$03,$24,$04,$01,$01,$02,$17
 AE7F: 11 E6 02 44 13 4B 01 35  FCB    $11,$E6,$02,$44,$13,$4B,$01,$35
 AE87: 01 20 E0 E0 F0           FCB    $01,$20,$E0,$E0,$F0
 
-; Referenced from: $C88C attract_phase0, $CA56 sub_C9AE, $CB26 attract_phase2,
-; $CC81 attract_phase2
+; Referenced from: $C88C attract_phase0, $CA56 logo_anim_colours, $CB26
+; attract_phase2, $CC81 attract_phase2
 dat_AE8C:
 AE8C: 00 08 01 08 02 08 03 08  FCB    $00,$08,$01,$08,$02,$08,$03,$08
 AE94: 04 08 05 08 06 08 07 08  FCB    $04,$08,$05,$08,$06,$08,$07,$08
@@ -643,6 +811,7 @@ AFBC: 00 00                    FCB    $00,$00
 
 ;------------------------------------------------------------------------------
 ; task_hiscore_entry  ($AFBE)
+; -> src/game/main/gp2_4_hiscore.js
 ; Mode 9 task: high score entry, sub-state $11FF through
 ; hiscore_steps (0 check, 1 draw screen, 2 enter name).
 ; Table entry at: $FFCA
@@ -661,6 +830,9 @@ AFCB: B3 04                    FDB    hiscore_enter_name ; [2] $B304
 
 ;------------------------------------------------------------------------------
 ; hiscore_draw_screen  ($AFCD)
+; -> src/game/main/gp2_4_hiscore.js
+; Mode 9 step 1: draw the TOP 5 screen (dat_B070 titles, table, the placeholder
+; row at the new rank), entry_timer = 5, hiscore_step 2.
 ; Table entry at: $AFC9
 ;------------------------------------------------------------------------------
 hiscore_draw_screen:
@@ -668,7 +840,7 @@ AFCD: BD DF 5D        JSR    clear_sprite_shadows
 AFD0: CC 78 48        LDD    #$7848
 AFD3: FD 16 00        STD    player_y        ; [$1600]
 AFD6: 7F 1E 01        CLR    $1E01
-AFD9: 10 8E B0 70     LDY    #dat_B070
+AFD9: 10 8E B0 70     LDY    #hiscore_screen_text
 
 lAFDD:
 AFDD: AE A1           LDX    ,Y++
@@ -760,8 +932,9 @@ B068: 7C 11 FF        INC    hiscore_step    ; [$11FF]
 B06B: 0C 30           INC    <main_task      ; [$1030]
 B06D: 7E FE B5        JMP    task_dispatch
 
+; TOP 5 screen: (tile address, string pointer) pairs, 0 ends.
 ; Referenced from: $AFD9 hiscore_draw_screen, $B292 hiscore_draw_screen
-dat_B070:
+hiscore_screen_text:
 B070: 03 8A B0 BE 03 8B B0 DA  FCB    $03,$8A,$B0,$BE,$03,$8B,$B0,$DA
 B078: 03 8D B0 F6 03 8F B1 12  FCB    $03,$8D,$B0,$F6,$03,$8F,$B1,$12
 B080: 03 92 B1 14 03 95 B1 16  FCB    $03,$92,$B1,$14,$03,$95,$B1,$16
@@ -810,14 +983,17 @@ dat_B146:
 B146: 4A 48 49 4D 59 4A 20 20  FCB    $4A,$48,$49,$4D,$59,$4A,$20,$20
 B14E: 30 30 20 20 4F 4F 00     FCB    $30,$30,$20,$20,$4F,$4F,$00
 
+; The secret name "JNIWAR 28 OO" compared by hiscore_enter_name.
 ; Referenced from: $B22B hiscore_draw_screen
-dat_B155:
+str_jniwar:
 ;   "JNIWAR  28  OO"
 B155: 4A 4E 49 57 41 52 20 20  FCB    $4A,$4E,$49,$57,$41,$52,$20,$20
 B15D: 32 38 20 20 4F 4F 00     FCB    $32,$38,$20,$20,$4F,$4F,$00
 
+; Staff screen of the JNIWAR name: (tile address, string pointer) pairs, 0
+; ends.
 ; Referenced from: $B244 hiscore_draw_screen
-dat_B164:
+hiscore_staff_text:
 B164: B1 7E 03 8A B1 96 03 8C  FCB    $B1,$7E,$03,$8A,$B1,$96,$03,$8C
 B16C: B1 AF 03 8E B1 C9 03 90  FCB    $B1,$AF,$03,$8E,$B1,$C9,$03,$90
 B174: B1 E4 03 92 B1 F7 03 94  FCB    $B1,$E4,$03,$92,$B1,$F7,$03,$94
@@ -841,7 +1017,7 @@ B1FC: 47 41 20 44 45 4E 47 45  FCB    $47,$41,$20,$44,$45,$4E,$47,$45
 B204: 4E 20 4F 20 4B 49 54 54  FCB    $4E,$20,$4F,$20,$4B,$49,$54,$54
 B20C: 45 4B 55 52 45 00        FCB    $45,$4B,$55,$52,$45,$00
 
-lB212:
+hiscore_finish:
 B212: 8E B1 46        LDX    #dat_B146
 B215: CE 02 4F        LDU    #TILE_RAM+$24F  ; [#$024F]
 
@@ -854,28 +1030,30 @@ B221: A6 84           LDA    ,X
 B223: 26 F3           BNE    lB218
 B225: 86 08           LDA    #$08
 B227: 97 00           STA    <lives_setting  ; [$1000]
-B229: 20 34           BRA    lB25F
+B229: 20 34           BRA    hiscore_store
 
 lB22B:
-B22B: 8E B1 55        LDX    #dat_B155
+B22B: 8E B1 55        LDX    #str_jniwar     ; QUIRK: the name "JNIWAR" shows
+                                             ; the staff text and hangs for
+                                             ; good
 B22E: CE 02 4F        LDU    #TILE_RAM+$24F  ; [#$024F]
 
 lB231:
 B231: A6 80           LDA    ,X+
 B233: A1 C4           CMPA   ,U
-B235: 26 28           BNE    lB25F
+B235: 26 28           BNE    hiscore_store
 B237: 33 C8 E0        LEAU   -$20,U
 B23A: A6 84           LDA    ,X
 B23C: 26 F3           BNE    lB231
 B23E: BD B7 7C        JSR    fill_tilemap_00_20
 
-lB241:
+hiscore_staff_loop:
 B241: F6 7C 00        LDB    WATCHDOG        ; [$7C00]
-B244: 10 8E B1 64     LDY    #dat_B164
+B244: 10 8E B1 64     LDY    #hiscore_staff_text
 
 lB248:
 B248: AE A1           LDX    ,Y++
-B24A: 27 F5           BEQ    lB241
+B24A: 27 F5           BEQ    hiscore_staff_loop
 B24C: EE A1           LDU    ,Y++
 
 lB24E:
@@ -889,7 +1067,7 @@ B25B: 20 F1           BRA    lB24E
 lB25D:
 B25D: 20 E9           BRA    lB248
 
-lB25F:
+hiscore_store:
 B25F: BD DF 19        JSR    sound_all_off
 B262: 10 8E B0 92     LDY    #dat_B092
 
@@ -925,11 +1103,11 @@ B28E: 26 F6           BNE    lB286
 B290: 20 EC           BRA    lB27E
 
 lB292:
-B292: 10 8E B0 70     LDY    #dat_B070
+B292: 10 8E B0 70     LDY    #hiscore_screen_text
 
 lB296:
 B296: AE A4           LDX    ,Y
-B298: 27 14           BEQ    lB2AE
+B298: 27 14           BEQ    hiscore_leave
 B29A: 31 24           LEAY   $4,Y
 B29C: CE B1 1C        LDU    #dat_B11C
 
@@ -941,7 +1119,7 @@ B2A5: 6F 89 04 00     CLR    TILE_ATTR,X     ; [$0400]
 B2A9: 30 88 E0        LEAX   -$20,X
 B2AC: 20 F1           BRA    lB29F
 
-lB2AE:
+hiscore_leave:
 B2AE: 7F 11 FF        CLR    hiscore_step    ; [$11FF]
 B2B1: 8E 18 60        LDX    #formation_flags ; [#$1860]
 B2B4: 86 01           LDA    #$01
@@ -980,17 +1158,24 @@ B2EE: 86 05           LDA    #$05
 B2F0: 97 2F           STA    <game_mode      ; [$102F]
 B2F2: 86 06           LDA    #$06
 B2F4: 97 30           STA    <main_task      ; [$1030]
-B2F6: 7E DC 0B        JMP    lDC0B
+B2F6: 7E DC 0B        JMP    after_name_entry_p2
 
 lB2F9:
 B2F9: 86 05           LDA    #$05
 B2FB: 97 2F           STA    <game_mode      ; [$102F]
 B2FD: 86 06           LDA    #$06
 B2FF: 97 30           STA    <main_task      ; [$1030]
-B301: 7E DB E2        JMP    lDBE2
+B301: 7E DB E2        JMP    after_name_entry_p1
 
 ;------------------------------------------------------------------------------
 ; hiscore_enter_name  ($B304)
+; -> src/game/main/gp2_4_hiscore.js
+; Mode 9 step 2, once a frame: the stick cycles the character under
+; entry_cursor through its field's alphabet (8-frame repeat, entry_repeat),
+; fire accepts, entry_timer runs; finishing stores the table and returns to
+; mode 5 via after_name_entry_p1/_p2.
+; QUIRK: the alphabet wrap reads the byte 2 before each alphabet ($B416, $B435,
+; $B443): the index of its terminator.
 ; Jumped to from: $B390, $B3A5
 ; Table entry at: $AFCB
 ;------------------------------------------------------------------------------
@@ -1007,9 +1192,9 @@ B31E: 10 83 01 20     CMPD   #$0120
 B322: 10 25 00 82     LBCS   lB3A8
 B326: 10 83 01 A0     CMPD   #$01A0
 B32A: 10 25 00 B1     LBCS   lB3DF
-B32E: 8E B4 18        LDX    #dat_B418
+B32E: 8E B4 18        LDX    #alphabet_letters
 
-lB331:
+entry_step_char:
 B331: 86 01           LDA    #$01
 B333: A7 9F 09 A7     STA    [entry_music_ptr] ; [$09A7]
 B337: B6 68 04        LDA    IO56XX+$04      ; [$6804] 56XX P1 stick
@@ -1020,17 +1205,17 @@ B33E: B6 68 06        LDA    IO56XX+$06      ; [$6806] 56XX P2 stick
 lB341:
 B341: 84 02           ANDA   #$02
 B343: 27 1C           BEQ    lB361
-B345: B6 11 6D        LDA    $116D
+B345: B6 11 6D        LDA    entry_repeat    ; [$116D]
 B348: 26 49           BNE    lB393
 B34A: 86 08           LDA    #$08
-B34C: B7 11 6D        STA    $116D
-B34F: B6 11 6C        LDA    $116C
-B352: 7C 11 6C        INC    $116C
+B34C: B7 11 6D        STA    entry_repeat    ; [$116D]
+B34F: B6 11 6C        LDA    entry_char_index ; the OLD value indexes [$116C]
+B352: 7C 11 6C        INC    entry_char_index ; [$116C]
 B355: A6 86           LDA    A,X
 B357: 27 49           BEQ    lB3A2
 B359: FE 09 A2        LDU    entry_cursor    ; [$09A2]
 B35C: A7 C4           STA    ,U
-B35E: 7E B4 4B        JMP    lB44B
+B35E: 7E B4 4B        JMP    entry_fire
 
 lB361:
 B361: B6 68 04        LDA    IO56XX+$04      ; [$6804] 56XX P1 stick
@@ -1041,91 +1226,95 @@ B368: B6 68 06        LDA    IO56XX+$06      ; [$6806] 56XX P2 stick
 lB36B:
 B36B: 84 08           ANDA   #$08
 B36D: 27 2A           BEQ    lB399
-B36F: B6 11 6D        LDA    $116D
+B36F: B6 11 6D        LDA    entry_repeat    ; [$116D]
 B372: 26 1F           BNE    lB393
 B374: 86 08           LDA    #$08
-B376: B7 11 6D        STA    $116D
-B379: 7A 11 6C        DEC    $116C
-B37C: B6 11 6C        LDA    $116C
+B376: B7 11 6D        STA    entry_repeat    ; [$116D]
+B379: 7A 11 6C        DEC    entry_char_index ; [$116C]
+B37C: B6 11 6C        LDA    entry_char_index ; [$116C]
 B37F: A6 86           LDA    A,X
 B381: 27 08           BEQ    lB38B
 B383: FE 09 A2        LDU    entry_cursor    ; [$09A2]
 B386: A7 C4           STA    ,U
-B388: 7E B4 4B        JMP    lB44B
+B388: 7E B4 4B        JMP    entry_fire
 
 lB38B:
 B38B: A6 1E           LDA    -$2,X
-B38D: B7 11 6C        STA    $116C
+B38D: B7 11 6C        STA    entry_char_index ; [$116C]
 B390: 7E B3 04        JMP    hiscore_enter_name
 
 lB393:
-B393: 7A 11 6D        DEC    $116D
-B396: 7E B4 4B        JMP    lB44B
+B393: 7A 11 6D        DEC    entry_repeat    ; [$116D]
+B396: 7E B4 4B        JMP    entry_fire
 
 lB399:
-B399: B6 11 6D        LDA    $116D
-B39C: 10 27 00 AB     LBEQ   lB44B
+B399: B6 11 6D        LDA    entry_repeat    ; [$116D]
+B39C: 10 27 00 AB     LBEQ   entry_fire
 B3A0: 20 F1           BRA    lB393
 
 lB3A2:
-B3A2: 7F 11 6C        CLR    $116C
+B3A2: 7F 11 6C        CLR    entry_char_index ; [$116C]
 B3A5: 7E B3 04        JMP    hiscore_enter_name
 
 lB3A8:
-B3A8: 8E B4 45        LDX    #dat_B445
+B3A8: 8E B4 45        LDX    #alphabet_blood
 B3AB: FC 09 A2        LDD    entry_cursor    ; [$09A2]
 B3AE: C4 F0           ANDB   #$F0
 B3B0: 10 83 00 D0     CMPD   #$00D0
-B3B4: 10 27 FF 79     LBEQ   lB331
+B3B4: 10 27 FF 79     LBEQ   entry_step_char
 B3B8: 10 83 00 C0     CMPD   #$00C0
-B3BC: 10 27 FF 71     LBEQ   lB331
+B3BC: 10 27 FF 71     LBEQ   entry_step_char
 B3C0: 10 83 00 B0     CMPD   #$00B0
-B3C4: 10 27 FF 69     LBEQ   lB331
+B3C4: 10 27 FF 69     LBEQ   entry_step_char
 B3C8: 10 83 00 A0     CMPD   #$00A0
-B3CC: 10 27 FF 61     LBEQ   lB331
+B3CC: 10 27 FF 61     LBEQ   entry_step_char
 B3D0: FE 09 A2        LDU    entry_cursor    ; [$09A2]
 B3D3: 33 C8 C0        LEAU   -$40,U
 B3D6: FF 09 A2        STU    entry_cursor    ; [$09A2]
-B3D9: 7F 11 6C        CLR    $116C
-B3DC: 7E B3 31        JMP    lB331
+B3D9: 7F 11 6C        CLR    entry_char_index ; [$116C]
+B3DC: 7E B3 31        JMP    entry_step_char
 
 lB3DF:
-B3DF: 8E B4 37        LDX    #dat_B437
+B3DF: 8E B4 37        LDX    #alphabet_digits
 B3E2: FC 09 A2        LDD    entry_cursor    ; [$09A2]
 B3E5: C4 F0           ANDB   #$F0
 B3E7: 10 83 01 50     CMPD   #$0150
-B3EB: 10 27 FF 42     LBEQ   lB331
+B3EB: 10 27 FF 42     LBEQ   entry_step_char
 B3EF: 10 83 01 40     CMPD   #$0140
-B3F3: 10 27 FF 3A     LBEQ   lB331
+B3F3: 10 27 FF 3A     LBEQ   entry_step_char
 B3F7: 10 83 01 30     CMPD   #$0130
-B3FB: 10 27 FF 32     LBEQ   lB331
+B3FB: 10 27 FF 32     LBEQ   entry_step_char
 B3FF: 10 83 01 20     CMPD   #$0120
-B403: 10 27 FF 2A     LBEQ   lB331
+B403: 10 27 FF 2A     LBEQ   entry_step_char
 B407: FE 09 A2        LDU    entry_cursor    ; [$09A2]
 B40A: 33 C8 C0        LEAU   -$40,U
 B40D: FF 09 A2        STU    entry_cursor    ; [$09A2]
-B410: 7F 11 6C        CLR    $116C
-B413: 7E B3 31        JMP    lB331
+B410: 7F 11 6C        CLR    entry_char_index ; [$116C]
+B413: 7E B3 31        JMP    entry_step_char
 B416: 1C 00                    FCB    $1C,$00 ; [unreached]
 
+; Name-entry alphabet of the name field; the byte 2 before it is its terminator
+; index.
 ; Referenced from: $B32E hiscore_enter_name
-dat_B418:
+alphabet_letters:
 B418: 41 42 43 44 45 46 47 48  FCB    $41,$42,$43,$44,$45,$46,$47,$48
 B420: 49 4A 4B 4C 4D 4E 4F 50  FCB    $49,$4A,$4B,$4C,$4D,$4E,$4F,$50
 B428: 51 52 53 54 55 56 57 58  FCB    $51,$52,$53,$54,$55,$56,$57,$58
 B430: 59 5A 5B 20 00 0B 00     FCB    $59,$5A,$5B,$20,$00,$0B,$00
 
+; Name-entry alphabet of the age field.
 ; Referenced from: $B3DF hiscore_enter_name
-dat_B437:
+alphabet_digits:
 B437: 31 32 33 34 35 36 37 38  FCB    $31,$32,$33,$34,$35,$36,$37,$38
 B43F: 39 30 20 00 05 00        FCB    $39,$30,$20,$00,$05,$00
 
+; Name-entry alphabet of the blood-type field ("ABO ?").
 ; Referenced from: $B3A8 hiscore_enter_name
-dat_B445:
+alphabet_blood:
 ;   "ABO ?"
 B445: 41 42 4F 20 3F 00        FCB    $41,$42,$4F,$20,$3F,$00
 
-lB44B:
+entry_fire:
 B44B: FE 09 A2        LDU    entry_cursor    ; [$09A2]
 B44E: B6 68 05        LDA    IO56XX+$05      ; [$6805] 56XX P1 fire/start1
 B451: D6 2C           LDB    <flip_screen    ; [$102C]
@@ -1142,7 +1331,7 @@ B464: 86 01           LDA    #$01
 B466: A7 C9 04 00     STA    TILE_ATTR,U     ; [$0400]
 B46A: 33 C8 E0        LEAU   -$20,U
 B46D: FF 09 A2        STU    entry_cursor    ; [$09A2]
-B470: 7F 11 6C        CLR    $116C
+B470: 7F 11 6C        CLR    entry_char_index ; [$116C]
 B473: 86 05           LDA    #$05
 B475: B7 09 A5        STA    entry_timer     ; [$09A5]
 
@@ -1155,24 +1344,27 @@ B47D: 7F 09 A4        CLR    entry_fire_latch ; [$09A4]
 B480: 20 F6           BRA    lB478
 
 lB482:
-B482: FE 09 A0        LDU    $09A0
+B482: FE 09 A0        LDU    entry_blank_ptr ; [$09A0]
 B485: 6F C8 E0        CLR    -$20,U
 B488: 6F C4           CLR    ,U
 B48A: 6F C8 20        CLR    $20,U
 B48D: 7C 09 A5        INC    entry_timer     ; [$09A5]
-B490: 10 27 FD 7E     LBEQ   lB212
+B490: 10 27 FD 7E     LBEQ   hiscore_finish
 B494: 20 E2           BRA    lB478
 
 lB496:
 B496: 7A 09 A5        DEC    entry_timer     ; [$09A5]
-B499: 10 27 FD 75     LBEQ   lB212
+B499: 10 27 FD 75     LBEQ   hiscore_finish
 B49D: 20 D9           BRA    lB478
 
 ;------------------------------------------------------------------------------
 ; hiscore_check  ($B49F)
+; -> src/game/main/gp2_4_hiscore.js
 ; Compare the player's score (tile digits) with the five table
 ; entries at $0900 (16 bytes each), shift the lower entries down and
 ; insert; pick the rank music (sound 3 for 1st, 4 otherwise).
+; QUIRK: rank 5 leaves entry_rank untouched; main_task += 2 skips
+; task_game_over_check.
 ; Table entry at: $AFC7
 ;------------------------------------------------------------------------------
 hiscore_check:
@@ -1263,7 +1455,7 @@ B522: 26 F1           BNE    lB515
 B524: 20 4F           BRA    lB575
 
 lB526:
-B526: 7E B2 AE        JMP    lB2AE
+B526: 7E B2 AE        JMP    hiscore_leave   ; not in the TOP 5
 
 lB529:
 B529: CC 02 4F        LDD    #$024F
@@ -1448,10 +1640,13 @@ B653: 7E FE B5        JMP    task_dispatch
 
 ;------------------------------------------------------------------------------
 ; load_formation_sprites  ($B656)
-; Called from: $DC4D sub_DC1C
+; -> src/game/main/gp2_4_hiscore.js
+; Copy the formation's sprite codes: dat_B6BA[$106E] points at 9 words, the
+; first 8 fill runs of shadow words at $0E02-$0E83, the 9th goes to $0E84.
+; Called from: $DC4D print_string_attr_r
 ;------------------------------------------------------------------------------
 load_formation_sprites:
-B656: 8E B6 BA        LDX    #dat_B6BA
+B656: 8E B6 BA        LDX    #formation_sprite_ptrs
 B659: 96 6E           LDA    <$6E            ; [$106E]
 B65B: 48              ASLA
 B65C: AE 86           LDX    A,X
@@ -1509,8 +1704,9 @@ B6B4: EC 81           LDD    ,X++
 B6B6: FD 0E 84        STD    $0E84
 B6B9: 39              RTS
 
+; load_formation_sprites: pointers by $106E to 9 sprite-code words.
 ; Referenced from: $B656 load_formation_sprites
-dat_B6BA:
+formation_sprite_ptrs:
 B6BA: B6 C0 B6 D2 B6 E4 11 0B  FCB    $B6,$C0,$B6,$D2,$B6,$E4,$11,$0B
 B6C2: 10 08 01 05 00 02 50 0B  FCB    $10,$08,$01,$05,$00,$02,$50,$0B
 B6CA: 40 08 30 05 20 02 10 01  FCB    $40,$08,$30,$05,$20,$02,$10,$01
@@ -1522,13 +1718,15 @@ B6F2: C0 1C B0 1B              FCB    $C0,$1C,$B0,$1B
 
 ;------------------------------------------------------------------------------
 ; service_mode  ($B6F6)
-; Service / test mode (DSW service switch, checked at boot and in
-; every IRQ). Re-initialises like reset, then: RAM test $0000-$1FFF
-; and $6040-$63FF with rotating patterns, custom-chip check, ROM
-; checksums of $A000/$C000/$E000 (error digit 1-3 at tile $0306),
-; sub/sound handshake and their checksum results, then shows the DIP
-; settings and runs the sound test (stick selects, fire plays).
-; Leaving the switch resets through reset_main.
+; -> src/game/main/gp2_4_svc.js
+; Service / test mode (DSW service switch, checked at boot and in every IRQ).
+; Re-initialises like reset, then: RAM test $0000-$1FFF and $6040-$63FF with
+; rotating patterns (15 passes, see svc_ram_test), custom-chip check, ROM
+; checksums of $A000/$C000/$E000 (error digit 1-3 at tile $0306), sub/sound
+; handshake and their checksum results, then the DIP settings and the sound
+; test. Leaving the switch resets through reset_main.
+; BUG: the sound-RAM and custom-chip error codes are loaded into B but A = $20
+; is stored: they show as blanks and pass the "OK" check at $B926.
 ; Jumped to from: $C016, $E1CF
 ;------------------------------------------------------------------------------
 service_mode:
@@ -1545,7 +1743,9 @@ B70F: B7 A0 00        STA    STARFIELD       ; [$A000]
 B712: F7 1F 7F        STB    FLIP_SCREEN     ; [$1F7F]
 B715: F7 68 08        STB    IO56XX+$08      ; [$6808] 56XX command
 B718: F7 68 18        STB    IO58XX+$08      ; [$6818] 58XX command
-B71B: C6 04           LDB    #$04
+B71B: C6 04           LDB    #$04            ; QUIRK: D = $000B after the
+                                             ; INCBs: the RAM test's first
+                                             ; offset (15 passes)
 B71D: F7 68 28        STB    IO62XX+$08      ; [$6828] 62XX mode
 B720: 5C              INCB
 B721: F7 68 29        STB    IO62XX+$09      ; [$6829] 62XX $6829 (>= $0F:
@@ -1563,7 +1763,13 @@ B735: F7 68 2E        STB    IO62XX+$0E      ; [$682E] 62XX byte 14
 B738: 5C              INCB
 B739: F7 68 2F        STB    IO62XX+$0F      ; [$682F] 62XX byte 15
 
-lB73C:
+;------------------------------------------------------------------------------
+; svc_ram_test  ($B73C)
+; 15 passes, not 16: D enters as $000B (left by the 62XX init
+; INCBs), so the offsets are $000B, $111C, ... $EEF9.
+; Jumped to from: $B76D
+;------------------------------------------------------------------------------
+svc_ram_test:
 B73C: CE 00 00        LDU    #$0000
 
 lB73F:
@@ -1585,7 +1791,7 @@ B762: 11 83 20 00     CMPU   #$2000
 B766: 26 EC           BNE    lB754
 B768: C3 11 11        ADDD   #$1111
 B76B: 25 04           BCS    lB771
-B76D: 20 CD           BRA    lB73C
+B76D: 20 CD           BRA    svc_ram_test
 
 lB76F:
 B76F: 33 5E           LEAU   -$2,U
@@ -1601,8 +1807,9 @@ B77A: 20 12           BRA    lB78E
 
 ;------------------------------------------------------------------------------
 ; fill_tilemap_00_20  ($B77C)
+; -> src/game/main/gp2_4_svc.js
 ; Fill $0000-$03FF with $00,$20 word pairs.
-; Called from: $B23E hiscore_draw_screen, $B778 service_mode, $BD95
+; Called from: $B23E hiscore_draw_screen, $B778 svc_ram_test, $BD95
 ; service_loop
 ;------------------------------------------------------------------------------
 fill_tilemap_00_20:
@@ -1625,10 +1832,10 @@ B795: EF 81           STU    ,X++
 B797: 8C 20 00        CMPX   #$2000
 B79A: 26 F5           BNE    lB791
 B79C: 81 35           CMPA   #$35
-B79E: 10 26 00 52     LBNE   lB7F4
+B79E: 10 26 00 52     LBNE   svc_chip_test
 B7A2: CC 00 00        LDD    #$0000
 
-lB7A5:
+svc_sndram_test:
 B7A5: CE 60 40        LDU    #snd_request    ; [#$6040]
 
 lB7A8:
@@ -1650,7 +1857,7 @@ B7CB: 11 83 64 00     CMPU   #$6400
 B7CF: 26 EC           BNE    lB7BD
 B7D1: C3 11 11        ADDD   #$1111
 B7D4: 25 1C           BCS    lB7F2
-B7D6: 20 CD           BRA    lB7A5
+B7D6: 20 CD           BRA    svc_sndram_test
 
 lB7D8:
 B7D8: 1F 10           TFR    X,D
@@ -1660,8 +1867,9 @@ B7DE: 81 10           CMPA   #$10
 B7E0: 24 0B           BCC    lB7ED
 
 lB7E2:
-B7E2: CC 20 36        LDD    #$2036
-B7E5: 20 0D           BRA    lB7F4
+B7E2: CC 20 36        LDD    #$2036          ; BUG: the code is in B but $B7F4
+                                             ; stores A = $20 (a blank)
+B7E5: 20 0D           BRA    svc_chip_test
 
 lB7E7:
 B7E7: E8 5F           EORB   -$1,U
@@ -1670,12 +1878,12 @@ B7EB: 25 F5           BCS    lB7E2
 
 lB7ED:
 B7ED: CC 20 35        LDD    #$2035
-B7F0: 20 02           BRA    lB7F4
+B7F0: 20 02           BRA    svc_chip_test
 
 lB7F2:
 B7F2: 86 30           LDA    #$30
 
-lB7F4:
+svc_chip_test:
 B7F4: B7 03 26        STA    TILE_RAM+$326   ; [$0326]
 B7F7: CC 08 0F        LDD    #$080F
 B7FA: CE 68 08        LDU    #IO56XX+$08     ; [#$6808] 56XX command
@@ -1696,7 +1904,8 @@ B819: 84 0F           ANDA   #$0F
 B81B: C4 0F           ANDB   #$0F
 B81D: 10 83 06 09     CMPD   #$0609
 B821: 27 05           BEQ    lB828
-B823: CC 20 31        LDD    #$2031
+B823: CC 20 31        LDD    #$2031          ; BUG: error digit in B, but A =
+                                             ; $20 is stored at $02E6
 B826: 20 34           BRA    lB85C
 
 lB828:
@@ -1705,7 +1914,8 @@ B82B: 84 0F           ANDA   #$0F
 B82D: C4 0F           ANDB   #$0F
 B82F: 10 83 0F 0F     CMPD   #$0F0F
 B833: 27 05           BEQ    lB83A
-B835: CC 20 32        LDD    #$2032
+B835: CC 20 32        LDD    #$2032          ; BUG: error digit in B, but A =
+                                             ; $20 is stored at $02E6
 B838: 20 22           BRA    lB85C
 
 lB83A:
@@ -1723,7 +1933,8 @@ B851: 81 01           CMPA   #$01
 B853: 27 05           BEQ    lB85A
 
 lB855:
-B855: CC 20 33        LDD    #$2033
+B855: CC 20 33        LDD    #$2033          ; BUG: error digit in B, but A =
+                                             ; $20 is stored at $02E6
 B858: 20 02           BRA    lB85C
 
 lB85A:
@@ -1731,8 +1942,10 @@ B85A: 86 30           LDA    #$30
 
 lB85C:
 B85C: B7 02 E6        STA    TILE_RAM+$2E6   ; [$02E6]
+
+svc_rom_checksums:
 B85F: CC 00 00        LDD    #$0000
-B862: CE A0 00        LDU    #dat_A000
+B862: CE A0 00        LDU    #mark_patterns
 
 lB865:
 B865: AB C0           ADDA   ,U+
@@ -1761,23 +1974,23 @@ B897: 81 00           CMPA   #$00
 B899: 26 15           BNE    lB8B0
 B89B: 86 30           LDA    #$30
 B89D: B7 03 06        STA    TILE_RAM+$306   ; [$0306]
-B8A0: 20 13           BRA    lB8B5
+B8A0: 20 13           BRA    svc_release_subs
 
 lB8A2:
 B8A2: 86 33           LDA    #$33
 B8A4: B7 03 06        STA    TILE_RAM+$306   ; [$0306]
-B8A7: 20 0C           BRA    lB8B5
+B8A7: 20 0C           BRA    svc_release_subs
 
 lB8A9:
 B8A9: 86 32           LDA    #$32
 B8AB: B7 03 06        STA    TILE_RAM+$306   ; [$0306]
-B8AE: 20 05           BRA    lB8B5
+B8AE: 20 05           BRA    svc_release_subs
 
 lB8B0:
 B8B0: 86 31           LDA    #$31
 B8B2: B7 03 06        STA    TILE_RAM+$306   ; [$0306]
 
-lB8B5:
+svc_release_subs:
 B8B5: B7 84 00        STA    SRESET_OFF      ; [$8400]
 B8B8: 86 11           LDA    #$11
 B8BA: B7 60 40        STA    snd_request     ; [$6040]
@@ -1826,7 +2039,7 @@ B912: 84 0F           ANDA   #$0F
 B914: A7 80           STA    ,X+
 B916: 11 83 68 04     CMPU   #$6804
 B91A: 26 F4           BNE    lB910
-B91C: 0F 0A           CLR    <var_100A       ; [$100A]
+B91C: 0F 0A           CLR    <stage_text_timer ; [$100A]
 B91E: 86 30           LDA    #$30
 B920: B7 02 72        STA    TILE_RAM+$272   ; [$0272]
 B923: B7 02 52        STA    TILE_RAM+$252   ; [$0252]
@@ -1834,7 +2047,7 @@ B926: B6 03 26        LDA    TILE_RAM+$326   ; [$0326]
 B929: BA 03 06        ORA    TILE_RAM+$306   ; [$0306]
 B92C: BA 02 E6        ORA    TILE_RAM+$2E6   ; [$02E6]
 B92F: 84 0F           ANDA   #$0F
-B931: 26 3D           BNE    lB970
+B931: 26 3D           BNE    svc_dip_screen
 B933: 86 20           LDA    #$20
 B935: B7 02 E6        STA    TILE_RAM+$2E6   ; [$02E6]
 B938: CC 52 41        LDD    #$5241
@@ -1857,7 +2070,7 @@ B967: F7 02 82        STB    TILE_RAM+$282   ; [$0282]
 B96A: F7 02 84        STB    TILE_RAM+$284   ; [$0284]
 B96D: F7 02 86        STB    TILE_RAM+$286   ; [$0286]
 
-lB970:
+svc_dip_screen:
 B970: B6 68 01        LDA    IO56XX+$01      ; [$6801] 56XX credits units
 B973: 84 0F           ANDA   #$0F
 B975: BA 02 72        ORA    TILE_RAM+$272   ; [$0272]
@@ -1947,6 +2160,7 @@ BA2C: 16 03 4C        LBRA   service_loop
 
 ;------------------------------------------------------------------------------
 ; print_string  ($BA2F)
+; -> src/game/main/gp2_4_svc.js
 ; Print the zero-terminated string at X to tile address U going
 ; right (U -= $20 per character). Returns X past the terminator.
 ; Called from: $B99D fill_tilemap_00_20, $B9B2 fill_tilemap_00_20, $B9BE
@@ -2107,9 +2321,12 @@ BD73: 20 50 54 53 00 03 07 07  FCB    $20,$50,$54,$53,$00,$03,$07,$07
 
 ;------------------------------------------------------------------------------
 ; service_loop  ($BD7B)
-; Service mode loop: service coin held -> crosshatch test grid until
-; released; service switch off -> reset_main; otherwise any change of
-; the stick/button nibbles steps or plays the sound test ($100A).
+; -> src/game/main/gp2_4_svc.js
+; Service mode loop: the service coin starts the cross hatch, which stays until
+; the service coin is pressed AGAIN ($BD8A waits for bit 3 of $6800 to come
+; back); service switch off -> reset_main; a change of switch nibbles 0-2 steps
+; the sound test ($100A) and plays it, nibble 3 only plays it.
+; QUIRK: the cross hatch needs a second press of the service coin to end.
 ; Jumped to from: $BA2C
 ;------------------------------------------------------------------------------
 service_loop:
@@ -2128,13 +2345,15 @@ BD93: 27 F5           BEQ    lBD8A
 BD95: BD B7 7C        JSR    fill_tilemap_00_20
 BD98: CC 00 00        LDD    #$0000
 BD9B: BD BE 25        JSR    delay_65536
-BD9E: 7E B9 70        JMP    lB970
+BD9E: 7E B9 70        JMP    svc_dip_screen
 
 lBDA1:
 BDA1: B6 68 14        LDA    IO58XX+$04      ; [$6814] 58XX DSWB hi (diff, svc)
 BDA4: 84 08           ANDA   #$08
 BDA6: 26 03           BNE    lBDAB
-BDA8: 7E E0 00        JMP    reset_main
+BDA8: 7E E0 00        JMP    reset_main      ; a non-local jump: the foreground
+                                             ; driver starts reset_main (which
+                                             ; reloads S) in our place
 
 lBDAB:
 BDAB: CE 68 00        LDU    #IO56XX         ; [#$6800] 56XX credits tens
@@ -2143,7 +2362,7 @@ BDAE: 8E 10 06        LDX    #boot_switches  ; [#$1006]
 lBDB1:
 BDB1: A6 C0           LDA    ,U+
 BDB3: 11 83 68 05     CMPU   #$6805
-BDB7: 10 27 FB B5     LBEQ   lB970
+BDB7: 10 27 FB B5     LBEQ   svc_dip_screen
 BDBB: 84 0F           ANDA   #$0F
 BDBD: 26 04           BNE    lBDC3
 BDBF: A7 80           STA    ,X+
@@ -2155,11 +2374,11 @@ BDC5: 27 EA           BEQ    lBDB1
 BDC7: A7 1F           STA    -$1,X
 BDC9: 11 83 68 04     CMPU   #$6804
 BDCD: 27 24           BEQ    lBDF3
-BDCF: 0C 0A           INC    <var_100A       ; [$100A]
-BDD1: 96 0A           LDA    <var_100A       ; [$100A]
+BDCF: 0C 0A           INC    <stage_text_timer ; [$100A]
+BDD1: 96 0A           LDA    <stage_text_timer ; [$100A]
 BDD3: 84 1F           ANDA   #$1F
-BDD5: 97 0A           STA    <var_100A       ; [$100A]
-BDD7: 96 0A           LDA    <var_100A       ; [$100A]
+BDD5: 97 0A           STA    <stage_text_timer ; [$100A]
+BDD7: 96 0A           LDA    <stage_text_timer ; [$100A]
 BDD9: 84 0F           ANDA   #$0F
 BDDB: 8A 30           ORA    #$30
 BDDD: 81 3A           CMPA   #$3A
@@ -2169,7 +2388,7 @@ BDE1: 8B 07           ADDA   #$07
 lBDE3:
 BDE3: B7 02 52        STA    TILE_RAM+$252   ; [$0252]
 BDE6: C6 30           LDB    #$30
-BDE8: 96 0A           LDA    <var_100A       ; [$100A]
+BDE8: 96 0A           LDA    <stage_text_timer ; [$100A]
 BDEA: 84 10           ANDA   #$10
 BDEC: 27 02           BEQ    lBDF0
 BDEE: C6 31           LDB    #$31
@@ -2179,7 +2398,7 @@ BDF0: F7 02 72        STB    TILE_RAM+$272   ; [$0272]
 
 lBDF3:
 BDF3: 86 60           LDA    #$60
-BDF5: D6 0A           LDB    <var_100A       ; [$100A]
+BDF5: D6 0A           LDB    <stage_text_timer ; [$100A]
 BDF7: CB 40           ADDB   #$40
 BDF9: 1E 02           EXG    D,Y
 BDFB: 6C A4           INC    ,Y
@@ -2188,35 +2407,42 @@ BDFF: 20 B0           BRA    lBDB1
 
 ;------------------------------------------------------------------------------
 ; draw_test_grid  ($BE01)
+; -> src/game/main/gp2_4_svc.js
+; Draw the cross-hatch test pattern over the tilemap $0000-$03FF (codes only).
 ; Called from: $BD82 service_loop
 ;------------------------------------------------------------------------------
 draw_test_grid:
 BE01: CE 00 00        LDU    #$0000
-BE04: 8D 0F           BSR    sub_BE15
+BE04: 8D 0F           BSR    grid_row_pair
 BE06: C6 0E           LDB    #$0E
 
 lBE08:
 BE08: 8E 65 67        LDX    #$6567
-BE0B: 8D 10           BSR    sub_BE1D
+BE0B: 8D 10           BSR    store_x_16
 BE0D: 8E 64 66        LDX    #$6466
-BE10: 8D 0B           BSR    sub_BE1D
+BE10: 8D 0B           BSR    store_x_16
 BE12: 5A              DECB
 BE13: 26 F3           BNE    lBE08
 
 ;------------------------------------------------------------------------------
-; sub_BE15  ($BE15)
+; grid_row_pair  ($BE15) ; JS: sub_BE15
+; -> src/game/main/gp2_4_svc.js
+; One row pair of the cross hatch: 16 x $6564 then 16 x $6766 from U up (tiles
+; $64-$67).
 ; Called from: $BE04 draw_test_grid
 ;------------------------------------------------------------------------------
-sub_BE15:
+grid_row_pair:
 BE15: 8E 65 64        LDX    #$6564
-BE18: 8D 03           BSR    sub_BE1D
+BE18: 8D 03           BSR    store_x_16
 BE1A: 8E 67 66        LDX    #$6766
 
 ;------------------------------------------------------------------------------
-; sub_BE1D  ($BE1D)
-; Called from: $BE0B draw_test_grid, $BE10 draw_test_grid, $BE18 sub_BE15
+; store_x_16  ($BE1D) ; JS: sub_BE1D
+; -> src/game/main/gp2_4_svc.js
+; Store the word X 16 times from U up (STX ,U++); U returned past the run.
+; Called from: $BE0B draw_test_grid, $BE10 draw_test_grid, $BE18 grid_row_pair
 ;------------------------------------------------------------------------------
-sub_BE1D:
+store_x_16:
 BE1D: 86 10           LDA    #$10
 
 lBE1F:
@@ -2227,13 +2453,14 @@ BE24: 39              RTS
 
 ;------------------------------------------------------------------------------
 ; delay_65536  ($BE25)
+; -> src/game/main/gp2_4_svc.js
 ; Busy wait: 65536 passes of a watchdog-kicking loop (about 26 frames).
 ; D is preserved. Used between custom I/O chip commands at boot.
 ; Called from: $B709 service_mode, $B806 fill_tilemap_00_20, $B813
 ; fill_tilemap_00_20, $B8FB fill_tilemap_00_20, $B907 fill_tilemap_00_20, $BD87
 ; service_loop, $BD9B service_loop, $E037 reset_main, $E073 reset_main, $E080
-; reset_main, $E0FC boot_chip_error, $E108 boot_chip_error, $E1D8
-; boot_chip_error, $E1E1 program_coinage
+; reset_main, $E0FC boot_handshake, $E108 boot_handshake, $E1D8
+; boot_check_service, $E1E1 program_coinage
 ;------------------------------------------------------------------------------
 delay_65536:
 BE25: 34 06           PSHS   D
@@ -2250,10 +2477,12 @@ BE36: 39              RTS
 
 ;------------------------------------------------------------------------------
 ; easter_egg  ($BE37)
+; -> src/game/main/gp2_4_svc.js
 ; Hidden screen in the service mode: shown when the sound test is on
 ; $09 with the stick up-left, or on $19 with the stick left, while
 ; start 1 + P1 fire are held (56XX mode 1: $6801 stick, $6803 = 5).
 ; Draws the bitmap at $BE78 as '0' tiles and hangs.
+; QUIRK: hangs for good (watchdog kicked).
 ; Called from: $B988 fill_tilemap_00_20
 ;------------------------------------------------------------------------------
 easter_egg:
@@ -2355,6 +2584,7 @@ BFF8: FF FF FF FF FF FF FF FF  FCB    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
 
 ;------------------------------------------------------------------------------
 ; irq_main  ($C000)
+; -> src/game/main/gp2_3b_irq.js
 ; Main CPU vblank IRQ (also the SWI/FIRQ/NMI vector, never used).
 ;   - kick the watchdog and clear/mask the IRQ latch;
 ;   - operator stats display (DSWA SW1:6), demo-sound gate;
@@ -2388,7 +2618,9 @@ C011: B6 68 14        LDA    IO58XX+$04      ; DSW service switch [$6814] 58XX
                                              ; DSWB hi (diff, svc)
 C014: 84 08           ANDA   #$08
 C016: 10 26 F6 DC     LBNE   service_mode
-C01A: FC 68 00        LDD    IO56XX          ; credits tens nibble >= 10?
+C01A: FC 68 00        LDD    IO56XX          ; coin jam test. QUIRK: 16-bit
+                                             ; SUBD #$0A0A: jams on tens >= $B,
+                                             ; or tens $A with units >= $A
                                              ; [$6800] 56XX credits tens
 C01D: 84 0F           ANDA   #$0F
 C01F: C4 0F           ANDB   #$0F
@@ -2400,7 +2632,10 @@ C02B: 84 08           ANDA   #$08
 C02D: 10 26 01 32     LBNE   round_select
 
 irq_main_normal:
-C031: B7 74 00        STA    IRQ_ON_MAIN     ; IRQ latch on again [$7400]
+C031: B7 74 00        STA    IRQ_ON_MAIN     ; IRQ latch on again; QUIRK: A
+                                             ; goes to the IRQ latch: 0
+                                             ; normally, $20 after round_select
+                                             ; [$7400]
 C034: BD D0 7A        JSR    irq_timers
 C037: 96 2C           LDA    <flip_screen    ; flip flag -> hardware [$102C]
 C039: B7 1F 7F        STA    FLIP_SCREEN     ; [$1F7F]
@@ -2410,7 +2645,9 @@ C03F: C6 FE           LDB    #$FE
 lC041:
 C041: CB 02           ADDB   #$02
 C043: A6 80           LDA    ,X+
-C045: 8C 18 8D        CMPX   #$188D
+C045: 8C 18 8D        CMPX   #$188D          ; BUG: tested after LDA ,X+: the
+                                             ; last slot $188C is read but
+                                             ; never tested
 C048: 27 0B           BEQ    irq_check_coin
 C04A: 84 01           ANDA   #$01
 C04C: 27 F3           BEQ    lC041
@@ -2434,17 +2671,17 @@ C067: 96 AF           LDA    <frame_sync     ; coin during the demo: wait for
                                              ; the sub [$10AF]
 C069: 81 11           CMPA   #$11
 C06B: 26 FA           BNE    lC067
-C06D: 0F DA           CLR    <$DA            ; [$10DA]
-C06F: 0F D9           CLR    <$D9            ; [$10D9]
+C06D: 0F DA           CLR    <capture_substate ; [$10DA]
+C06F: 0F D9           CLR    <player_frozen  ; [$10D9]
 C071: 7F 11 11        CLR    $1111
 C074: 0F E9           CLR    <$E9            ; [$10E9]
 C076: 0F CF           CLR    <$CF            ; [$10CF]
 C078: 0F D0           CLR    <$D0            ; [$10D0]
 C07A: 7F 60 51        CLR    snd_request+17  ; [$6051]
 C07D: 7F 60 71        CLR    snd_active+17   ; [$6071]
-C080: 7F 11 18        CLR    $1118
-C083: 7F 11 16        CLR    $1116
-C086: 7F 11 17        CLR    $1117
+C080: 7F 11 18        CLR    wing_group      ; [$1118]
+C083: 7F 11 16        CLR    escort_step     ; [$1116]
+C086: 7F 11 17        CLR    wing_sprite_idx ; [$1117]
 C089: 0F 30           CLR    <main_task      ; [$1030]
 C08B: 0F 7A           CLR    <sub_task       ; [$107A]
 C08D: 0F 2F           CLR    <game_mode      ; [$102F]
@@ -2462,6 +2699,7 @@ C0A8: 7E C4 17        JMP    attract_loop    ; restart attract (stack
 
 ;------------------------------------------------------------------------------
 ; irq_copy_sprites  ($C0AB)
+; -> src/game/main/gp2_3b_irq.js
 ; Copy the main CPU's sprites (shadow $0EE2-$0F33, bit 7 of the
 ; flag byte = in use) to sprite RAM from slot 40 ($0FD0) up.
 ; Jumped to from: $C05A, $C065
@@ -2536,10 +2774,10 @@ C12D: B7 A0 01        STA    STARFIELD+$01   ; [$A001]
 C130: 20 1A           BRA    irq_frame_count
 
 lC132:
-C132: B6 11 70        LDA    $1170
+C132: B6 11 70        LDA    star_dir_flags  ; [$1170]
 C135: 84 01           ANDA   #$01
 C137: 26 13           BNE    irq_frame_count
-C139: B6 11 70        LDA    $1170
+C139: B6 11 70        LDA    star_dir_flags  ; [$1170]
 C13C: 84 02           ANDA   #$02
 C13E: 26 07           BNE    lC147
 C140: 86 86           LDA    #$86
@@ -2569,6 +2807,7 @@ C162: 3B              RTI
 
 ;------------------------------------------------------------------------------
 ; round_select  ($C163)
+; -> src/game/main/gp2_3b_irq.js
 ; Round-advance DIP switch: show the start stage (BCD of $1106) and let
 ; P1 up step it; loops inside the IRQ until the switch is off.
 ; Jumped to from: $C02D, $C19D, $C1AC
@@ -2631,6 +2870,7 @@ C1B6: 7E C0 31        JMP    irq_main_normal
 
 ;------------------------------------------------------------------------------
 ; coin_jammed  ($C1B9)
+; -> src/game/main/gp2_3b_irq.js
 ; 56XX reports an impossible credit count: print COIN JAMMED on the top
 ; row and hang (kicking the watchdog) until reset.
 ; Jumped to from: $C024, $C1C4
@@ -2654,12 +2894,13 @@ C1D2: 49 4F 43 00              FCB    $49,$4F,$43,$00
 
 ;------------------------------------------------------------------------------
 ; add_score  ($C1D6)
+; -> src/game/main/gp2_3b_score.js
 ; Add A (BCD, units of 10 points) to the current player's score
 ; ($09B0 P1 / $09B3 P2, 3 BCD bytes, least significant first), with
 ; DAA carries; then update the high score and redraw the score as
 ; tiles, suppressing leading zeros. Skipped while $115F is set.
 ; In: A = BCD points.
-; Called from: $D419 sub_D28A, $E6CA sub_E6C8
+; Called from: $D419 task_shot_hits, $E6CA add_score_times
 ;------------------------------------------------------------------------------
 add_score:
 C1D6: F6 11 5F        LDB    $115F
@@ -2744,8 +2985,10 @@ C24F: 03 F8 03 E6              FDB    $03F8,$03E6 ; P1, P2 score tiles
 
 ;------------------------------------------------------------------------------
 ; update_hiscore  ($C253)
+; -> src/game/main/gp2_3b_score.js
 ; If the score at X beats the high score $09B6-$09B8 (most significant
 ; byte first), copy it and redraw it at the top of the screen.
+; QUIRK: copies the score only from the first byte that differs.
 ; Called from: $C1F8 add_score
 ;------------------------------------------------------------------------------
 update_hiscore:
@@ -2782,14 +3025,15 @@ C285: 20 DF           BRA    lC266
 
 ;------------------------------------------------------------------------------
 ; bcd_hi_to_char  ($C287)
+; -> src/game/main/gp2_3b_score.js
 ; A = tile code of the high BCD digit of A (falls into bcd_lo_to_char).
 ; Called from: $C226 add_score, $C234 add_score, $C242 add_score, $E428
-; sub_E3FF, $E446 sub_E3FF, $E478 sub_E3FF, $E4AD sub_E3FF, $FCF4
-; operator_stats, $FD06 operator_stats, $FD1D operator_stats, $FD2F
-; operator_stats, $FD41 operator_stats, $FD58 operator_stats, $FD6A
-; operator_stats, $FD7C operator_stats, $FD93 operator_stats, $FDA5
-; operator_stats, $FDB7 operator_stats, $FDC9 operator_stats, $FDDB
-; operator_stats
+; results_count_one, $E446 results_count_one, $E478 results_count_one, $E4AD
+; results_count_one, $FCF4 operator_stats, $FD06 operator_stats, $FD1D
+; operator_stats, $FD2F operator_stats, $FD41 operator_stats, $FD58
+; operator_stats, $FD6A operator_stats, $FD7C operator_stats, $FD93
+; operator_stats, $FDA5 operator_stats, $FDB7 operator_stats, $FDC9
+; operator_stats, $FDDB operator_stats
 ;------------------------------------------------------------------------------
 bcd_hi_to_char:
 C287: 44              LSRA
@@ -2799,15 +3043,16 @@ C28A: 44              LSRA
 
 ;------------------------------------------------------------------------------
 ; bcd_lo_to_char  ($C28B)
+; -> src/game/main/gp2_3b_score.js
 ; A = tile code of the low nibble of A: '0'-'9', and 'A'-'F' above 9
 ; (the font is ASCII-ordered).
 ; Called from: $C22D add_score, $C23B add_score, $C249 add_score, $E434
-; sub_E3FF, $E44F sub_E3FF, $E484 sub_E3FF, $E4B6 sub_E3FF, $FCFD
-; operator_stats, $FD0F operator_stats, $FD26 operator_stats, $FD38
-; operator_stats, $FD4A operator_stats, $FD61 operator_stats, $FD73
-; operator_stats, $FD85 operator_stats, $FD9C operator_stats, $FDAE
-; operator_stats, $FDC0 operator_stats, $FDD2 operator_stats, $FDE4
-; operator_stats
+; results_count_one, $E44F results_count_one, $E484 results_count_one, $E4B6
+; results_count_one, $FCFD operator_stats, $FD0F operator_stats, $FD26
+; operator_stats, $FD38 operator_stats, $FD4A operator_stats, $FD61
+; operator_stats, $FD73 operator_stats, $FD85 operator_stats, $FD9C
+; operator_stats, $FDAE operator_stats, $FDC0 operator_stats, $FDD2
+; operator_stats, $FDE4 operator_stats
 ;------------------------------------------------------------------------------
 bcd_lo_to_char:
 C28B: 84 0F           ANDA   #$0F
@@ -2821,6 +3066,7 @@ C295: 39              RTS
 
 ;------------------------------------------------------------------------------
 ; game_init  ($C296)
+; -> src/game/main/gp2_3b_attract.js
 ; After boot: 56XX to coin mode (4), blank the tilemap, print the
 ; 1UP / HIGH SCORE / 2UP header, enable the IRQ, run the 62XX init
 ; sequence (modes 1, 2, 0, 3, each followed by CWAI to wait a frame),
@@ -2946,7 +3192,7 @@ C36D: 20 F8           BRA    lC367
 lC36F:
 C36F: 86 05           LDA    #$05
 C371: B7 09 B7        STA    hiscore+1       ; [$09B7]
-C374: 7F 11 70        CLR    $1170
+C374: 7F 11 70        CLR    star_dir_flags  ; [$1170]
 C377: 86 FF           LDA    #$FF
 C379: B7 A0 00        STA    STARFIELD       ; [$A000]
 C37C: 86 87           LDA    #$87
@@ -3018,6 +3264,7 @@ C410: 32 34 20 20 41 42 00     FCB    $32,$34,$20,$20,$41,$42,$00
 
 ;------------------------------------------------------------------------------
 ; attract_loop  ($C417)
+; -> src/game/main/gp2_3b_attract.js
 ; Attract mode main loop (also re-entered from the IRQ when a coin
 ; arrives during the demo, and after a game). Prints CREDIT n; with
 ; credits it goes to the push-start screen; otherwise it advances
@@ -3070,6 +3317,7 @@ C465: C4 9F                    FDB    attract_demo2 ; [3] $C49F
 
 ;------------------------------------------------------------------------------
 ; draw_credit  ($C467)
+; -> src/game/main/gp2_3b_attract.js
 ; Print 'CREDIT nn' on the bottom row from the 56XX BCD credit
 ; nibbles (tens digit blank when zero).
 ; Called from: $C41C attract_loop
@@ -3106,6 +3354,7 @@ C48B: 54 49 44 45 52 43 00     FCB    $54,$49,$44,$45,$52,$43,$00
 
 ;------------------------------------------------------------------------------
 ; attract_demo  ($C492)
+; -> src/game/main/gp2_3b_attract.js
 ; Attract phase 1: start the demo game (attract flag $09F4 = 1).
 ; Table entry at: $C461
 ;------------------------------------------------------------------------------
@@ -3120,6 +3369,7 @@ C49C: 7E CC D0        JMP    start_game_1p
 
 ;------------------------------------------------------------------------------
 ; attract_demo2  ($C49F)
+; -> src/game/main/gp2_3b_attract.js
 ; Attract phase 3: demo game at stage index 2 with the dual fighter
 ; sprites pre-loaded.
 ; Table entry at: $C465
@@ -3144,13 +3394,16 @@ C4CB: ED 89 10 00     STD    $1000,X
 C4CF: EF 81           STU    ,X++
 C4D1: 86 01           LDA    #$01
 C4D3: 97 DB           STA    <dual_fighter   ; [$10DB]
-C4D5: 7F 11 71        CLR    $1171
+C4D5: 7F 11 71        CLR    bonus_kind_p1   ; [$1171]
 C4D8: 20 BD           BRA    lC497
 
 ;------------------------------------------------------------------------------
 ; push_start_1p  ($C4DA)
+; -> src/game/main/gp2_3b_attract.js
 ; One credit: leave attract, show the push-start screen, allow
 ; 1P start only and wait for a start (56XX nibble 3 = credits used).
+; BUG: with $04C2 != 0 the blanking at $C5D8 runs past the tilemap; CLR ,U hits
+; work RAM $0840-$0868.
 ; Jumped to from: $C42D, $C439
 ;------------------------------------------------------------------------------
 ; Credits: leave attract.
@@ -3169,7 +3422,11 @@ C4F1: CE C6 92        LDU    #dat_C692
 C4F4: C6 10           LDB    #$10
 
 lC4F6:
-C4F6: AE A5           LDX    B,Y
+C4F6: AE A5           LDX    B,Y             ; then each string going right,
+                                             ; its attribute copied from the
+                                             ; tile one row down: lda ,u+ / beq
+                                             ; / sta ,x / lda $0420,x / sta
+                                             ; $0400,x / leax -$20,x / bra
 
 lC4F8:
 C4F8: A6 C0           LDA    ,U+
@@ -3204,7 +3461,7 @@ C53A: B7 03 FA        STA    TILE_RAM+$3FA   ; [$03FA]
 C53D: B7 03 FB        STA    TILE_RAM+$3FB   ; [$03FB]
 C540: B7 03 FC        STA    TILE_RAM+$3FC   ; [$03FC]
 C543: B7 03 FD        STA    TILE_RAM+$3FD   ; [$03FD]
-C546: 7F 11 70        CLR    $1170
+C546: 7F 11 70        CLR    star_dir_flags  ; [$1170]
 C549: 86 86           LDA    #$86
 C54B: B7 A0 01        STA    STARFIELD+$01   ; [$A001]
 C54E: 86 06           LDA    #$06
@@ -3321,6 +3578,7 @@ C636: 7E C4 17        JMP    attract_loop
 
 ;------------------------------------------------------------------------------
 ; print_string_r  ($C639)
+; -> src/game/main/gp2_3b_attract.js
 ; Print the zero-terminated string at U from tile address X going
 ; right (X -= $20 per character). Attributes untouched.
 ; Called from: $C5B6 push_start_1p, $C5BF push_start_1p
@@ -3350,6 +3608,7 @@ C669: 20 20 20 20 20 20 00     FCB    $20,$20,$20,$20,$20,$20,$00
 
 ;------------------------------------------------------------------------------
 ; push_start_2p  ($C670)
+; -> src/game/main/gp2_3b_attract.js
 ; Two or more credits: push-start screen for 1 or 2 players.
 ; Jumped to from: $C424, $C431
 ;------------------------------------------------------------------------------
@@ -3446,35 +3705,40 @@ C80B: 2B 2C 2D 2E 2F 00        FCB    $2B,$2C,$2D,$2E,$2F,$00
 
 ;------------------------------------------------------------------------------
 ; clear_game_vars  ($C811)
+; -> src/game/main/gp2_3b_attract.js
+; Clear 22 game variables ($115A, $1132-$1136, $113A-$113E, $1142-$1146,
+; $115B-$115D, $1108, $115F, stage_p1).
 ; Called from: $C4EA push_start_1p, $C680 push_start_2p
 ;------------------------------------------------------------------------------
 clear_game_vars:
-C811: 7F 11 5A        CLR    $115A
-C814: 7F 11 32        CLR    $1132
-C817: 7F 11 33        CLR    $1133
-C81A: 7F 11 34        CLR    $1134
-C81D: 7F 11 35        CLR    $1135
-C820: 7F 11 36        CLR    $1136
-C823: 7F 11 3A        CLR    $113A
-C826: 7F 11 3B        CLR    $113B
-C829: 7F 11 3C        CLR    $113C
-C82C: 7F 11 3D        CLR    $113D
-C82F: 7F 11 3E        CLR    $113E
+C811: 7F 11 5A        CLR    challenge_step  ; [$115A]
+C814: 7F 11 32        CLR    bonus_state     ; [$1132]
+C817: 7F 11 33        CLR    bonus_state+1   ; [$1133]
+C81A: 7F 11 34        CLR    bonus_state+2   ; [$1134]
+C81D: 7F 11 35        CLR    bonus_state+3   ; [$1135]
+C820: 7F 11 36        CLR    bonus_state+4   ; [$1136]
+C823: 7F 11 3A        CLR    bonus_free      ; [$113A]
+C826: 7F 11 3B        CLR    bonus_free+1    ; [$113B]
+C829: 7F 11 3C        CLR    bonus_free+2    ; [$113C]
+C82C: 7F 11 3D        CLR    bonus_free+3    ; [$113D]
+C82F: 7F 11 3E        CLR    bonus_free+4    ; [$113E]
 C832: 7F 11 42        CLR    $1142
 C835: 7F 11 43        CLR    $1143
 C838: 7F 11 44        CLR    $1144
 C83B: 7F 11 45        CLR    $1145
 C83E: 7F 11 46        CLR    $1146
-C841: 7F 11 5B        CLR    $115B
+C841: 7F 11 5B        CLR    results_delay   ; [$115B]
 C844: 7F 11 5C        CLR    $115C
 C847: 7F 11 5D        CLR    $115D
-C84A: 7F 11 08        CLR    $1108
+C84A: 7F 11 08        CLR    effect_request  ; [$1108]
 C84D: 7F 11 5F        CLR    $115F
 C850: 7F 11 06        CLR    stage_p1        ; [$1106]
 C853: 39              RTS
 
 ;------------------------------------------------------------------------------
 ; clear_playfield  ($C854)
+; -> src/game/main/gp2_3b_attract.js
+; Blank the playfield: tiles $0040-$03BF = $20 with attribute 0.
 ; Called from: $C4E7 push_start_1p, $C67D push_start_2p
 ;------------------------------------------------------------------------------
 clear_playfield:
@@ -3490,6 +3754,7 @@ C865: 39              RTS
 
 ;------------------------------------------------------------------------------
 ; attract_phase0  ($C866)
+; -> src/game/main/gp2_3b_attract.js
 ; Attract phase 0.
 ; Table entry at: $C45F
 ;------------------------------------------------------------------------------
@@ -3580,32 +3845,38 @@ C8FE: 20 EF           BRA    lC8EF
 
 lC900:
 C900: 8E C9 C9        LDX    #tbl_C9C9
-C903: B6 11 7A        LDA    $117A
+C903: B6 11 7A        LDA    logo_anim_step  ; [$117A]
 C906: 48              ASLA
 C907: 6E 96           JMP    [A,X]           ; [table tbl_C9C9]
 
 ;------------------------------------------------------------------------------
-; sub_C909  ($C909)
+; logo_anim_start  ($C909) ; JS: sub_C909
+; -> src/game/main/gp2_3b_attract.js
+; Title logo step 0: sprite entry 10 ($1614) at $7420, flags $4080;
+; logo_anim_step + 1; then logo_anim_colours.
 ; Table entry at: $C9C9
 ;------------------------------------------------------------------------------
-sub_C909:
+logo_anim_start:
 C909: CC 74 20        LDD    #$7420
 C90C: FD 16 14        STD    $1614
 C90F: CC 40 80        LDD    #$4080
 C912: FD 1E 14        STD    $1E14
-C915: 7C 11 7A        INC    $117A
-C918: 7E C9 AE        JMP    sub_C9AE
+C915: 7C 11 7A        INC    logo_anim_step  ; [$117A]
+C918: 7E C9 AE        JMP    logo_anim_colours
 
 ;------------------------------------------------------------------------------
-; sub_C91B  ($C91B)
+; logo_anim_rise  ($C91B) ; JS: sub_C91B
+; -> src/game/main/gp2_3b_attract.js
+; Title logo step 1: move entry 10 up; at $FF place entries 10-14 at $74FF and
+; step logo_anim_step. Then logo_anim_colours.
 ; Table entry at: $C9CB
 ;------------------------------------------------------------------------------
-sub_C91B:
+logo_anim_rise:
 C91B: B6 16 15        LDA    $1615
 C91E: 8B 01           ADDA   #$01
 C920: B7 16 15        STA    $1615
 C923: 81 FF           CMPA   #$FF
-C925: 10 26 00 85     LBNE   sub_C9AE
+C925: 10 26 00 85     LBNE   logo_anim_colours
 C929: CC 74 FF        LDD    #$74FF
 C92C: FD 16 14        STD    $1614
 C92F: FD 16 16        STD    $1616
@@ -3618,14 +3889,17 @@ C941: FD 1E 16        STD    $1E16
 C944: FD 1E 18        STD    $1E18
 C947: FD 1E 1A        STD    $1E1A
 C94A: FD 1E 1C        STD    $1E1C
-C94D: 7C 11 7A        INC    $117A
-C950: 20 5C           BRA    sub_C9AE
+C94D: 7C 11 7A        INC    logo_anim_step  ; [$117A]
+C950: 20 5C           BRA    logo_anim_colours
 
 ;------------------------------------------------------------------------------
-; sub_C952  ($C952)
+; logo_anim_spread  ($C952) ; JS: sub_C952
+; -> src/game/main/gp2_3b_attract.js
+; Title logo step 2: spread entries 10-14 apart until $161C reaches $A8, then
+; set up entries 15/16 and step logo_anim_step. Then logo_anim_colours.
 ; Table entry at: $C9CD
 ;------------------------------------------------------------------------------
-sub_C952:
+logo_anim_spread:
 C952: B6 16 14        LDA    $1614
 C955: 8B FF           ADDA   #$FF
 C957: B7 16 14        STA    $1614
@@ -3642,8 +3916,8 @@ C973: 8B 01           ADDA   #$01
 C975: B7 16 1A        STA    $161A
 C978: B7 16 1C        STA    $161C
 C97B: 81 A8           CMPA   #$A8
-C97D: 26 2F           BNE    sub_C9AE
-C97F: 7C 11 7A        INC    $117A
+C97D: 26 2F           BNE    logo_anim_colours
+C97F: 7C 11 7A        INC    logo_anim_step  ; [$117A]
 C982: CC 2E 00        LDD    #$2E00
 C985: FD 0E 1E        STD    sprite_shadow_1+30 ; [$0E1E]
 C988: B6 16 18        LDA    $1618
@@ -3658,17 +3932,20 @@ C9A0: F6 16 15        LDB    $1615
 C9A3: FD 16 20        STD    $1620
 C9A6: CC 00 80        LDD    #$0080
 C9A9: FD 1E 20        STD    $1E20
-C9AC: 20 00           BRA    sub_C9AE
+C9AC: 20 00           BRA    logo_anim_colours
 
 ;------------------------------------------------------------------------------
-; sub_C9AE  ($C9AE)
+; logo_anim_colours  ($C9AE) ; JS: sub_C9AE
+; -> src/game/main/gp2_3b_attract.js
+; Every title pass: colours of entries 10-14 from dat_CA36[frame_counter &
+; $1E]; jumps back to attract_loop.
 ; Jumped to from: $C918, $C925, $C950, $C97D, $C9AC
 ; Table entry at: $C9CF
 ;------------------------------------------------------------------------------
-sub_C9AE:
+logo_anim_colours:
 C9AE: 96 16           LDA    <frame_counter  ; [$1016]
 C9B0: 84 1E           ANDA   #$1E
-C9B2: 8E CA 36        LDX    #dat_CA36
+C9B2: 8E CA 36        LDX    #logo_colours
 C9B5: EC 86           LDD    A,X
 C9B7: FD 0E 14        STD    sprite_shadow_1+20 ; [$0E14]
 C9BA: FD 0E 16        STD    sprite_shadow_1+22 ; [$0E16]
@@ -3679,10 +3956,10 @@ C9C6: 7E C4 17        JMP    attract_loop
 
 ; Referenced from: $C900 attract_phase0
 tbl_C9C9:
-C9C9: C9 09                    FDB    sub_C909 ; [0] $C909
-C9CB: C9 1B                    FDB    sub_C91B ; [1] $C91B
-C9CD: C9 52                    FDB    sub_C952 ; [2] $C952
-C9CF: C9 AE                    FDB    sub_C9AE ; [3] $C9AE
+C9C9: C9 09                    FDB    logo_anim_start ; [0] $C909
+C9CB: C9 1B                    FDB    logo_anim_rise ; [1] $C91B
+C9CD: C9 52                    FDB    logo_anim_spread ; [2] $C952
+C9CF: C9 AE                    FDB    logo_anim_colours ; [3] $C9AE
 
 ; Referenced from: $C8AD attract_phase0
 dat_C9D1:
@@ -3695,7 +3972,7 @@ C9DA: B8 7F A0 6F 90 6F 80 6F  FCB    $B8,$7F,$A0,$6F,$90,$6F,$80,$6F
 C9E2: 70 6F 60 6F 50 6F 40 7F  FCB    $70,$6F,$60,$6F,$50,$6F,$40,$7F
 C9EA: 28 7F 00 00              FCB    $28,$7F,$00,$00
 
-; Referenced from: $C88F attract_phase0, $CA59 sub_C9AE
+; Referenced from: $C88F attract_phase0, $CA59 logo_anim_colours
 dat_C9EE:
 C9EE: 00 E1 00 C2 00 C3 00 C4  FCB    $00,$E1,$00,$C2,$00,$C3,$00,$C4
 C9F6: 00 C5 00 C6 00 C7 02 47  FCB    $00,$C5,$00,$C6,$00,$C7,$02,$47
@@ -3719,8 +3996,9 @@ dat_CA28:
 CA28: 20 20 20 20 20 20 29 2A  FCB    $20,$20,$20,$20,$20,$20,$29,$2A
 CA30: 2B 2C 2D 2E 2F 00        FCB    $2B,$2C,$2D,$2E,$2F,$00
 
-; Referenced from: $C9B2 sub_C9AE
-dat_CA36:
+; Title logo code/colour words by frame_counter & $1E.
+; Referenced from: $C9B2 logo_anim_colours
+logo_colours:
 CA36: 42 10 40 10 41 10 42 10  FCB    $42,$10,$40,$10,$41,$10,$42,$10
 CA3E: 43 10 44 10 45 11 46 11  FCB    $43,$10,$44,$10,$45,$11,$46,$11
 CA46: 47 10 47 10 46 11 45 11  FCB    $47,$10,$47,$10,$46,$11,$45,$11
@@ -3761,12 +4039,15 @@ CA97: 7F 1E 1B        CLR    $1E1B
 CA9A: 7F 1E 1D        CLR    $1E1D
 CA9D: 7F 1E 1F        CLR    $1E1F
 CAA0: 7F 1E 21        CLR    $1E21
-CAA3: 7F 11 7A        CLR    $117A
+CAA3: 7F 11 7A        CLR    logo_anim_step  ; [$117A]
 CAA6: 7E C4 17        JMP    attract_loop
 
 ;------------------------------------------------------------------------------
 ; attract_phase2  ($CAA9)
+; -> src/game/main/gp2_3b_attract.js
 ; Attract phase 2.
+; BUG: the 10-tile blank loop at $CB00 runs with X = $0000 (the table end
+; marker): writes $0000 downwards and attribute 2 into $0400.
 ; Table entry at: $C463
 ;------------------------------------------------------------------------------
 attract_phase2:
@@ -4009,11 +4290,14 @@ CCCD: 7E C4 17        JMP    attract_loop
 
 ;------------------------------------------------------------------------------
 ; start_game_1p  ($CCD0)
+; -> src/game/main/gp2_3b_start.js
 ; One-player start (56XX says 1 credit used; also the demo). Sets
 ; lives, clears scores and the playfield, places the player and the
 ; reserve ships, plays the start tune (sound 0) and waits for it to
 ; end, loads the demo input script when in attract mode, then enters
 ; the game-mode scheduler (task_dispatch_sync).
+; QUIRK: the fly-in RORB/ROLA ($CE6A) use carries left by earlier compares;
+; lives_setting 0 writes 255 markers from $1F17 ($CD78).
 ; Jumped to from: $C49C, $C629
 ;------------------------------------------------------------------------------
 start_game_1p:
@@ -4023,8 +4307,8 @@ CCD6: 4F              CLRA
 
 lCCD7:
 CCD7: B7 10 2E        STA    two_players     ; [$102E]
-CCDA: 7F 11 24        CLR    $1124
-CCDD: 7F 11 25        CLR    $1125
+CCDA: 7F 11 24        CLR    bonus_step_p1   ; [$1124]
+CCDD: 7F 11 25        CLR    bonus_step_p2   ; [$1125]
 CCE0: CC 00 00        LDD    #$0000
 CCE3: FD 09 B0        STD    score_p1        ; [$09B0]
 CCE6: 7F 09 B2        CLR    score_p1+2      ; [$09B2]
@@ -4051,11 +4335,11 @@ CD1B: E7 89 04 00     STB    TILE_ATTR,X     ; [$0400]
 CD1F: A7 80           STA    ,X+
 CD21: 8C 03 C0        CMPX   #$03C0
 CD24: 26 F5           BNE    lCD1B
-CD26: 7F 11 7F        CLR    $117F
-CD29: 7F 11 80        CLR    $1180
-CD2C: 7F 11 71        CLR    $1171
-CD2F: 7F 11 72        CLR    $1172
-CD32: 7F 11 64        CLR    $1164
+CD26: 7F 11 7F        CLR    p1_out_flag     ; [$117F]
+CD29: 7F 11 80        CLR    p2_out_flag     ; [$1180]
+CD2C: 7F 11 71        CLR    bonus_kind_p1   ; [$1171]
+CD2F: 7F 11 72        CLR    bonus_kind_p2   ; [$1172]
+CD32: 7F 11 64        CLR    results_count   ; [$1164]
 CD35: 7F 11 60        CLR    results_step    ; [$1160]
 CD38: 7F 11 78        CLR    $1178
 CD3B: 7F 11 79        CLR    $1179
@@ -4105,7 +4389,15 @@ CD99: B7 11 00        STA    $1100
 CD9C: 86 0C           LDA    #$0C
 CD9E: B7 11 01        STA    $1101
 
-lCDA1:
+;------------------------------------------------------------------------------
+; start_turn  ($CDA1) ; JS: lCDA1
+; -> src/game/main/gp2_3b_start.js
+; Start of a turn (second half of start_game_1p, also from $DB8E): starfield,
+; player speeds, shot slots end, start tune while the reserve ships fly in
+; (CWAI per frame), then task_dispatch_sync.
+; Jumped to from: $DB8E
+;------------------------------------------------------------------------------
+start_turn:
 CDA1: B6 09 F4        LDA    attract_flag    ; [$09F4]
 CDA4: 26 03           BNE    lCDA9
 CDA6: BD DF 5D        JSR    clear_sprite_shadows
@@ -4113,7 +4405,7 @@ CDA6: BD DF 5D        JSR    clear_sprite_shadows
 lCDA9:
 CDA9: B6 10 2C        LDA    flip_screen     ; [$102C]
 CDAC: 26 19           BNE    lCDC7
-CDAE: 7F 11 70        CLR    $1170
+CDAE: 7F 11 70        CLR    star_dir_flags  ; [$1170]
 CDB1: 86 FF           LDA    #$FF
 CDB3: B7 A0 00        STA    STARFIELD       ; [$A000]
 CDB6: 86 87           LDA    #$87
@@ -4126,7 +4418,7 @@ CDC5: 20 19           BRA    lCDE0
 
 lCDC7:
 CDC7: 86 02           LDA    #$02
-CDC9: B7 11 70        STA    $1170
+CDC9: B7 11 70        STA    star_dir_flags  ; [$1170]
 CDCC: 86 FF           LDA    #$FF
 CDCE: B7 A0 00        STA    STARFIELD       ; [$A000]
 CDD1: 86 87           LDA    #$87
@@ -4154,6 +4446,7 @@ CDFD: 20 16           BRA    lCE15
 
 ;------------------------------------------------------------------------------
 ; start_game_2p  ($CDFF)
+; -> src/game/main/gp2_3b_start.js
 ; Two-player start: both players get the lives setting.
 ; Jumped to from: $C632
 ;------------------------------------------------------------------------------
@@ -4214,7 +4507,9 @@ CE70: 56              RORB
 CE71: 46              RORA
 CE72: 81 A3           CMPA   #$A3
 CE74: 27 09           BEQ    lCE7F
-CE76: 4C              INCA
+CE76: 4C              INCA                   ; ROLA takes the carry of CMPA
+                                             ; #$A3 (A < $A3), not the bit RORA
+                                             ; shifted out: INCA leaves C alone
 CE77: 49              ROLA
 CE78: 59              ROLB
 CE79: B7 17 23        STA    $1723
@@ -4259,11 +4554,11 @@ CEC1: 5A              DECB
 CEC2: 26 FB           BNE    lCEBF
 
 ; Demo input script: $AADA, or $ACBC for the stage-2 demo.
-CEC4: 8E AA DA        LDX    #dat_AADA
+CEC4: 8E AA DA        LDX    #demo_script_1
 CEC7: B6 11 06        LDA    stage_p1        ; [$1106]
 CECA: 80 02           SUBA   #$02
 CECC: 26 03           BNE    lCED1
-CECE: 8E AC BC        LDX    #dat_ACBC
+CECE: 8E AC BC        LDX    #demo_script_2
 
 lCED1:
 CED1: A6 89 01 00     LDA    TILE_RAM+$100,X ; [$0100]
@@ -4273,16 +4568,16 @@ CEDA: 44              LSRA
 CEDB: B7 09 F1        STA    demo_stick      ; [$09F1]
 CEDE: 30 01           LEAX   $1,X
 CEE0: BF 09 F2        STX    demo_ptr        ; [$09F2]
-CEE3: 7F 10 DA        CLR    $10DA
+CEE3: 7F 10 DA        CLR    capture_substate ; [$10DA]
 CEE6: 7F 10 D0        CLR    $10D0
 CEE9: CC 00 00        LDD    #$0000
 CEEC: FD 10 69        STD    $1069
 CEEF: 7F 11 77        CLR    $1177
-CEF2: 7F 11 0F        CLR    $110F
-CEF5: 7F 11 10        CLR    $1110
+CEF2: 7F 11 0F        CLR    player_exploding ; [$110F]
+CEF5: 7F 11 10        CLR    explosion_step  ; [$1110]
 CEF8: 7F 10 E9        CLR    $10E9
 CEFB: 7F 11 11        CLR    $1111
-CEFE: 7F 10 D9        CLR    $10D9
+CEFE: 7F 10 D9        CLR    player_frozen   ; [$10D9]
 CF01: CC 0A 00        LDD    #$0A00
 CF04: FD 0C 00        STD    var_0C00        ; [$0C00]
 CF07: B6 09 F4        LDA    attract_flag    ; into the scheduler [$09F4]
@@ -4292,6 +4587,9 @@ CF11: 7E FE B0        JMP    task_dispatch_sync
 
 ;------------------------------------------------------------------------------
 ; task_count_fighters  ($CF14)
+; -> src/game/main/gp2_3b_start.js
+; Count the in-use dual-fighter sprites ($1EC3-$1ECD) into fighter_count and
+; set player_xmin/xmax from dat_CF41 by that count (xmin 4 lower in the demo).
 ; Table entry at: $FED8, $FEF6, $FF14, $FF32, $FF54, $FF78, $FFB2
 ;------------------------------------------------------------------------------
 task_count_fighters:
@@ -4308,9 +4606,9 @@ CF23: CB 01           ADDB   #$01
 CF25: 20 F1           BRA    lCF18
 
 lCF27:
-CF27: D7 DC           STB    <$DC            ; [$10DC]
+CF27: D7 DC           STB    <fighter_count  ; [$10DC]
 CF29: 58              ASLB
-CF2A: 8E CF 41        LDX    #dat_CF41
+CF2A: 8E CF 41        LDX    #player_limits
 CF2D: EC 85           LDD    B,X
 CF2F: DD 78           STD    <player_xmin    ; [$1078]
 CF31: B6 09 F4        LDA    attract_flag    ; [$09F4]
@@ -4323,13 +4621,15 @@ lCF3C:
 CF3C: 0C 30           INC    <main_task      ; [$1030]
 CF3E: 7E FE B5        JMP    task_dispatch
 
+; player_xmin / player_xmax pairs by fighter_count.
 ; Referenced from: $CF2A task_count_fighters
-dat_CF41:
+player_limits:
 CF41: 0D DA 0D CA 1D CA 1D BA  FCB    $0D,$DA,$0D,$CA,$1D,$CA,$1D,$BA
 CF49: 2D BA 2D AA 3D AA        FCB    $2D,$BA,$2D,$AA,$3D,$AA
 
 ;------------------------------------------------------------------------------
 ; task_move_player  ($CF4F)
+; -> src/game/main/gp2_3b_start.js
 ; Scheduler task: move the player's ship ($1600 Y / $1601 X in the
 ; sprite shadow) from the joystick nibble ($6804, or $6806 for player
 ; 2 on a cocktail cabinet). In the demo the stick comes from a
@@ -4337,7 +4637,7 @@ CF49: 2D BA 2D AA 3D AA        FCB    $2D,$BA,$2D,$AA,$3D,$AA
 ; Table entry at: $FEDA, $FEF8, $FF16, $FF34, $FF56, $FF7A, $FFB4, $FFC0
 ;------------------------------------------------------------------------------
 task_move_player:
-CF4F: 96 D9           LDA    <$D9            ; [$10D9]
+CF4F: 96 D9           LDA    <player_frozen  ; [$10D9]
 CF51: 26 6F           BNE    lCFC2
 CF53: B6 09 F4        LDA    attract_flag    ; [$09F4]
 CF56: 10 26 00 A6     LBNE   demo_input
@@ -4434,8 +4734,10 @@ CFFE: 20 89           BRA    lCF89
 
 ;------------------------------------------------------------------------------
 ; demo_input  ($D000)
+; -> src/game/main/gp2_3b_start.js
 ; Demo: step the recorded input script; at its end ($F0) stop the
 ; demo and return to attract_loop.
+; QUIRK: bit 7 of demo_stick is the carry of CMPA #$F0 ($D01A).
 ; Jumped to from: $CF56
 ;------------------------------------------------------------------------------
 demo_input:
@@ -4445,7 +4747,7 @@ D005: FE 09 F2        LDU    demo_ptr        ; [$09F2]
 D008: A6 C9 01 00     LDA    TILE_RAM+$100,U ; [$0100]
 D00C: B7 09 F0        STA    demo_timer      ; [$09F0]
 D00F: 81 F0           CMPA   #$F0
-D011: 27 16           BEQ    lD029
+D011: 27 16           BEQ    demo_end
 D013: A6 C4           LDA    ,U
 D015: E6 C0           LDB    ,U+
 D017: FF 09 F2        STU    demo_ptr        ; [$09F2]
@@ -4458,7 +4760,15 @@ lD023:
 D023: CE 09 F1        LDU    #demo_stick     ; [#$09F1]
 D026: 7E CF 64        JMP    lCF64
 
-lD029:
+;------------------------------------------------------------------------------
+; demo_end  ($D029) ; JS: lD029
+; -> src/game/main/gp2_3b_start.js
+; End of the demo (also from $E3F8): attract timer = $E0/$FF, clear sprites,
+; sounds, schedulers and game_mode, jump to attract_loop (the stack is
+; abandoned).
+; Jumped to from: $D011, $E3F8
+;------------------------------------------------------------------------------
+demo_end:
 D029: CC E0 FF        LDD    #$E0FF
 D02C: DD 29           STD    <attract_timer  ; [$1029]
 D02E: BD DF 5D        JSR    clear_sprite_shadows
@@ -4485,6 +4795,7 @@ D074: 86 01 B7 0C 03 39        FCB    $86,$01,$B7,$0C,$03,$39
 
 ;------------------------------------------------------------------------------
 ; irq_timers  ($D07A)
+; -> src/game/main/gp2_3b_irq.js
 ; Called by the IRQ: play clock, 1UP/2UP blink colours.
 ; Called from: $C034 irq_main
 ;------------------------------------------------------------------------------
@@ -4539,6 +4850,7 @@ D0C4: 20 CD           BRA    lD093
 
 ;------------------------------------------------------------------------------
 ; update_play_clock  ($D0C6)
+; -> src/game/main/gp2_3b_irq.js
 ; BCD clock: $09F8 frames (0-59), $09F9 seconds, $09FA minutes,
 ; $09FB hours (0-23). Shown by the operator stats display.
 ; Called from: $D07A irq_timers
@@ -4578,6 +4890,9 @@ D106: 39              RTS
 
 ;------------------------------------------------------------------------------
 ; update_p1_time  ($D107)
+; -> src/game/main/gp2_3b_irq.js
+; While player 1 plays, count p1_time: frames (wrap 60), seconds (60), minutes
+; (no limit), binary.
 ; Called from: $D084 irq_timers
 ;------------------------------------------------------------------------------
 update_p1_time:
@@ -4621,6 +4936,7 @@ D14F: 39              RTS
 
 ;------------------------------------------------------------------------------
 ; task_end_frame  ($D150)
+; -> src/game/main/gp2_3b_start.js
 ; Last entry of every task list: wait for the next IRQ (CWAI), reset
 ; the stack, restart the current mode's list at task 0.
 ; Table entry at: $FF08, $FF24, $FF48, $FF68, $FF94, $FFA4, $FFBE, $FFC8, $FFCE
@@ -4633,11 +4949,12 @@ D158: 7E FE B5        JMP    task_dispatch
 
 ;------------------------------------------------------------------------------
 ; task_next_mode  ($D15B)
+; -> src/game/main/gp2_3b_start.js
 ; End of mode 0: clear the frame counter, wait a frame, game_mode + 1.
 ; Table entry at: $FEEA
 ;------------------------------------------------------------------------------
 task_next_mode:
-D15B: 0F C1           CLR    <$C1            ; [$10C1]
+D15B: 0F C1           CLR    <obj188A_done   ; [$10C1]
 D15D: 0F 16           CLR    <frame_counter  ; [$1016]
 D15F: 3C EF           CWAI   #$EF
 D161: 0C 2F           INC    <game_mode      ; [$102F]
@@ -4646,6 +4963,7 @@ D165: 7E FE B5        JMP    task_dispatch
 
 ;------------------------------------------------------------------------------
 ; task_player_fire  ($D168)
+; -> src/game/main/gp2_3b_start.js
 ; Fire button edge (56XX nibble 5 bit 1, or the demo script): put a
 ; shot sprite in a free slot of $0EA2..($10D3) and request the shot
 ; sound.
@@ -4715,6 +5033,10 @@ D1CE: 20 BD           BRA    lD18D
 
 ;------------------------------------------------------------------------------
 ; task_move_shots  ($D1D0)
+; -> src/game/main/gp2_3b_start.js
+; Move every active shot ($16A3-$16C1, flag bit 7) up by shot_speed; a shot
+; leaving the top is flagged $80; clear the spent ones. With $1177 set the two
+; shots follow the player's Y.
 ; Table entry at: $FEDE, $FEFC, $FF1A, $FF3C, $FF5C, $FF82, $FF9C, $FFB8, $FFC2
 ;------------------------------------------------------------------------------
 task_move_shots:
@@ -4763,10 +5085,13 @@ D21E: 0C 30           INC    <main_task      ; [$1030]
 D220: 7E FE B5        JMP    task_dispatch
 
 ;------------------------------------------------------------------------------
-; sub_D223  ($D223)
+; task_dual_shots  ($D223) ; JS: sub_D223
+; -> src/game/main/gp2_3b_start.js
+; With the dual fighter: copy each active shot of slots $0EA2/$0EA4
+; fighter_count times from $0EAA up, the n-th Y offset by dat_D283[n] (signed).
 ; Table entry at: $FEE0, $FEFE, $FF1C, $FF3E, $FF5E, $FF84, $FF9E, $FFBA
 ;------------------------------------------------------------------------------
-sub_D223:
+task_dual_shots:
 D223: 96 DB           LDA    <dual_fighter   ; [$10DB]
 D225: 27 57           BEQ    lD27E
 D227: 8E 1E AB        LDX    #$1EAB
@@ -4785,7 +5110,7 @@ D23E: 27 3E           BEQ    lD27E
 D240: A6 A9 10 01     LDA    $1001,Y
 D244: 84 80           ANDA   #$80
 D246: 27 F0           BEQ    lD238
-D248: D6 DC           LDB    <$DC            ; [$10DC]
+D248: D6 DC           LDB    <fighter_count  ; [$10DC]
 D24A: 27 EC           BEQ    lD238
 
 lD24C:
@@ -4796,7 +5121,7 @@ D258: A7 C9 10 00     STA    $1000,U
 D25C: A6 A9 08 01     LDA    $0801,Y
 D260: A7 C9 08 01     STA    $0801,U
 D264: A6 A9 08 00     LDA    $0800,Y
-D268: 8E D2 83        LDX    #dat_D283
+D268: 8E D2 83        LDX    #dual_shot_offsets
 D26B: AB 85           ADDA   B,X
 D26D: A7 C9 08 00     STA    $0800,U
 D271: A6 21           LDA    $1,Y
@@ -4811,18 +5136,26 @@ lD27E:
 D27E: 0C 30           INC    <main_task      ; [$1030]
 D280: 16 2C 32        LBRA   task_dispatch
 
-; Referenced from: $D268 sub_D223
-dat_D283:
+; Y offsets of the dual-fighter shot copies (signed).
+; Referenced from: $D268 task_dual_shots
+dual_shot_offsets:
 D283: 00 10 F0 20 E0 30 D0     FCB    $00,$10,$F0,$20,$E0,$30,$D0
 
 ;------------------------------------------------------------------------------
-; sub_D28A  ($D28A)
+; task_shot_hits  ($D28A) ; JS: sub_D28A
+; -> src/game/main/gp2_3b_hit.js
+; The player's shots against enemies and objects: build a hitbox per active
+; shot ($10C6-$10CA) and test the formation, the diving enemies and the objects
+; $0EE2-$0F12; hits go to enemy_hit.
+; QUIRK: shots_to_clear is stored, not OR-ed; boss_bonus_idx runs past
+; boss_bonus_sprites into code; the formation scan ends only at X =
+; formation_end.
 ; Table entry at: $FEF2, $FF10, $FF2E, $FF50, $FF74, $FFAE
 ;------------------------------------------------------------------------------
-sub_D28A:
-D28A: B6 11 31        LDA    $1131
+task_shot_hits:
+D28A: B6 11 31        LDA    boss_chain_timer ; [$1131]
 D28D: 27 03           BEQ    lD292
-D28F: 7A 11 31        DEC    $1131
+D28F: 7A 11 31        DEC    boss_chain_timer ; [$1131]
 
 lD292:
 D292: 96 16           LDA    <frame_counter  ; [$1016]
@@ -4832,10 +5165,10 @@ D298: 7F 1F 2F        CLR    $1F2F
 
 lD29B:
 D29B: 8E 1E A3        LDX    #$1EA3
-D29E: 9F C2           STX    <$C2            ; [$10C2]
+D29E: 9F C2           STX    <shot_ptr       ; [$10C2]
 
 lD2A0:
-D2A0: 9E C2           LDX    <$C2            ; [$10C2]
+D2A0: 9E C2           LDX    <shot_ptr       ; [$10C2]
 
 lD2A2:
 D2A2: 8C 1E A9        CMPX   #$1EA9
@@ -4843,45 +5176,45 @@ D2A5: 27 5A           BEQ    lD301
 D2A7: A6 81           LDA    ,X++
 D2A9: 84 80           ANDA   #$80
 D2AB: 27 F5           BEQ    lD2A2
-D2AD: 9F C2           STX    <$C2            ; [$10C2]
-D2AF: EC 89 F7 FD     LDD    -$0803,X
+D2AD: 9F C2           STX    <shot_ptr       ; [$10C2]
+D2AF: EC 89 F7 FD     LDD    -$0803,X        ; the shot's Y/X in the $1600 bank
 D2B3: BB 11 00        ADDA   $1100
-D2B6: 9B DD           ADDA   <$DD            ; [$10DD]
-D2B8: 97 C6           STA    <$C6            ; [$10C6]
+D2B6: 9B DD           ADDA   <fighter_offsets ; [$10DD]
+D2B8: 97 C6           STA    <hitbox         ; [$10C6]
 D2BA: B0 11 01        SUBA   $1101
 D2BD: 24 01           BCC    lD2C0
 D2BF: 4F              CLRA
 
 lD2C0:
-D2C0: 90 DE           SUBA   <$DE            ; [$10DE]
+D2C0: 90 DE           SUBA   <fighter_offsets+1 ; [$10DE]
 D2C2: 24 01           BCC    lD2C5
 D2C4: 4F              CLRA
 
 lD2C5:
-D2C5: 97 C7           STA    <$C7            ; [$10C7]
+D2C5: 97 C7           STA    <hitbox+1       ; [$10C7]
 D2C7: CB 0A           ADDB   #$0A
 D2C9: 25 2E           BCS    lD2F9
-D2CB: D7 C8           STB    <$C8            ; [$10C8]
+D2CB: D7 C8           STB    <hitbox+2       ; [$10C8]
 D2CD: C0 14           SUBB   #$14
 D2CF: 24 01           BCC    lD2D2
 D2D1: 5F              CLRB
 
 lD2D2:
-D2D2: D7 C9           STB    <$C9            ; [$10C9]
+D2D2: D7 C9           STB    <hitbox+3       ; [$10C9]
 D2D4: A6 1E           LDA    -$2,X
 D2D6: 84 01           ANDA   #$01
-D2D8: 97 CA           STA    <$CA            ; [$10CA]
+D2D8: 97 CA           STA    <hit_xhi        ; [$10CA]
 D2DA: 7E D5 34        JMP    lD534
 
 lD2DD:
 D2DD: 8E 18 60        LDX    #formation_flags ; [#$1860]
 D2E0: 86 FF           LDA    #$FF
-D2E2: 97 C4           STA    <$C4            ; [$10C4]
+D2E2: 97 C4           STA    <slot_index     ; [$10C4]
 
 lD2E4:
-D2E4: 0C C4           INC    <$C4            ; [$10C4]
+D2E4: 0C C4           INC    <slot_index     ; [$10C4]
 D2E6: A6 80           LDA    ,X+
-D2E8: BC 11 2D        CMPX   $112D
+D2E8: BC 11 2D        CMPX   formation_end   ; [$112D]
 D2EB: 27 B3           BEQ    lD2A0
 D2ED: 84 01           ANDA   #$01
 D2EF: 26 F3           BNE    lD2E4
@@ -4891,41 +5224,41 @@ D2F5: 27 23           BEQ    lD31A
 D2F7: 20 33           BRA    lD32C
 
 lD2F9:
-D2F9: 86 FF           LDA    #$FF
-D2FB: 97 C8           STA    <$C8            ; [$10C8]
+D2F9: 86 FF           LDA    #$FF            ; no clamp
+D2FB: 97 C8           STA    <hitbox+2       ; [$10C8]
 D2FD: C0 14           SUBB   #$14
 D2FF: 20 D1           BRA    lD2D2
 
 lD301:
-D301: 96 76           LDA    <$76            ; [$1076]
+D301: 96 76           LDA    <shots_to_clear ; [$1076]
 D303: 84 01           ANDA   #$01
 D305: 27 03           BEQ    lD30A
 D307: 7F 1E A3        CLR    $1EA3
 
 lD30A:
-D30A: 96 76           LDA    <$76            ; [$1076]
+D30A: 96 76           LDA    <shots_to_clear ; [$1076]
 D30C: 84 02           ANDA   #$02
 D30E: 27 03           BEQ    lD313
 D310: 7F 1E A5        CLR    $1EA5
 
 lD313:
-D313: 0F 76           CLR    <$76            ; [$1076]
+D313: 0F 76           CLR    <shots_to_clear ; [$1076]
 D315: 0C 30           INC    <main_task      ; [$1030]
 D317: 7E FE B5        JMP    task_dispatch
 
 lD31A:
-D31A: 96 CA           LDA    <$CA            ; [$10CA]
+D31A: 96 CA           LDA    <hit_xhi        ; [$10CA]
 D31C: 26 C6           BNE    lD2E4
-D31E: 96 C4           LDA    <$C4            ; [$10C4]
+D31E: 96 C4           LDA    <slot_index     ; [$10C4]
 D320: 48              ASLA
 D321: CE 1B 00        LDU    #$1B00
 D324: 33 C6           LEAU   A,U
 D326: EC C4           LDD    ,U
-D328: 0F C5           CLR    <$C5            ; [$10C5]
+D328: 0F C5           CLR    <hit_diving     ; [$10C5]
 D32A: 20 1E           BRA    lD34A
 
 lD32C:
-D32C: 96 C4           LDA    <$C4            ; [$10C4]
+D32C: 96 C4           LDA    <slot_index     ; [$10C4]
 D32E: 48              ASLA
 D32F: CE 16 30        LDU    #$1630
 D332: 33 C6           LEAU   A,U
@@ -4934,46 +5267,46 @@ D338: 84 80           ANDA   #$80
 D33A: 27 A8           BEQ    lD2E4
 D33C: A6 C9 08 01     LDA    $0801,U
 D340: 84 01           ANDA   #$01
-D342: 91 CA           CMPA   <$CA            ; [$10CA]
+D342: 91 CA           CMPA   <hit_xhi        ; [$10CA]
 D344: 26 9E           BNE    lD2E4
-D346: 97 C5           STA    <$C5            ; [$10C5]
+D346: 97 C5           STA    <hit_diving     ; [$10C5]
 D348: EC C4           LDD    ,U
 
 lD34A:
-D34A: D1 C8           CMPB   <$C8            ; [$10C8]
+D34A: D1 C8           CMPB   <hitbox+2       ; [$10C8]
 D34C: 24 96           BCC    lD2E4
-D34E: D1 C9           CMPB   <$C9            ; [$10C9]
+D34E: D1 C9           CMPB   <hitbox+3       ; [$10C9]
 D350: 25 92           BCS    lD2E4
-D352: 91 C6           CMPA   <$C6            ; [$10C6]
+D352: 91 C6           CMPA   <hitbox         ; [$10C6]
 D354: 24 8E           BCC    lD2E4
-D356: 91 C7           CMPA   <$C7            ; [$10C7]
+D356: 91 C7           CMPA   <hitbox+1       ; [$10C7]
 D358: 25 8A           BCS    lD2E4
 D35A: A6 1F           LDA    -$1,X
 D35C: 81 C2           CMPA   #$C2
 D35E: 26 59           BNE    lD3B9
-D360: B6 11 31        LDA    $1131
+D360: B6 11 31        LDA    boss_chain_timer ; [$1131]
 D363: 26 07           BNE    lD36C
 D365: 86 01           LDA    #$01
-D367: B7 11 12        STA    $1112
-D36A: 0F 66           CLR    <$66            ; [$1066]
+D367: B7 11 12        STA    boss_chain      ; [$1112]
+D36A: 0F 66           CLR    <boss_bonus_idx ; [$1066]
 
 lD36C:
 D36C: 86 20           LDA    #$20
-D36E: B7 11 31        STA    $1131
-D371: B6 11 12        LDA    $1112
+D36E: B7 11 31        STA    boss_chain_timer ; [$1131]
+D371: B6 11 12        LDA    boss_chain      ; [$1112]
 D374: 81 40           CMPA   #$40
 D376: 27 06           BEQ    lD37E
-D378: 78 11 12        ASL    $1112
-D37B: B6 11 12        LDA    $1112
+D378: 78 11 12        ASL    boss_chain      ; [$1112]
+D37B: B6 11 12        LDA    boss_chain      ; [$1112]
 
 lD37E:
-D37E: B7 11 13        STA    $1113
-D381: 10 8E D3 A1     LDY    #dat_D3A1
-D385: 96 66           LDA    <$66            ; [$1066]
+D37E: B7 11 13        STA    hit_points      ; [$1113]
+D381: 10 8E D3 A1     LDY    #boss_bonus_sprites
+D385: 96 66           LDA    <boss_bonus_idx ; [$1066]
 D387: 48              ASLA
 D388: EC A6           LDD    A,Y
 D38A: FD 0F 2E        STD    $0F2E
-D38D: 0C 66           INC    <$66            ; [$1066]
+D38D: 0C 66           INC    <boss_bonus_idx ; [$1066]
 D38F: EC C4           LDD    ,U
 D391: 8B 10           ADDA   #$10
 D393: FD 17 2E        STD    $172E
@@ -4982,8 +5315,9 @@ D39A: 86 60           LDA    #$60
 D39C: FD 1F 2E        STD    $1F2E
 D39F: 20 49           BRA    lD3EA
 
-; Referenced from: $D381 sub_D28A
-dat_D3A1:
+; Code/colour words of the boss bonus sprite by boss_bonus_idx (no end marker).
+; Referenced from: $D381 task_shot_hits
+boss_bonus_sprites:
 D3A1: 6C 28 6C 29 6D 28 6D 29  FCB    $6C,$28,$6C,$29,$6D,$28,$6D,$29
 D3A9: 7C 28 7C 29 7C 29 7C 29  FCB    $7C,$28,$7C,$29,$7C,$29,$7C,$29
 D3B1: 7C 29 7C 29 7C 29 7C 29  FCB    $7C,$29,$7C,$29,$7C,$29,$7C,$29
@@ -4992,25 +5326,25 @@ lD3B9:
 D3B9: 84 02           ANDA   #$02
 D3BB: 27 23           BEQ    lD3E0
 D3BD: 4A              DECA
-D3BE: B7 11 13        STA    $1113
-D3C1: B7 11 12        STA    $1112
-D3C4: 0F 66           CLR    <$66            ; [$1066]
+D3BE: B7 11 13        STA    hit_points      ; [$1113]
+D3C1: B7 11 12        STA    boss_chain      ; [$1112]
+D3C4: 0F 66           CLR    <boss_bonus_idx ; [$1066]
 D3C6: 8C 18 75        CMPX   #$1875
 D3C9: 25 1F           BCS    lD3EA
-D3CB: 7C 11 13        INC    $1113
+D3CB: 7C 11 13        INC    hit_points      ; [$1113]
 D3CE: 8C 18 7F        CMPX   #$187F
 D3D1: 25 17           BCS    lD3EA
-D3D3: 7C 11 13        INC    $1113
+D3D3: 7C 11 13        INC    hit_points      ; [$1113]
 D3D6: 8C 18 87        CMPX   #$1887
 D3D9: 25 0F           BCS    lD3EA
-D3DB: 7C 11 13        INC    $1113
+D3DB: 7C 11 13        INC    hit_points      ; [$1113]
 D3DE: 20 0A           BRA    lD3EA
 
 lD3E0:
 D3E0: 86 01           LDA    #$01
-D3E2: B7 11 12        STA    $1112
-D3E5: B7 11 13        STA    $1113
-D3E8: 0F 66           CLR    <$66            ; [$1066]
+D3E2: B7 11 12        STA    boss_chain      ; [$1112]
+D3E5: B7 11 13        STA    hit_points      ; [$1113]
+D3E8: 0F 66           CLR    <boss_bonus_idx ; [$1066]
 
 lD3EA:
 D3EA: B6 11 5F        LDA    $115F
@@ -5026,7 +5360,7 @@ D3F8: B7 60 4B        STA    snd_request+11  ; [$604B]
 lD3FB:
 D3FB: A7 1F           STA    -$1,X
 D3FD: 4F              CLRA
-D3FE: 9E C2           LDX    <$C2            ; [$10C2]
+D3FE: 9E C2           LDX    <shot_ptr       ; [$10C2]
 D400: 8C 1E A5        CMPX   #$1EA5
 D403: 26 04           BNE    lD409
 D405: 8A 01           ORA    #$01
@@ -5036,35 +5370,41 @@ lD409:
 D409: 8A 02           ORA    #$02
 
 lD40B:
-D40B: 97 76           STA    <$76            ; [$1076]
-D40D: 8D 22           BSR    sub_D431
-D40F: 96 C5           LDA    <$C5            ; [$10C5]
+D40B: 97 76           STA    <shots_to_clear ; [$1076]
+D40D: 8D 22           BSR    enemy_hit
+D40F: 96 C5           LDA    <hit_diving     ; [$10C5]
 D411: 27 04           BEQ    lD417
 D413: 6F C9 08 01     CLR    $0801,U
 
 lD417:
 D417: 86 01           LDA    #$01
 D419: BD C1 D6        JSR    add_score
-D41C: 7A 11 13        DEC    $1113
+D41C: 7A 11 13        DEC    hit_points      ; [$1113]
 D41F: 26 F6           BNE    lD417
-D421: 9E C2           LDX    <$C2            ; [$10C2]
-D423: 30 1E           LEAX   -$2,X
-D425: 9F C2           STX    <$C2            ; [$10C2]
+D421: 9E C2           LDX    <shot_ptr       ; [$10C2]
+D423: 30 1E           LEAX   -$2,X           ; QUIRK: re-test the same shot: a
+                                             ; formation hit does not use it up
+D425: 9F C2           STX    <shot_ptr       ; [$10C2]
 D427: B6 11 5F        LDA    $115F
 D42A: 10 27 FE 74     LBEQ   lD2A2
 D42E: 7E D3 01        JMP    lD301
 
 ;------------------------------------------------------------------------------
-; sub_D431  ($D431)
-; Called from: $D40D sub_D28A
+; enemy_hit  ($D431) ; JS: sub_D431
+; -> src/game/main/gp2_3b_hit.js
+; Enemy at U hit: count it (effect_request), note its position (effect_pos) and
+; type ($110B); with $1102 & $1075 put a score sprite ($4F) in a free slot of
+; $0ECE-$0EDA with a speed from dat_D4B6/D4E0/D50A. In: U = the enemy's
+; position entry.
+; Called from: $D40D task_shot_hits
 ;------------------------------------------------------------------------------
-sub_D431:
-D431: 7C 11 08        INC    $1108
+enemy_hit:
+D431: 7C 11 08        INC    effect_request  ; [$1108]
 D434: EC C4           LDD    ,U
-D436: FD 11 09        STD    $1109
+D436: FD 11 09        STD    effect_pos      ; [$1109]
 D439: 86 80           LDA    #$80
-D43B: 9A C5           ORA    <$C5            ; [$10C5]
-D43D: B7 11 0B        STA    $110B
+D43B: 9A C5           ORA    <hit_diving     ; [$10C5]
+D43D: B7 11 0B        STA    effect_flags    ; [$110B]
 D440: B6 11 02        LDA    $1102
 D443: 94 75           ANDA   <$75            ; [$1075]
 D445: 27 69           BEQ    lD4B0
@@ -5081,7 +5421,7 @@ D459: CC 4F 00        LDD    #$4F00
 D45C: ED 84           STD    ,X
 D45E: EC C4           LDD    ,U
 D460: ED 89 08 00     STD    $0800,X
-D464: 96 C5           LDA    <$C5            ; [$10C5]
+D464: 96 C5           LDA    <hit_diving     ; [$10C5]
 D466: 27 49           BEQ    lD4B1
 D468: EC C9 08 00     LDD    $0800,U
 D46C: 86 00           LDA    #$00
@@ -5131,7 +5471,7 @@ lD4B1:
 D4B1: CC 00 80        LDD    #$0080
 D4B4: 20 B8           BRA    lD46E
 
-; Referenced from: $D493 sub_D431
+; Referenced from: $D493 enemy_hit
 dat_D4B6:
 D4B6: 01 49 01 2D 01 0F 00 EF  FCB    $01,$49,$01,$2D,$01,$0F,$00,$EF
 D4BE: 00 CF 00 AE 00 8D 00 7B  FCB    $00,$CF,$00,$AE,$00,$8D,$00,$7B
@@ -5140,7 +5480,7 @@ D4CE: 80 47 80 7B 80 8D 80 AE  FCB    $80,$47,$80,$7B,$80,$8D,$80,$AE
 D4D6: 80 CF 80 EF 81 0F 81 2D  FCB    $80,$CF,$80,$EF,$81,$0F,$81,$2D
 D4DE: 81 49                    FCB    $81,$49
 
-; Referenced from: $D49D sub_D431
+; Referenced from: $D49D enemy_hit
 dat_D4E0:
 D4E0: 01 BB 01 9E 01 7C 01 56  FCB    $01,$BB,$01,$9E,$01,$7C,$01,$56
 D4E8: 01 2D 01 00 00 CF 00 9E  FCB    $01,$2D,$01,$00,$00,$CF,$00,$9E
@@ -5149,7 +5489,7 @@ D4F8: 80 6A 80 9E 80 CF 81 00  FCB    $80,$6A,$80,$9E,$80,$CF,$81,$00
 D500: 81 2D 81 56 81 7C 81 9E  FCB    $81,$2D,$81,$56,$81,$7C,$81,$9E
 D508: 81 BB                    FCB    $81,$BB
 
-; Referenced from: $D4A5 sub_D431
+; Referenced from: $D4A5 enemy_hit
 dat_D50A:
 D50A: 02 30 02 00 01 F7 01 E0  FCB    $02,$30,$02,$00,$01,$F7,$01,$E0
 D512: 01 BB 01 88 01 49 01 00  FCB    $01,$BB,$01,$88,$01,$49,$01,$00
@@ -5171,16 +5511,16 @@ D544: 84 80           ANDA   #$80
 D546: 27 F1           BEQ    lD539
 D548: A6 89 10 01     LDA    $1001,X
 D54C: 84 01           ANDA   #$01
-D54E: 91 CA           CMPA   <$CA            ; [$10CA]
+D54E: 91 CA           CMPA   <hit_xhi        ; [$10CA]
 D550: 26 E7           BNE    lD539
 D552: EC 89 08 00     LDD    $0800,X
-D556: D1 C8           CMPB   <$C8            ; [$10C8]
+D556: D1 C8           CMPB   <hitbox+2       ; [$10C8]
 D558: 24 DF           BCC    lD539
-D55A: D1 C9           CMPB   <$C9            ; [$10C9]
+D55A: D1 C9           CMPB   <hitbox+3       ; [$10C9]
 D55C: 25 DB           BCS    lD539
-D55E: 91 C6           CMPA   <$C6            ; [$10C6]
+D55E: 91 C6           CMPA   <hitbox         ; [$10C6]
 D560: 24 D7           BCC    lD539
-D562: 91 C7           CMPA   <$C7            ; [$10C7]
+D562: 91 C7           CMPA   <hitbox+1       ; [$10C7]
 D564: 25 D3           BCS    lD539
 D566: 9F 0B           STX    <$0B            ; [$100B]
 D568: 96 6E           LDA    <$6E            ; [$106E]
@@ -5207,11 +5547,15 @@ D584: 27 EC           BEQ    lD572
 D586: 20 E6           BRA    lD56E
 
 ;------------------------------------------------------------------------------
-; sub_D588  ($D588)
+; task_formation_count  ($D588) ; JS: sub_D588
+; -> src/game/main/gp2_3b_hit.js
+; Mode 5 formation bookkeeping: count free/moving slots ($1860-$188B) into
+; several flags ($1020, $10F8, $1122, $1075); when the stage is empty count
+; clear_delay and move to the next mode.
 ; Table entry at: $FF8E
 ;------------------------------------------------------------------------------
-sub_D588:
-D588: 96 F8           LDA    <$F8            ; [$10F8]
+task_formation_count:
+D588: 96 F8           LDA    <refill_request ; [$10F8]
 D58A: 10 26 00 C1     LBNE   lD64F
 
 lD58E:
@@ -5244,7 +5588,7 @@ lD5B2:
 D5B2: D1 5A           CMPB   <$5A            ; [$105A]
 D5B4: 24 04           BCC    lD5BA
 D5B6: 86 01           LDA    #$01
-D5B8: 97 F8           STA    <$F8            ; [$10F8]
+D5B8: 97 F8           STA    <refill_request ; [$10F8]
 
 lD5BA:
 D5BA: F1 11 1C        CMPB   $111C
@@ -5263,9 +5607,9 @@ D5CC: C1 00           CMPB   #$00
 D5CE: 26 3E           BNE    lD60E
 D5D0: 96 D6           LDA    <$D6            ; [$10D6]
 D5D2: 26 3A           BNE    lD60E
-D5D4: 96 DA           LDA    <$DA            ; [$10DA]
+D5D4: 96 DA           LDA    <capture_substate ; [$10DA]
 D5D6: 26 36           BNE    lD60E
-D5D8: 7C 11 65        INC    $1165
+D5D8: 7C 11 65        INC    clear_delay     ; [$1165]
 D5DB: 26 31           BNE    lD60E
 D5DD: B6 11 23        LDA    $1123
 D5E0: 26 2C           BNE    lD60E
@@ -5282,8 +5626,8 @@ D5FA: 26 12           BNE    lD60E
 D5FC: 3C EF           CWAI   #$EF
 D5FE: 0C 2F           INC    <game_mode      ; [$102F]
 D600: 7F 1F 1F        CLR    $1F1F
-D603: 0F 18           CLR    <$18            ; [$1018]
-D605: 0F F8           CLR    <$F8            ; [$10F8]
+D603: 0F 18           CLR    <seq_step       ; [$1018]
+D605: 0F F8           CLR    <refill_request ; [$10F8]
 D607: 0F 7A           CLR    <sub_task       ; [$107A]
 D609: 0F 30           CLR    <main_task      ; [$1030]
 D60B: 7E FE B5        JMP    task_dispatch
@@ -5321,7 +5665,7 @@ D63C: 5C              INCB
 
 lD63D:
 D63D: 0F 13           CLR    <$13            ; [$1013]
-D63F: 8E 10 36        LDX    #$1036
+D63F: 8E 10 36        LDX    #stage_params   ; [#$1036]
 D642: A6 85           LDA    B,X
 D644: 91 14           CMPA   <$14            ; [$1014]
 D646: 24 02           BCC    lD64A
@@ -5356,6 +5700,7 @@ D673: 7E D5 8E        JMP    lD58E
 
 ;------------------------------------------------------------------------------
 ; task_stage_clear  ($D676)
+; -> src/game/main/gp2_3b_hit.js
 ; Mode 6: stage cleared. Reset the formation flags and enemy sprites,
 ; silence, next stage for the current player, stage-clear sound 5
 ; (sound 2 on the stages listed at $D6E8), back to mode 0.
@@ -5438,17 +5783,19 @@ D718: F2 F7 FC                 FCB    $F2,$F7,$FC
 
 ;------------------------------------------------------------------------------
 ; task_stage_start  ($D71B)
+; -> src/game/main/gp2_3b_hit.js
 ; Mode 0: starfield, clear per-stage state, stage number
 ; $1035 = player stage, reduced below 60 (60+ repeat 30-59); print
 ; 'PARSEC nn' (and GAME OVER in attract mode). Challenging stages
 ; (challenging_stages) print CHALLENGING STAGE and switch to mode 7.
+; QUIRK: erasing the PARSEC digits stores to $FFF0 (ROM, ignored).
 ; Table entry at: $FEE8
 ;------------------------------------------------------------------------------
 task_stage_start:
 D71B: 96 2C           LDA    <flip_screen    ; [$102C]
 D71D: 26 12           BNE    lD731
-D71F: 7F 11 70        CLR    $1170
-D722: 7F 11 6E        CLR    $116E
+D71F: 7F 11 70        CLR    star_dir_flags  ; [$1170]
+D722: 7F 11 6E        CLR    event_step      ; [$116E]
 D725: 86 06           LDA    #$06
 D727: B7 A0 03        STA    STARFIELD+$03   ; [$A003]
 D72A: 86 85           LDA    #$85
@@ -5457,14 +5804,14 @@ D72F: 20 0F           BRA    lD740
 
 lD731:
 D731: 86 02           LDA    #$02
-D733: B7 11 70        STA    $1170
+D733: B7 11 70        STA    star_dir_flags  ; [$1170]
 D736: 86 00           LDA    #$00
 D738: B7 A0 03        STA    STARFIELD+$03   ; [$A003]
 D73B: 86 81           LDA    #$81
 D73D: B7 A0 02        STA    STARFIELD+$02   ; [$A002]
 
 lD740:
-D740: CE 10 B0        LDU    #$10B0
+D740: CE 10 B0        LDU    #group1_count   ; [#$10B0]
 D743: CC 00 00        LDD    #$0000
 
 lD746:
@@ -5541,7 +5888,7 @@ D7BC: 81 0A           CMPA   #$0A
 D7BE: 25 0E           BCS    lD7CE
 
 lD7C0:
-D7C0: 80 0A           SUBA   #$0A
+D7C0: 80 0A           SUBA   #$0A            ; then adda #$0A
 D7C2: 25 03           BCS    lD7C7
 D7C4: 5C              INCB
 D7C5: 20 F9           BRA    lD7C0
@@ -5554,18 +5901,18 @@ D7CB: E7 88 C0        STB    -$40,X
 lD7CE:
 D7CE: 8B 30           ADDA   #$30
 D7D0: A7 88 A0        STA    -$60,X
-D7D3: 0C 0A           INC    <var_100A       ; [$100A]
+D7D3: 0C 0A           INC    <stage_text_timer ; [$100A]
 D7D5: 27 33           BEQ    lD80A
 
 lD7D7:
-D7D7: 7F 11 18        CLR    $1118
-D7DA: 7F 11 17        CLR    $1117
-D7DD: 7F 11 16        CLR    $1116
-D7E0: 0F C1           CLR    <$C1            ; [$10C1]
-D7E2: 0F C0           CLR    <$C0            ; [$10C0]
-D7E4: 0F CE           CLR    <$CE            ; [$10CE]
-D7E6: 7F 11 75        CLR    $1175
-D7E9: 7F 11 76        CLR    $1176
+D7D7: 7F 11 18        CLR    wing_group      ; [$1118]
+D7DA: 7F 11 17        CLR    wing_sprite_idx ; [$1117]
+D7DD: 7F 11 16        CLR    escort_step     ; [$1116]
+D7E0: 0F C1           CLR    <obj188A_done   ; [$10C1]
+D7E2: 0F C0           CLR    <obj188A_count  ; [$10C0]
+D7E4: 0F CE           CLR    <capture_state  ; [$10CE]
+D7E6: 7F 11 75        CLR    bonus_ship_out  ; [$1175]
+D7E9: 7F 11 76        CLR    score_anim_done ; [$1176]
 D7EC: 0F 75           CLR    <$75            ; [$1075]
 D7EE: 7F 11 1A        CLR    $111A
 D7F1: 7F 11 1B        CLR    $111B
@@ -5573,7 +5920,7 @@ D7F4: 7F 11 23        CLR    $1123
 D7F7: 7F 11 29        CLR    $1129
 D7FA: 7F 11 2B        CLR    $112B
 D7FD: CC 18 8D        LDD    #$188D
-D800: FD 11 2D        STD    $112D
+D800: FD 11 2D        STD    formation_end   ; [$112D]
 D803: 3C EF           CWAI   #$EF
 D805: 0F 30           CLR    <main_task      ; [$1030]
 D807: 7E FE B5        JMP    task_dispatch
@@ -5639,7 +5986,7 @@ D87C: 30 88 E0        LEAX   -$20,X
 D87F: 20 F5           BRA    lD876
 
 lD881:
-D881: 0C 0A           INC    <var_100A       ; [$100A]
+D881: 0C 0A           INC    <stage_text_timer ; [$100A]
 D883: 10 26 FF 50     LBNE   lD7D7
 D887: 8E 03 30        LDX    #TILE_RAM+$330  ; [#$0330]
 D88A: CE D8 32        LDU    #dat_D832
@@ -5658,17 +6005,21 @@ D89D: A7 88 A0        STA    -$60,X
 D8A0: 3C EF           CWAI   #$EF
 D8A2: 86 07           LDA    #$07
 D8A4: 97 2F           STA    <game_mode      ; [$102F]
-D8A6: 7F 11 64        CLR    $1164
+D8A6: 7F 11 64        CLR    results_count   ; [$1164]
 D8A9: 0F 30           CLR    <main_task      ; [$1030]
 D8AB: 0F 7A           CLR    <sub_task       ; [$107A]
 D8AD: 7E FE B5        JMP    task_dispatch
 
 ;------------------------------------------------------------------------------
-; sub_D8B0  ($D8B0)
+; task_sound_queue  ($D8B0) ; JS: sub_D8B0
+; -> src/game/main/gp2_3b_start.js
+; Unless player_dying: pass the sound requests queued in $0840-$087F to
+; snd_request (1 each, queue cleared); while dying clear every request except
+; sounds $14 and $16.
 ; Table entry at: $FF46, $FF66, $FF8C, $FFBC
 ;------------------------------------------------------------------------------
-sub_D8B0:
-D8B0: 96 FE           LDA    <$FE            ; [$10FE]
+task_sound_queue:
+D8B0: 96 FE           LDA    <player_dying   ; [$10FE]
 D8B2: 26 1E           BNE    lD8D2
 D8B4: 8E 08 40        LDX    #$0840
 D8B7: CE 60 40        LDU    #snd_request    ; [#$6040]
@@ -5714,51 +6065,60 @@ D8F3: 0C 30           INC    <main_task      ; [$1030]
 D8F5: 7E FE B5        JMP    task_dispatch
 
 ;------------------------------------------------------------------------------
-; sub_D8F8  ($D8F8)
+; task_formation_offset  ($D8F8) ; JS: sub_D8F8
+; -> src/game/main/gp2_3b_start.js
+; fighter_offsets ($10DD/$10DE) = the word dat_D907[fighter_count] (formation
+; offsets for the number of fighters; LDD A,X signed).
 ; Table entry at: $FEF0, $FF0E, $FF2C, $FF4E, $FF72, $FFAC
 ;------------------------------------------------------------------------------
-sub_D8F8:
-D8F8: 96 DC           LDA    <$DC            ; [$10DC]
+task_formation_offset:
+D8F8: 96 DC           LDA    <fighter_count  ; [$10DC]
 D8FA: 48              ASLA
-D8FB: 8E D9 07        LDX    #dat_D907
+D8FB: 8E D9 07        LDX    #fighter_offset_table
 D8FE: EC 86           LDD    A,X
-D900: DD DD           STD    <$DD            ; [$10DD]
+D900: DD DD           STD    <fighter_offsets ; [$10DD]
 D902: 0C 30           INC    <main_task      ; [$1030]
 D904: 16 25 AE        LBRA   task_dispatch
 
-; Referenced from: $D8FB sub_D8F8
-dat_D907:
+; fighter_offsets words by fighter_count.
+; Referenced from: $D8FB task_formation_offset
+fighter_offset_table:
 D907: 00 00 10 10 10 20 20 30  FCB    $00,$00,$10,$10,$10,$20,$20,$30
 D90F: 20 40 30 50 30 60        FCB    $20,$40,$30,$50,$30,$60
 
 ;------------------------------------------------------------------------------
 ; task_player_hit_check  ($D915)
+; -> src/game/main/gp2_3b_death.js
 ; Build a box around the player ($10C6-$10C9) and test the sprite
 ; shadow entries $0ECE-$0F13 against it (enemy shots and enemies).
+; QUIRK: game over waits exactly 256 frames; a player with 0 lives gets $FF
+; reserve markers capped to 4.
 ; Table entry at: $FF36, $FF7C
 ;------------------------------------------------------------------------------
 task_player_hit_check:
 D915: B6 09 F4        LDA    attract_flag    ; [$09F4]
 D918: 10 26 00 E0     LBNE   lD9FC
-D91C: 96 FE           LDA    <$FE            ; [$10FE]
+D91C: 96 FE           LDA    <player_dying   ; [$10FE]
 D91E: 10 26 00 F4     LBNE   lDA16
 D922: 96 1A           LDA    <$1A            ; [$101A]
 D924: 10 26 00 D2     LBNE   lD9FA
-D928: B6 11 0F        LDA    $110F
+D928: B6 11 0F        LDA    player_exploding ; [$110F]
 D92B: 10 26 00 CD     LBNE   lD9FC
-D92F: F6 1E 01        LDB    $1E01
+D92F: F6 1E 01        LDB    $1E01           ; player X / 2 (bit 8 in $1E01 bit
+                                             ; 0); box X/2 + 3 .. -3, Y + 6 ..
+                                             ; -6 (8-bit)
 D932: B6 16 01        LDA    player_x        ; [$1601]
 D935: 54              LSRB
 D936: 46              RORA
 D937: 8B 03           ADDA   #$03
-D939: 97 C9           STA    <$C9            ; [$10C9]
+D939: 97 C9           STA    <hitbox+3       ; [$10C9]
 D93B: 80 06           SUBA   #$06
-D93D: 97 C8           STA    <$C8            ; [$10C8]
+D93D: 97 C8           STA    <hitbox+2       ; [$10C8]
 D93F: B6 16 00        LDA    player_y        ; [$1600]
 D942: 8B 06           ADDA   #$06
-D944: 97 C7           STA    <$C7            ; [$10C7]
+D944: 97 C7           STA    <hitbox+1       ; [$10C7]
 D946: 80 0C           SUBA   #$0C
-D948: 97 C6           STA    <$C6            ; [$10C6]
+D948: 97 C6           STA    <hitbox         ; [$10C6]
 D94A: 8E 0E CC        LDX    #$0ECC
 
 lD94D:
@@ -5772,20 +6132,20 @@ D95E: E6 89 10 01     LDB    $1001,X
 D962: A6 89 08 01     LDA    $0801,X
 D966: 54              LSRB
 D967: 46              RORA
-D968: 91 C8           CMPA   <$C8            ; [$10C8]
+D968: 91 C8           CMPA   <hitbox+2       ; [$10C8]
 D96A: 25 E1           BCS    lD94D
-D96C: 91 C9           CMPA   <$C9            ; [$10C9]
+D96C: 91 C9           CMPA   <hitbox+3       ; [$10C9]
 D96E: 24 DD           BCC    lD94D
 D970: A6 89 08 00     LDA    $0800,X
-D974: 91 C6           CMPA   <$C6            ; [$10C6]
+D974: 91 C6           CMPA   <hitbox         ; [$10C6]
 D976: 25 D5           BCS    lD94D
-D978: 91 C7           CMPA   <$C7            ; [$10C7]
+D978: 91 C7           CMPA   <hitbox+1       ; [$10C7]
 D97A: 24 D1           BCC    lD94D
 D97C: 7C 68 29        INC    IO62XX+$09      ; [$6829] 62XX $6829 (>= $0F:
                                              ; bang)
 D97F: 7C 68 2A        INC    IO62XX+$0A      ; [$682A] 62XX byte 10
 D982: 86 01           LDA    #$01
-D984: B7 11 0F        STA    $110F
+D984: B7 11 0F        STA    player_exploding ; [$110F]
 D987: 20 73           BRA    lD9FC
 
 lD989:
@@ -5804,24 +6164,31 @@ D9A2: E6 89 10 01     LDB    $1001,X
 D9A6: A6 89 08 01     LDA    $0801,X
 D9AA: 54              LSRB
 D9AB: 46              RORA
-D9AC: 91 C8           CMPA   <$C8            ; [$10C8]
+D9AC: 91 C8           CMPA   <hitbox+2       ; [$10C8]
 D9AE: 25 DF           BCS    lD98F
-D9B0: 91 C9           CMPA   <$C9            ; [$10C9]
+D9B0: 91 C9           CMPA   <hitbox+3       ; [$10C9]
 D9B2: 24 DB           BCC    lD98F
 D9B4: A6 89 08 00     LDA    $0800,X
-D9B8: 91 C6           CMPA   <$C6            ; [$10C6]
+D9B8: 91 C6           CMPA   <hitbox         ; [$10C6]
 D9BA: 25 D3           BCS    lD98F
-D9BC: 91 C7           CMPA   <$C7            ; [$10C7]
+D9BC: 91 C7           CMPA   <hitbox+1       ; [$10C7]
 D9BE: 24 CF           BCC    lD98F
 D9C0: 7C 68 29        INC    IO62XX+$09      ; [$6829] 62XX $6829 (>= $0F:
                                              ; bang)
 D9C3: 7C 68 2A        INC    IO62XX+$0A      ; [$682A] 62XX byte 10
 D9C6: 86 01           LDA    #$01
-D9C8: B7 11 0F        STA    $110F
+D9C8: B7 11 0F        STA    player_exploding ; [$110F]
 D9CB: A7 C4           STA    ,U
 D9CD: 20 2D           BRA    lD9FC
 
-lD9CF:
+;------------------------------------------------------------------------------
+; fighter_reset_lose_life  ($D9CF) ; JS: lD9CF
+; -> src/game/main/gp2_3b_death.js
+; From $F8D2 (end of the explosion): reset the fighter (speeds, no dual
+; fighter, shots $0EA2-$0EA9, $1100/$1101), then lose_life.
+; Jumped to from: $F8D2
+;------------------------------------------------------------------------------
+fighter_reset_lose_life:
 D9CF: 86 02           LDA    #$02
 D9D1: 97 D1           STA    <player_step    ; [$10D1]
 D9D3: 86 01           LDA    #$01
@@ -5841,7 +6208,7 @@ D9ED: 86 06           LDA    #$06
 D9EF: B7 11 00        STA    $1100
 D9F2: 86 0C           LDA    #$0C
 D9F4: B7 11 01        STA    $1101
-D9F7: 7E DA EA        JMP    lDAEA
+D9F7: 7E DA EA        JMP    lose_life
 
 lD9FA:
 D9FA: 0A 1A           DEC    <$1A            ; [$101A]
@@ -5850,14 +6217,14 @@ lD9FC:
 D9FC: 0C 30           INC    <main_task      ; [$1030]
 D9FE: 7E FE B5        JMP    task_dispatch
 
-lDA01:
+player_dies:
 DA01: 7F 1F 21        CLR    $1F21
 DA04: 7F 1E 01        CLR    $1E01
 DA07: 86 01           LDA    #$01
-DA09: 97 FE           STA    <$FE            ; [$10FE]
+DA09: 97 FE           STA    <player_dying   ; [$10FE]
 DA0B: B7 60 54        STA    snd_request+20  ; [$6054]
 DA0E: 97 E9           STA    <$E9            ; [$10E9]
-DA10: 97 D9           STA    <$D9            ; [$10D9]
+DA10: 97 D9           STA    <player_frozen  ; [$10D9]
 DA12: 0F DB           CLR    <dual_fighter   ; [$10DB]
 DA14: 20 E4           BRA    lD9FA
 
@@ -5867,61 +6234,71 @@ DA19: 27 3C           BEQ    lDA57
 DA1B: 8E 02 CE        LDX    #TILE_RAM+$2CE  ; [#$02CE]
 DA1E: CE DA 33        LDU    #dat_DA33
 DA21: C6 0C           LDB    #$0C
-DA23: BD DC 1C        JSR    sub_DC1C
+DA23: BD DC 1C        JSR    print_string_attr_r
 DA26: 8E 02 D0        LDX    #TILE_RAM+$2D0  ; [#$02D0]
 DA29: CE DA 3D        LDU    #dat_DA3D
 DA2C: C6 01           LDB    #$01
-DA2E: BD DC 1C        JSR    sub_DC1C
+DA2E: BD DC 1C        JSR    print_string_attr_r
 DA31: 20 C9           BRA    lD9FC
 
-; Referenced from: $DA1E task_player_hit_check
+; Referenced from: $DA1E fighter_reset_lose_life
 dat_DA33:
 ;   "   PLAYER"
 DA33: 20 20 20 50 4C 41 59 45  FCB    $20,$20,$20,$50,$4C,$41,$59,$45
 DA3B: 52 00                    FCB    $52,$00
 
-; Referenced from: $DA29 task_player_hit_check
+; Referenced from: $DA29 fighter_reset_lose_life
 dat_DA3D:
 ;   "  GAME  OVER"
 DA3D: 20 20 47 41 4D 45 20 20  FCB    $20,$20,$47,$41,$4D,$45,$20,$20
 DA45: 4F 56 45 52 00           FCB    $4F,$56,$45,$52,$00
 
-; Referenced from: $DA68 task_player_hit_check, $DA72 task_player_hit_check,
-; $DA8A task_player_hit_check, $DA94 task_player_hit_check
+; Referenced from: $DA68 fighter_reset_lose_life, $DA72
+; fighter_reset_lose_life, $DA8A game_over_to_attract, $DA94
+; game_over_to_attract
 dat_DA4A:
 DA4A: 20 20 20 20 20 20 20 20  FCB    $20,$20,$20,$20,$20,$20,$20,$20
 DA52: 20 20 20 20 00           FCB    $20,$20,$20,$20,$00
 
 lDA57:
 DA57: 86 01           LDA    #$01
-DA59: 0F FE           CLR    <$FE            ; [$10FE]
+DA59: 0F FE           CLR    <player_dying   ; [$10FE]
 DA5B: 0F E9           CLR    <$E9            ; [$10E9]
-DA5D: 0F D9           CLR    <$D9            ; [$10D9]
+DA5D: 0F D9           CLR    <player_frozen  ; [$10D9]
 DA5F: 97 DB           STA    <dual_fighter   ; [$10DB]
 DA61: 96 2E           LDA    <two_players    ; [$102E]
-DA63: 27 22           BEQ    lDA87
+DA63: 27 22           BEQ    game_over_to_attract
 DA65: 8E 02 CE        LDX    #TILE_RAM+$2CE  ; [#$02CE]
 DA68: CE DA 4A        LDU    #dat_DA4A
 DA6B: 5F              CLRB
-DA6C: BD DC 1C        JSR    sub_DC1C
+DA6C: BD DC 1C        JSR    print_string_attr_r
 DA6F: 8E 02 D0        LDX    #TILE_RAM+$2D0  ; [#$02D0]
 DA72: CE DA 4A        LDU    #dat_DA4A
 DA75: 5F              CLRB
-DA76: BD DC 1C        JSR    sub_DC1C
+DA76: BD DC 1C        JSR    print_string_attr_r
 DA79: B6 11 04        LDA    lives_p1        ; [$1104]
-DA7C: 10 26 01 1D     LBNE   lDB9D
+DA7C: 10 26 01 1D     LBNE   switch_to_p1
 DA80: B6 11 05        LDA    lives_p2        ; [$1105]
-DA83: 10 26 00 7D     LBNE   lDB04
+DA83: 10 26 00 7D     LBNE   switch_to_p2
 
-lDA87:
+;------------------------------------------------------------------------------
+; game_over_to_attract  ($DA87) ; JS: lDA87
+; -> src/game/main/gp2_3b_death.js
+; End of a game (from $FC7D/$FC9F): clear the game RAM and sprites, wait a
+; frame, back to attract_loop.
+; QUIRK: clears $102A-$11FF (frame_sync, main_task included) but only the low
+; two bytes of each score.
+; Jumped to from: $DA63, $FC7D, $FC9F
+;------------------------------------------------------------------------------
+game_over_to_attract:
 DA87: 8E 02 CE        LDX    #TILE_RAM+$2CE  ; [#$02CE]
 DA8A: CE DA 4A        LDU    #dat_DA4A
 DA8D: 5F              CLRB
-DA8E: BD DC 1C        JSR    sub_DC1C
+DA8E: BD DC 1C        JSR    print_string_attr_r
 DA91: 8E 02 D0        LDX    #TILE_RAM+$2D0  ; [#$02D0]
 DA94: CE DA 4A        LDU    #dat_DA4A
 DA97: 5F              CLRB
-DA98: BD DC 1C        JSR    sub_DC1C
+DA98: BD DC 1C        JSR    print_string_attr_r
 DA9B: 8E 10 2A        LDX    #attract_step   ; [#$102A]
 DA9E: CC 00 00        LDD    #$0000
 
@@ -5960,7 +6337,7 @@ DAE3: 0F 30           CLR    <main_task      ; [$1030]
 DAE5: 0F 7A           CLR    <sub_task       ; [$107A]
 DAE7: 7E C4 17        JMP    attract_loop
 
-lDAEA:
+lose_life:
 DAEA: 96 2E           LDA    <two_players    ; [$102E]
 DAEC: 10 27 00 D6     LBEQ   lDBC6
 DAF0: 96 2D           LDA    <cur_player     ; [$102D]
@@ -5970,7 +6347,7 @@ DAF9: 10 27 00 D0     LBEQ   lDBCD
 DAFD: B6 11 05        LDA    lives_p2        ; [$1105]
 DB00: 10 27 03 6F     LBEQ   lDE73
 
-lDB04:
+switch_to_p2:
 DB04: 86 01           LDA    #$01
 DB06: 97 2D           STA    <cur_player     ; [$102D]
 DB08: 96 05           LDA    <cabinet        ; [$1005]
@@ -6013,7 +6390,7 @@ DB4B: 10 26 02 3B     LBNE   lDD8A
 DB4F: BD DF 19        JSR    sound_all_off
 DB52: BD DF 65        JSR    clear_sprite_shadows_all
 DB55: 8E 18 60        LDX    #formation_flags ; [#$1860]
-DB58: CE 1C 30        LDU    #$1C30
+DB58: CE 1C 30        LDU    #p1_saved_formation ; [#$1C30]
 
 lDB5B:
 DB5B: EC 81           LDD    ,X++
@@ -6023,21 +6400,21 @@ DB61: ED C1           STD    ,U++
 DB63: 8C 18 8E        CMPX   #$188E
 DB66: 26 F3           BNE    lDB5B
 DB68: B6 11 2B        LDA    $112B
-DB6B: B7 1C 5D        STA    $1C5D
+DB6B: B7 1C 5D        STA    p1_saved_formation+45 ; [$1C5D]
 DB6E: B6 0E 85        LDA    $0E85
-DB71: B7 1C 5E        STA    $1C5E
+DB71: B7 1C 5E        STA    p1_saved_formation+46 ; [$1C5E]
 DB74: 96 2F           LDA    <game_mode      ; [$102F]
-DB76: B7 11 2F        STA    $112F
+DB76: B7 11 2F        STA    p1_saved_mode   ; [$112F]
 DB79: 3C EF           CWAI   #$EF
-DB7B: 0F F8           CLR    <$F8            ; [$10F8]
-DB7D: 0F FC           CLR    <$FC            ; [$10FC]
-DB7F: 7F 11 18        CLR    $1118
-DB82: 7F 11 17        CLR    $1117
-DB85: 7F 11 16        CLR    $1116
+DB7B: 0F F8           CLR    <refill_request ; [$10F8]
+DB7D: 0F FC           CLR    <refill_step    ; [$10FC]
+DB7F: 7F 11 18        CLR    wing_group      ; [$1118]
+DB82: 7F 11 17        CLR    wing_sprite_idx ; [$1117]
+DB85: 7F 11 16        CLR    escort_step     ; [$1116]
 DB88: 0F 2F           CLR    <game_mode      ; [$102F]
 DB8A: 0F 30           CLR    <main_task      ; [$1030]
 DB8C: 0F 7A           CLR    <sub_task       ; [$107A]
-DB8E: 7E CD A1        JMP    lCDA1
+DB8E: 7E CD A1        JMP    start_turn
 
 lDB91:
 DB91: 7A 11 05        DEC    lives_p2        ; [$1105]
@@ -6045,7 +6422,7 @@ DB94: 27 60           BEQ    lDBF6
 DB96: B6 11 04        LDA    lives_p1        ; [$1104]
 DB99: 10 27 02 FD     LBEQ   lDE9A
 
-lDB9D:
+switch_to_p1:
 DB9D: 0F 2D           CLR    <cur_player     ; [$102D]
 DB9F: 0F 2C           CLR    <flip_screen    ; [$102C]
 DBA1: 86 04           LDA    #$04
@@ -6075,7 +6452,7 @@ DBC3: 7E DC 9B        JMP    lDC9B
 lDBC6:
 DBC6: 7A 11 04        DEC    lives_p1        ; [$1104]
 DBC9: 27 02           BEQ    lDBCD
-DBCB: 20 D0           BRA    lDB9D
+DBCB: 20 D0           BRA    switch_to_p1
 
 lDBCD:
 DBCD: 3C EF           CWAI   #$EF
@@ -6094,15 +6471,22 @@ DBDB: 0F 30           CLR    <main_task      ; [$1030]
 DBDD: 0F 7A           CLR    <sub_task       ; [$107A]
 DBDF: 7E FE B5        JMP    task_dispatch
 
-lDBE2:
+;------------------------------------------------------------------------------
+; after_name_entry_p1  ($DBE2) ; JS: lDBE2
+; -> src/game/main/gp2_3b_death.js
+; After player 1's high-score entry (from $B301): continue the game-over flow
+; for player 1.
+; Jumped to from: $B301
+;------------------------------------------------------------------------------
+after_name_entry_p1:
 DBE2: 86 31           LDA    #$31
 DBE4: B7 01 8E        STA    TILE_RAM+$18E   ; [$018E]
 DBE7: 86 0C           LDA    #$0C
 DBE9: B7 05 8E        STA    TILE_ATTR+$18E  ; [$058E]
 DBEC: 86 01           LDA    #$01
-DBEE: 97 71           STA    <$71            ; [$1071]
-DBF0: BD DE C1        JSR    sub_DEC1
-DBF3: 7E DA 01        JMP    lDA01
+DBEE: 97 71           STA    <refill_left    ; [$1071]
+DBF0: BD DE C1        JSR    count_game_time
+DBF3: 7E DA 01        JMP    player_dies
 
 lDBF6:
 DBF6: 4F              CLRA
@@ -6121,29 +6505,39 @@ DC04: 0F 30           CLR    <main_task      ; [$1030]
 DC06: 0F 7A           CLR    <sub_task       ; [$107A]
 DC08: 7E FE B5        JMP    task_dispatch
 
-lDC0B:
+;------------------------------------------------------------------------------
+; after_name_entry_p2  ($DC0B) ; JS: lDC0B
+; -> src/game/main/gp2_3b_death.js
+; After player 2's high-score entry (from $B2F6): continue the game-over flow
+; for player 2.
+; Jumped to from: $B2F6
+;------------------------------------------------------------------------------
+after_name_entry_p2:
 DC0B: 86 32           LDA    #$32
 DC0D: B7 01 8E        STA    TILE_RAM+$18E   ; [$018E]
 DC10: 86 0C           LDA    #$0C
 DC12: B7 05 8E        STA    TILE_ATTR+$18E  ; [$058E]
 DC15: 86 01           LDA    #$01
-DC17: 97 71           STA    <$71            ; [$1071]
-DC19: 7E DA 01        JMP    lDA01
+DC17: 97 71           STA    <refill_left    ; [$1071]
+DC19: 7E DA 01        JMP    player_dies
 
 ;------------------------------------------------------------------------------
-; sub_DC1C  ($DC1C)
-; Called from: $DA23 task_player_hit_check, $DA2E task_player_hit_check, $DA6C
-; task_player_hit_check, $DA76 task_player_hit_check, $DA8E
-; task_player_hit_check, $DA98 task_player_hit_check
+; print_string_attr_r  ($DC1C) ; JS: sub_DC1C
+; -> src/game/main/gp2_3b_death.js
+; Print the zero-terminated string at U from tile X going right (X -= $20 per
+; char), attribute B for each. Out: X, U past the end.
+; Called from: $DA23 fighter_reset_lose_life, $DA2E fighter_reset_lose_life,
+; $DA6C fighter_reset_lose_life, $DA76 fighter_reset_lose_life, $DA8E
+; game_over_to_attract, $DA98 game_over_to_attract
 ; Jumped to from: $DC29
 ;------------------------------------------------------------------------------
-sub_DC1C:
+print_string_attr_r:
 DC1C: A6 C0           LDA    ,U+
 DC1E: 27 0B           BEQ    lDC2B
 DC20: A7 84           STA    ,X
 DC22: E7 89 04 00     STB    TILE_ATTR,X     ; [$0400]
 DC26: 30 88 E0        LEAX   -$20,X
-DC29: 20 F1           BRA    sub_DC1C
+DC29: 20 F1           BRA    print_string_attr_r
 
 lDC2B:
 DC2B: 39              RTS
@@ -6152,11 +6546,12 @@ lDC2C:
 DC2C: 96 2F           LDA    <game_mode      ; [$102F]
 DC2E: 81 03           CMPA   #$03
 DC30: 10 27 00 B6     LBEQ   lDCEA
-DC34: 20 02           BRA    lDC38
-DC36: 3C EF                    FCB    $3C,$EF ; [unreached]
+DC34: 20 02           BRA    new_ship
+DC36: 3C EF                    FCB    $3C,$EF ; QUIRK: CWAI skipped by the BRA
+                                             ; at $DC34: unreached [unreached]
 
-lDC38:
-DC38: 0F F8           CLR    <$F8            ; [$10F8]
+new_ship:
+DC38: 0F F8           CLR    <refill_request ; [$10F8]
 DC3A: 96 2E           LDA    <two_players    ; [$102E]
 DC3C: 27 12           BEQ    lDC50
 DC3E: F6 11 06        LDB    stage_p1        ; [$1106]
@@ -6172,7 +6567,7 @@ DC4D: BD B6 56        JSR    load_formation_sprites
 lDC50:
 DC50: 96 2C           LDA    <flip_screen    ; [$102C]
 DC52: 26 14           BNE    lDC68
-DC54: 7F 11 70        CLR    $1170
+DC54: 7F 11 70        CLR    star_dir_flags  ; [$1170]
 DC57: 86 87           LDA    #$87
 DC59: B7 A0 01        STA    STARFIELD+$01   ; [$A001]
 DC5C: 86 06           LDA    #$06
@@ -6183,7 +6578,7 @@ DC66: 20 14           BRA    lDC7C
 
 lDC68:
 DC68: 86 02           LDA    #$02
-DC6A: B7 11 70        STA    $1170
+DC6A: B7 11 70        STA    star_dir_flags  ; [$1170]
 DC6D: 86 87           LDA    #$87
 DC6F: B7 A0 01        STA    STARFIELD+$01   ; [$A001]
 DC72: 86 00           LDA    #$00
@@ -6194,8 +6589,8 @@ DC79: B7 A0 02        STA    STARFIELD+$02   ; [$A002]
 lDC7C:
 DC7C: B6 11 19        LDA    $1119
 DC7F: B7 11 1A        STA    $111A
-DC82: 0F 71           CLR    <$71            ; [$1071]
-DC84: 0F 18           CLR    <$18            ; [$1018]
+DC82: 0F 71           CLR    <refill_left    ; [$1071]
+DC84: 0F 18           CLR    <seq_step       ; [$1018]
 DC86: 7F 1F 2D        CLR    $1F2D
 DC89: 3C EF           CWAI   #$EF
 DC8B: 86 05           LDA    #$05
@@ -6210,12 +6605,12 @@ lDC9B:
 DC9B: 96 2E           LDA    <two_players    ; [$102E]
 DC9D: 10 27 FF 8B     LBEQ   lDC2C
 DCA1: 96 2F           LDA    <game_mode      ; [$102F]
-DCA3: B7 11 30        STA    $1130
-DCA6: B6 11 2F        LDA    $112F
+DCA3: B7 11 30        STA    p2_saved_mode   ; [$1130]
+DCA6: B6 11 2F        LDA    p1_saved_mode   ; [$112F]
 DCA9: 81 03           CMPA   #$03
 DCAB: 26 63           BNE    lDD10
 DCAD: 8E 18 60        LDX    #formation_flags ; [#$1860]
-DCB0: CE 1C 60        LDU    #$1C60
+DCB0: CE 1C 60        LDU    #p2_saved_formation ; [#$1C60]
 
 lDCB3:
 DCB3: EC 81           LDD    ,X++
@@ -6225,31 +6620,31 @@ DCB9: ED C1           STD    ,U++
 DCBB: 8C 18 8E        CMPX   #$188E
 DCBE: 26 F3           BNE    lDCB3
 DCC0: B6 11 2B        LDA    $112B
-DCC3: B7 1C 8D        STA    $1C8D
+DCC3: B7 1C 8D        STA    p2_saved_formation+45 ; [$1C8D]
 DCC6: B6 0E 85        LDA    $0E85
-DCC9: B7 1C 8E        STA    $1C8E
+DCC9: B7 1C 8E        STA    p2_saved_formation+46 ; [$1C8E]
 DCCC: 8E 18 60        LDX    #formation_flags ; [#$1860]
-DCCF: CE 1C 30        LDU    #$1C30
+DCCF: CE 1C 30        LDU    #p1_saved_formation ; [#$1C30]
 
 lDCD2:
 DCD2: EC C1           LDD    ,U++
 DCD4: ED 81           STD    ,X++
 DCD6: 8C 18 8E        CMPX   #$188E
 DCD9: 26 F7           BNE    lDCD2
-DCDB: B6 1C 5D        LDA    $1C5D
+DCDB: B6 1C 5D        LDA    p1_saved_formation+45 ; [$1C5D]
 DCDE: B7 11 2B        STA    $112B
-DCE1: B6 1C 5E        LDA    $1C5E
+DCE1: B6 1C 5E        LDA    p1_saved_formation+46 ; [$1C5E]
 DCE4: B7 0E 85        STA    $0E85
 DCE7: B7 0E 2D        STA    sprite_shadow_1+45 ; [$0E2D]
 
 lDCEA:
 DCEA: BD DF 19        JSR    sound_all_off
 DCED: BD DF 5D        JSR    clear_sprite_shadows
-DCF0: 0F F8           CLR    <$F8            ; [$10F8]
-DCF2: 0F FC           CLR    <$FC            ; [$10FC]
-DCF4: 7F 11 18        CLR    $1118
-DCF7: 7F 11 17        CLR    $1117
-DCFA: 7F 11 16        CLR    $1116
+DCF0: 0F F8           CLR    <refill_request ; [$10F8]
+DCF2: 0F FC           CLR    <refill_step    ; [$10FC]
+DCF4: 7F 11 18        CLR    wing_group      ; [$1118]
+DCF7: 7F 11 17        CLR    wing_sprite_idx ; [$1117]
+DCFA: 7F 11 16        CLR    escort_step     ; [$1116]
 DCFD: 3C EF           CWAI   #$EF
 DCFF: 7C 60 45        INC    snd_request+5   ; [$6045]
 DD02: 86 81           LDA    #$81
@@ -6260,15 +6655,15 @@ DD0B: 0F 30           CLR    <main_task      ; [$1030]
 DD0D: 7E FE B5        JMP    task_dispatch
 
 lDD10:
-DD10: B6 11 80        LDA    $1180
-DD13: 10 26 FF 21     LBNE   lDC38
+DD10: B6 11 80        LDA    p2_out_flag     ; [$1180]
+DD13: 10 26 FF 21     LBNE   new_ship
 DD17: B6 11 05        LDA    lives_p2        ; [$1105]
 DD1A: 26 03           BNE    lDD1F
-DD1C: 7C 11 80        INC    $1180
+DD1C: 7C 11 80        INC    p2_out_flag     ; [$1180]
 
 lDD1F:
 DD1F: 8E 18 60        LDX    #formation_flags ; [#$1860]
-DD22: CE 1C 60        LDU    #$1C60
+DD22: CE 1C 60        LDU    #p2_saved_formation ; [#$1C60]
 
 lDD25:
 DD25: EC 81           LDD    ,X++
@@ -6278,48 +6673,48 @@ DD2B: ED C1           STD    ,U++
 DD2D: 8C 18 8E        CMPX   #$188E
 DD30: 26 F3           BNE    lDD25
 DD32: B6 11 2B        LDA    $112B
-DD35: B7 1C 8D        STA    $1C8D
+DD35: B7 1C 8D        STA    p2_saved_formation+45 ; [$1C8D]
 DD38: B6 0E 85        LDA    $0E85
-DD3B: B7 1C 8E        STA    $1C8E
+DD3B: B7 1C 8E        STA    p2_saved_formation+46 ; [$1C8E]
 DD3E: 8E 18 60        LDX    #formation_flags ; [#$1860]
-DD41: CE 1C 30        LDU    #$1C30
+DD41: CE 1C 30        LDU    #p1_saved_formation ; [#$1C30]
 
 lDD44:
 DD44: EC C1           LDD    ,U++
 DD46: ED 81           STD    ,X++
 DD48: 8C 18 8E        CMPX   #$188E
 DD4B: 26 F7           BNE    lDD44
-DD4D: B6 1C 5D        LDA    $1C5D
+DD4D: B6 1C 5D        LDA    p1_saved_formation+45 ; [$1C5D]
 DD50: B7 11 2B        STA    $112B
-DD53: B6 1C 5E        LDA    $1C5E
+DD53: B6 1C 5E        LDA    p1_saved_formation+46 ; [$1C5E]
 DD56: B7 0E 85        STA    $0E85
 DD59: B7 0E 2D        STA    sprite_shadow_1+45 ; [$0E2D]
 DD5C: CC A4 4B        LDD    #$A44B
 DD5F: FD 18 54        STD    $1854
 DD62: FD 18 56        STD    $1856
 DD65: FD 18 58        STD    $1858
-DD68: 0F F8           CLR    <$F8            ; [$10F8]
-DD6A: 0F FC           CLR    <$FC            ; [$10FC]
+DD68: 0F F8           CLR    <refill_request ; [$10F8]
+DD6A: 0F FC           CLR    <refill_step    ; [$10FC]
 DD6C: BD DF 19        JSR    sound_all_off
 DD6F: BD DF 5D        JSR    clear_sprite_shadows
 DD72: 3C EF           CWAI   #$EF
-DD74: 0F AC           CLR    <$AC            ; [$10AC]
+DD74: 0F AC           CLR    <formation_started ; [$10AC]
 DD76: CC 00 00        LDD    #$0000
 DD79: FD 0E 88        STD    $0E88
 DD7C: CC 28 A8        LDD    #$28A8
-DD7F: FD 16 88        STD    $1688
+DD7F: FD 16 88        STD    formation_y     ; [$1688]
 DD82: CE AD CF        LDU    #dat_ADCF
-DD85: DF 82           STU    <$82            ; [$1082]
-DD87: 7E DC 38        JMP    lDC38
+DD85: DF 82           STU    <formation_path_ptr ; [$1082]
+DD87: 7E DC 38        JMP    new_ship
 
 lDD8A:
 DD8A: 96 2F           LDA    <game_mode      ; [$102F]
-DD8C: B7 11 2F        STA    $112F
-DD8F: B6 11 30        LDA    $1130
+DD8C: B7 11 2F        STA    p1_saved_mode   ; [$112F]
+DD8F: B6 11 30        LDA    p2_saved_mode   ; [$1130]
 DD92: 81 03           CMPA   #$03
 DD94: 26 63           BNE    lDDF9
 DD96: 8E 18 60        LDX    #formation_flags ; [#$1860]
-DD99: CE 1C 30        LDU    #$1C30
+DD99: CE 1C 30        LDU    #p1_saved_formation ; [#$1C30]
 
 lDD9C:
 DD9C: EC 81           LDD    ,X++
@@ -6329,29 +6724,29 @@ DDA2: ED C1           STD    ,U++
 DDA4: 8C 18 8E        CMPX   #$188E
 DDA7: 26 F3           BNE    lDD9C
 DDA9: B6 11 2B        LDA    $112B
-DDAC: B7 1C 5D        STA    $1C5D
+DDAC: B7 1C 5D        STA    p1_saved_formation+45 ; [$1C5D]
 DDAF: B6 0E 85        LDA    $0E85
-DDB2: B7 1C 5E        STA    $1C5E
+DDB2: B7 1C 5E        STA    p1_saved_formation+46 ; [$1C5E]
 DDB5: 8E 18 60        LDX    #formation_flags ; [#$1860]
-DDB8: CE 1C 60        LDU    #$1C60
+DDB8: CE 1C 60        LDU    #p2_saved_formation ; [#$1C60]
 
 lDDBB:
 DDBB: EC C1           LDD    ,U++
 DDBD: ED 81           STD    ,X++
 DDBF: 8C 18 8E        CMPX   #$188E
 DDC2: 26 F7           BNE    lDDBB
-DDC4: B6 1C 8D        LDA    $1C8D
+DDC4: B6 1C 8D        LDA    p2_saved_formation+45 ; [$1C8D]
 DDC7: B7 11 2B        STA    $112B
-DDCA: B6 1C 8E        LDA    $1C8E
+DDCA: B6 1C 8E        LDA    p2_saved_formation+46 ; [$1C8E]
 DDCD: B7 0E 85        STA    $0E85
 DDD0: B7 0E 2D        STA    sprite_shadow_1+45 ; [$0E2D]
 DDD3: BD DF 19        JSR    sound_all_off
 DDD6: BD DF 5D        JSR    clear_sprite_shadows
-DDD9: 0F F8           CLR    <$F8            ; [$10F8]
-DDDB: 0F FC           CLR    <$FC            ; [$10FC]
-DDDD: 7F 11 18        CLR    $1118
-DDE0: 7F 11 17        CLR    $1117
-DDE3: 7F 11 16        CLR    $1116
+DDD9: 0F F8           CLR    <refill_request ; [$10F8]
+DDDB: 0F FC           CLR    <refill_step    ; [$10FC]
+DDDD: 7F 11 18        CLR    wing_group      ; [$1118]
+DDE0: 7F 11 17        CLR    wing_sprite_idx ; [$1117]
+DDE3: 7F 11 16        CLR    escort_step     ; [$1116]
 DDE6: 3C EF           CWAI   #$EF
 DDE8: 7C 60 45        INC    snd_request+5   ; [$6045]
 DDEB: 86 81           LDA    #$81
@@ -6362,15 +6757,15 @@ DDF4: 0F 30           CLR    <main_task      ; [$1030]
 DDF6: 7E FE B5        JMP    task_dispatch
 
 lDDF9:
-DDF9: B6 11 7F        LDA    $117F
-DDFC: 10 26 FE 38     LBNE   lDC38
+DDF9: B6 11 7F        LDA    p1_out_flag     ; [$117F]
+DDFC: 10 26 FE 38     LBNE   new_ship
 DE00: B6 11 04        LDA    lives_p1        ; [$1104]
 DE03: 26 03           BNE    lDE08
-DE05: 7C 11 7F        INC    $117F
+DE05: 7C 11 7F        INC    p1_out_flag     ; [$117F]
 
 lDE08:
 DE08: 8E 18 60        LDX    #formation_flags ; [#$1860]
-DE0B: CE 1C 30        LDU    #$1C30
+DE0B: CE 1C 30        LDU    #p1_saved_formation ; [#$1C30]
 
 lDE0E:
 DE0E: EC 81           LDD    ,X++
@@ -6380,45 +6775,45 @@ DE14: ED C1           STD    ,U++
 DE16: 8C 18 8E        CMPX   #$188E
 DE19: 26 F3           BNE    lDE0E
 DE1B: B6 11 2B        LDA    $112B
-DE1E: B7 1C 5D        STA    $1C5D
+DE1E: B7 1C 5D        STA    p1_saved_formation+45 ; [$1C5D]
 DE21: B6 0E 85        LDA    $0E85
-DE24: B7 1C 5E        STA    $1C5E
+DE24: B7 1C 5E        STA    p1_saved_formation+46 ; [$1C5E]
 DE27: 8E 18 60        LDX    #formation_flags ; [#$1860]
-DE2A: CE 1C 60        LDU    #$1C60
+DE2A: CE 1C 60        LDU    #p2_saved_formation ; [#$1C60]
 
 lDE2D:
 DE2D: EC C1           LDD    ,U++
 DE2F: ED 81           STD    ,X++
 DE31: 8C 18 8E        CMPX   #$188E
 DE34: 26 F7           BNE    lDE2D
-DE36: B6 1C 8D        LDA    $1C8D
+DE36: B6 1C 8D        LDA    p2_saved_formation+45 ; [$1C8D]
 DE39: B7 11 2B        STA    $112B
-DE3C: B6 1C 8E        LDA    $1C8E
+DE3C: B6 1C 8E        LDA    p2_saved_formation+46 ; [$1C8E]
 DE3F: B7 0E 85        STA    $0E85
 DE42: B7 0E 2D        STA    sprite_shadow_1+45 ; [$0E2D]
 DE45: CC A4 4B        LDD    #$A44B
 DE48: FD 18 54        STD    $1854
 DE4B: FD 18 56        STD    $1856
 DE4E: FD 18 58        STD    $1858
-DE51: 0F F8           CLR    <$F8            ; [$10F8]
-DE53: 0F FC           CLR    <$FC            ; [$10FC]
+DE51: 0F F8           CLR    <refill_request ; [$10F8]
+DE53: 0F FC           CLR    <refill_step    ; [$10FC]
 DE55: BD DF 19        JSR    sound_all_off
 DE58: BD DF 5D        JSR    clear_sprite_shadows
 DE5B: 3C EF           CWAI   #$EF
-DE5D: 0F AC           CLR    <$AC            ; [$10AC]
+DE5D: 0F AC           CLR    <formation_started ; [$10AC]
 DE5F: CC 00 00        LDD    #$0000
 DE62: FD 0E 88        STD    $0E88
 DE65: CC 28 A8        LDD    #$28A8
-DE68: FD 16 88        STD    $1688
+DE68: FD 16 88        STD    formation_y     ; [$1688]
 DE6B: CE AD CF        LDU    #dat_ADCF
-DE6E: DF 82           STU    <$82            ; [$1082]
-DE70: 7E DC 38        JMP    lDC38
+DE6E: DF 82           STU    <formation_path_ptr ; [$1082]
+DE70: 7E DC 38        JMP    new_ship
 
 lDE73:
 DE73: 96 2F           LDA    <game_mode      ; [$102F]
-DE75: B7 11 2F        STA    $112F
+DE75: B7 11 2F        STA    p1_saved_mode   ; [$112F]
 DE78: 8E 18 60        LDX    #formation_flags ; [#$1860]
-DE7B: CE 1C 30        LDU    #$1C30
+DE7B: CE 1C 30        LDU    #p1_saved_formation ; [#$1C30]
 
 lDE7E:
 DE7E: EC 81           LDD    ,X++
@@ -6428,16 +6823,17 @@ DE84: ED C1           STD    ,U++
 DE86: 8C 18 8E        CMPX   #$188E
 DE89: 26 F3           BNE    lDE7E
 DE8B: B6 11 2B        LDA    $112B
-DE8E: B7 1C 5D        STA    $1C5D
+DE8E: B7 1C 5D        STA    p1_saved_formation+45 ; [$1C5D]
 DE91: B6 0E 85        LDA    $0E85
-DE94: B7 1C 5E        STA    $1C5E
-DE97: 7E DB 9D        JMP    lDB9D
+DE94: B7 1C 5E        STA    p1_saved_formation+46 ; [$1C5E]
+DE97: 7E DB 9D        JMP    switch_to_p1
 
 lDE9A:
-DE9A: 96 2F           LDA    <game_mode      ; [$102F]
-DE9C: B6 11 30        LDA    $1130
+DE9A: 96 2F           LDA    <game_mode      ; QUIRK: dead load (A is
+                                             ; overwritten before use) [$102F]
+DE9C: B6 11 30        LDA    p2_saved_mode   ; [$1130]
 DE9F: 8E 18 60        LDX    #formation_flags ; [#$1860]
-DEA2: CE 1C 60        LDU    #$1C60
+DEA2: CE 1C 60        LDU    #p2_saved_formation ; [#$1C60]
 
 lDEA5:
 DEA5: EC 81           LDD    ,X++
@@ -6447,16 +6843,21 @@ DEAB: ED C1           STD    ,U++
 DEAD: 8C 18 8E        CMPX   #$188E
 DEB0: 26 F3           BNE    lDEA5
 DEB2: B6 11 2B        LDA    $112B
-DEB5: B7 1C 8D        STA    $1C8D
+DEB5: B7 1C 8D        STA    p2_saved_formation+45 ; [$1C8D]
 DEB8: B6 0E 85        LDA    $0E85
-DEBB: B7 1C 8E        STA    $1C8E
+DEBB: B7 1C 8E        STA    p2_saved_formation+46 ; [$1C8E]
 DEBE: 7E DB 10        JMP    lDB10
 
 ;------------------------------------------------------------------------------
-; sub_DEC1  ($DEC1)
-; Called from: $DBF0 task_player_hit_check
+; count_game_time  ($DEC1) ; JS: sub_DEC1
+; -> src/game/main/gp2_3b_death.js
+; If player 1 played at least a second, add one (BCD) to the stats counter
+; $09D6+i for his play time in minutes (i = 0-10: 0..6, 7-9, 10-14, 15-24, 25+
+; min); then clear p1_time.
+; QUIRK: 25+ minutes count into $09E0, past stats_counters.
+; Called from: $DBF0 after_name_entry_p1
 ;------------------------------------------------------------------------------
-sub_DEC1:
+count_game_time:
 DEC1: B6 09 FD        LDA    p1_time+1       ; [$09FD]
 DEC4: 27 52           BEQ    lDF18
 DEC6: 8E 09 D6        LDX    #stats_counters ; [#$09D6]
@@ -6506,11 +6907,12 @@ DF18: 39              RTS
 
 ;------------------------------------------------------------------------------
 ; sound_all_off  ($DF19)
+; -> src/game/main/gp2_3b_irq.js
 ; Clear every sound request $6040-$605F and state $6060-$607F.
 ; Called from: $B25F hiscore_draw_screen, $B2E0 hiscore_draw_screen, $B49F
-; hiscore_check, $D031 demo_input, $D69D task_stage_clear, $DB4F
-; task_player_hit_check, $DCEA sub_DC1C, $DD6C sub_DC1C, $DDD3 sub_DC1C, $DE55
-; sub_DC1C
+; hiscore_check, $D031 demo_end, $D69D task_stage_clear, $DB4F
+; game_over_to_attract, $DCEA print_string_attr_r, $DD6C print_string_attr_r,
+; $DDD3 print_string_attr_r, $DE55 print_string_attr_r
 ;------------------------------------------------------------------------------
 sound_all_off:
 DF19: 8E 60 40        LDX    #snd_request    ; [#$6040]
@@ -6524,9 +6926,12 @@ DF26: 39              RTS
 
 ;------------------------------------------------------------------------------
 ; sound_demo_gate  ($DF27)
+; -> src/game/main/gp2_3b_irq.js
 ; Silence the attract sounds unless the demo-sounds DIP is on (keeps
 ; the coin sound $6056).
-; Called from: $C00E irq_main, $C0A1 irq_main, $DADC task_player_hit_check
+; QUIRK: with the demo-sounds DIP clear sounds $11, $16, $17 and $19-$1F keep
+; playing (LEAX skips), not just $16.
+; Called from: $C00E irq_main, $C0A1 irq_main, $DADC game_over_to_attract
 ;------------------------------------------------------------------------------
 sound_demo_gate:
 DF27: 8E 60 40        LDX    #snd_request    ; [#$6040]
@@ -6539,7 +6944,9 @@ DF31: 6F 88 20        CLR    $20,X
 DF34: 6F 80           CLR    ,X+
 DF36: 8C 60 51        CMPX   #$6051
 DF39: 26 F6           BNE    lDF31
-DF3B: 30 01           LEAX   $1,X
+DF3B: 30 01           LEAX   $1,X            ; QUIRK: skips $6051; with demo
+                                             ; sounds off $11, $16, $17,
+                                             ; $19-$1F keep playing
 
 lDF3D:
 DF3D: 6F 88 20        CLR    $20,X
@@ -6561,9 +6968,12 @@ DF5B: 20 BF           BRA    lDF1C
 
 ;------------------------------------------------------------------------------
 ; clear_sprite_shadows  ($DF5D)
-; Called from: $AFCD hiscore_draw_screen, $C09E irq_main, $CDA6 start_game_1p,
-; $D02E demo_input, $DCED sub_DC1C, $DD6F sub_DC1C, $DDD6 sub_DC1C, $DE58
-; sub_DC1C
+; -> src/game/main/gp2_3b_irq.js
+; Take every sprite shadow entry but the player's out of use (flags from $1E03,
+; positions from $1602).
+; Called from: $AFCD hiscore_draw_screen, $C09E irq_main, $CDA6 start_turn,
+; $D02E demo_end, $DCED print_string_attr_r, $DD6F print_string_attr_r, $DDD6
+; print_string_attr_r, $DE58 print_string_attr_r
 ;------------------------------------------------------------------------------
 clear_sprite_shadows:
 DF5D: 8E 1E 03        LDX    #$1E03
@@ -6572,7 +6982,9 @@ DF63: 20 06           BRA    lDF6B
 
 ;------------------------------------------------------------------------------
 ; clear_sprite_shadows_all  ($DF65)
-; Called from: $DB52 task_player_hit_check
+; -> src/game/main/gp2_3b_irq.js
+; The same as clear_sprite_shadows, including the player (from $1E01 / $1600).
+; Called from: $DB52 game_over_to_attract
 ;------------------------------------------------------------------------------
 clear_sprite_shadows_all:
 DF65: 8E 1E 01        LDX    #$1E01
@@ -6650,6 +7062,7 @@ DFFF: 15                       FCB    $15
 
 ;------------------------------------------------------------------------------
 ; reset_main  ($E000)
+; -> src/game/main/gp2_2b_boot.js
 ; Power-on / watchdog reset. Boot sequence:
 ;  1. hold sub + sound CPUs in reset (SRESET), let the I/O chips run,
 ;     mask the IRQ, DP = $10, S = $1600;
@@ -6687,7 +7100,8 @@ E00F: 10 CE 16 00     LDS    #player_y       ; main stack below $1600 [#$1600]
 ; Custom I/O chips: 56XX command 1, 58XX command 0.
 E013: CC 01 FF        LDD    #$01FF          ; 56XX: command 1 (switches), arg
                                              ; 9 = F
-E016: FD 68 08        STD    IO56XX+$08      ; [$6808] 56XX command
+E016: FD 68 08        STD    IO56XX+$08      ; 56XX command 1 (switches), arg 9
+                                             ; = F [$6808] 56XX command
 E019: 7F 68 18        CLR    IO58XX+$08      ; 58XX: command 0 (nop) [$6818]
                                              ; 58XX command
 
@@ -6696,13 +7110,19 @@ E01C: 8E 00 00        LDX    #$0000          ; tilemap: $00,$20 pairs
 E01F: CE 00 20        LDU    #TILE_RAM+$20   ; [#$0020]
 
 lE022:
-E022: EF 81           STU    ,X++
+E022: EF 81           STU    ,X++            ; tilemap = $00,$20 pairs. 15
+                                             ; cycles per word; each store
+                                             ; lands in the frame it starts in
 E024: 8C 04 00        CMPX   #$0400
 E027: 26 F9           BNE    lE022
 E029: CE 00 00        LDU    #$0000          ; clear $0400-$1FFF
 
 lE02C:
-E02C: 10 BE 7C 00     LDY    WATCHDOG        ; [$7C00]
+E02C: 10 BE 7C 00     LDY    WATCHDOG        ; clear $0400-$1FFF. LDY reads
+                                             ; $7C00 and $7C01: two watchdog
+                                             ; kicks per word. 22 cycles per
+                                             ; word; the store starts 7 cycles
+                                             ; into the iteration [$7C00]
 E030: EF 81           STU    ,X++
 E032: 8C 20 00        CMPX   #$2000
 E035: 26 F5           BNE    lE02C
@@ -6740,7 +7160,8 @@ E071: A7 80           STA    ,X+
 E073: 17 DD AF        LBSR   delay_65536
 
 lE076:
-E076: E7 C0           STB    ,U+
+E076: E7 C0           STB    ,U+             ; args 9-15 = F on both chips,
+                                             ; interleaved. 20 cycles per pass
 E078: E7 80           STB    ,X+
 E07A: 11 83 68 10     CMPU   #$6810
 E07E: 26 F6           BNE    lE076
@@ -6784,17 +7205,27 @@ E0C2: CC 20 33        LDD    #$2033          ; error '3': 62XX
 
 ;------------------------------------------------------------------------------
 ; boot_chip_error  ($E0C5)
+; -> src/game/main/gp2_2b_boot.js
 ; Custom I/O chip check failed: hang (watchdog resets the board).
 ; Jumped to from: $E093, $E0A5, $E0C5
 ;------------------------------------------------------------------------------
 boot_chip_error:
 E0C5: 20 FE           BRA    boot_chip_error
 
+;------------------------------------------------------------------------------
+; boot_handshake  ($E0C7)
+; -> src/game/main/gp2_2b_boot.js
+; Release the sub and sound CPUs (SRESET off), write $11 to $6040 and $0800 and
+; wait for both to answer $22; then read the switches and DIPs and decode them.
+; Jumped to from: $E0C0
+;------------------------------------------------------------------------------
 ; Start the sub and sound CPUs and wait for their checksums.
 boot_handshake:
 E0C7: B7 84 00        STA    SRESET_OFF      ; sub + sound CPUs start [$8400]
 E0CA: 86 11           LDA    #$11            ; $11: start your ROM checksum
-E0CC: B7 60 40        STA    snd_request     ; [$6040]
+E0CC: B7 60 40        STA    snd_request     ; the sound and sub CPUs, running
+                                             ; now, poll these: timing points
+                                             ; [$6040]
 E0CF: B7 08 00        STA    sub_handshake   ; [$0800]
 
 lE0D2:
@@ -6816,7 +7247,9 @@ E0E8: CC 00 00        LDD    #$0000
 E0EB: 8E 78 20        LDX    #$7820
 
 lE0EE:
-E0EE: ED 81           STD    ,X++
+E0EE: ED 81           STD    ,X++            ; 15 cycles a pass; every byte
+                                             ; written is an IRQ-off latch
+                                             ; write
 E0F0: 8C 78 30        CMPX   #$7830
 E0F3: 26 F9           BNE    lE0EE
 
@@ -6835,7 +7268,10 @@ E10B: CE 68 00        LDU    #IO56XX         ; copy the switch nibbles to $1006
 E10E: 8E 10 06        LDX    #boot_switches  ; [#$1006]
 
 lE111:
-E111: A6 C0           LDA    ,U+
+E111: A6 C0           LDA    ,U+             ; the switch nibbles to
+                                             ; boot_switches $1006-$1009 (22
+                                             ; cycles a pass; the store starts
+                                             ; 8 cycles in)
 E113: 84 0F           ANDA   #$0F
 E115: A7 80           STA    ,X+
 E117: 11 83 68 04     CMPU   #$6804
@@ -6889,99 +7325,106 @@ E16F: A6 84           LDA    ,X
 E171: 97 03           STA    <bonus_every    ; [$1003]
 E173: 7E E1 CA        JMP    boot_check_service
 
-; Referenced from: $E127 boot_chip_error
+; Referenced from: $E127 boot_handshake
 dsw_coin_a_ptrs:
 E176: E1 7E E1 80 E1 82 E1 84  FDB    dat_E17E,dat_E180,dat_E182,dat_E184
                                              ; coin A: coins, credits [0] $E17E
                                              ; $E180 $E182 $E184
 
-; Referenced from: $E176 boot_chip_error
+; Referenced from: $E176 boot_handshake
 dat_E17E:
 E17E: 01 01                    FCB    $01,$01
 
-; Referenced from: $E178 boot_chip_error
+; Referenced from: $E178 boot_handshake
 dat_E180:
 E180: 01 02                    FCB    $01,$02
 
-; Referenced from: $E17A boot_chip_error
+; Referenced from: $E17A boot_handshake
 dat_E182:
 E182: 02 01                    FCB    $02,$01
 
-; Referenced from: $E17C boot_chip_error
+; Referenced from: $E17C boot_handshake
 dat_E184:
 E184: 03 01                    FCB    $03,$01
 
-; Referenced from: $E136 boot_chip_error
+; Referenced from: $E136 boot_handshake
 dsw_coin_b_ptrs:
 E186: E1 8E E1 90 E1 92 E1 94  FDB    dat_E18E,dat_E190,dat_E192,dat_E194
                                              ; coin B: coins, credits [0] $E18E
                                              ; $E190 $E192 $E194
 
-; Referenced from: $E186 boot_chip_error
+; Referenced from: $E186 boot_handshake
 dat_E18E:
 E18E: 01 01                    FCB    $01,$01
 
-; Referenced from: $E188 boot_chip_error
+; Referenced from: $E188 boot_handshake
 dat_E190:
 E190: 01 02                    FCB    $01,$02
 
-; Referenced from: $E18A boot_chip_error
+; Referenced from: $E18A boot_handshake
 dat_E192:
 E192: 02 01                    FCB    $02,$01
 
-; Referenced from: $E18C boot_chip_error
+; Referenced from: $E18C boot_handshake
 dat_E194:
 E194: 03 01                    FCB    $03,$01
 
-; Referenced from: $E146 boot_chip_error
+; Referenced from: $E146 boot_handshake
 dsw_lives_table:
 E196: 03 02 04 05              FCB    $03,$02,$04,$05 ; lives for DSW 0-3
 
-; Referenced from: $E152 boot_chip_error
+; Referenced from: $E152 boot_handshake
 dsw_difficulty_table:
 E19A: 00 01 02 03 04 05 06 07  FCB    $00,$01,$02,$03,$04,$05,$06,$07
                                              ; difficulty for DSW 0-7
 
-; Referenced from: $E166 boot_chip_error
+; Referenced from: $E166 boot_handshake
 dsw_bonus_ptrs:
 E1A2: E1 B2 E1 B5 E1 B8 E1 BB  FDB    dat_E1B2,dat_E1B5,dat_E1B8,dat_E1BB
                                              ; [0] $E1B2 $E1B5 $E1B8 $E1BB
 E1AA: E1 BE E1 C1 E1 C4 E1 C7  FDB    dat_E1BE,dat_E1C1,dat_E1C4,dat_E1C7
                                              ; [4] $E1BE $E1C1 $E1C4 $E1C7
 
-; Referenced from: $E1A2 boot_chip_error
+; Referenced from: $E1A2 boot_handshake
 dat_E1B2:
 E1B2: 05 15 0F                 FCB    $05,$15,$0F ; bonus life: first, second,
                                              ; every (x 10000, BCD)
 
-; Referenced from: $E1A4 boot_chip_error
+; Referenced from: $E1A4 boot_handshake
 dat_E1B5:
 E1B5: 05 15 00                 FCB    $05,$15,$00
 
-; Referenced from: $E1A6 boot_chip_error
+; Referenced from: $E1A6 boot_handshake
 dat_E1B8:
 E1B8: 05 15 1E                 FCB    $05,$15,$1E
 
-; Referenced from: $E1A8 boot_chip_error
+; Referenced from: $E1A8 boot_handshake
 dat_E1BB:
 E1BB: 05 10 14                 FCB    $05,$10,$14
 
-; Referenced from: $E1AA boot_chip_error
+; Referenced from: $E1AA boot_handshake
 dat_E1BE:
 E1BE: 05 10 0A                 FCB    $05,$10,$0A
 
-; Referenced from: $E1AC boot_chip_error
+; Referenced from: $E1AC boot_handshake
 dat_E1C1:
 E1C1: 03 10 14                 FCB    $03,$10,$14
 
-; Referenced from: $E1AE boot_chip_error
+; Referenced from: $E1AE boot_handshake
 dat_E1C4:
 E1C4: 03 10 0A                 FCB    $03,$10,$0A
 
-; Referenced from: $E1B0 boot_chip_error
+; Referenced from: $E1B0 boot_handshake
 dat_E1C7:
 E1C7: 03 07 07                 FCB    $03,$07,$07
 
+;------------------------------------------------------------------------------
+; boot_check_service  ($E1CA)
+; -> src/game/main/gp2_2b_boot.js
+; Service switch on -> service_mode; otherwise program the coinage, wait and go
+; to game_init. Never returns.
+; Jumped to from: $E173
+;------------------------------------------------------------------------------
 boot_check_service:
 E1CA: B6 68 14        LDA    IO58XX+$04      ; service switch? [$6814] 58XX
                                              ; DSWB hi (diff, svc)
@@ -6994,25 +7437,27 @@ E1DB: 7E C2 96        JMP    game_init
 
 ;------------------------------------------------------------------------------
 ; program_coinage  ($E1DE)
+; -> src/game/main/gp2_2b_boot.js
 ; Pulse FRESET (resets the 56XX coin/credit counters), write the
 ; coinage from $1025-$1028 to 56XX args 9-12 and run mode 2 once,
 ; then draw the frame border tiles.
-; Called from: $E1D3 boot_chip_error
+; Called from: $E1D3 boot_check_service
 ;------------------------------------------------------------------------------
 program_coinage:
 E1DE: B7 9C 00        STA    FRESET_ON       ; reset the 56XX coin counters
                                              ; [$9C00]
 E1E1: BD BE 25        JSR    delay_65536
-E1E4: B7 94 00        STA    FRESET_OFF      ; [$9400]
+E1E4: B7 94 00        STA    FRESET_OFF      ; FRESET off [$9400]
 E1E7: DC 25           LDD    <coinage_a      ; [$1025]
-E1E9: FD 68 09        STD    IO56XX+$09      ; [$6809] 56XX arg 9 (start ok)
+E1E9: FD 68 09        STD    IO56XX+$09      ; coinage to 56XX args 9-12
+                                             ; [$6809] 56XX arg 9 (start ok)
 E1EC: DC 27           LDD    <coinage_b      ; [$1027]
 E1EE: FD 68 0B        STD    IO56XX+$0B      ; [$680B] 56XX arg 11
 E1F1: 86 02           LDA    #$02
 E1F3: B7 68 08        STA    IO56XX+$08      ; 56XX mode 2: set coinage [$6808]
                                              ; 56XX command
 E1F6: CE 00 00        LDU    #$0000
-E1F9: 8D 0F           BSR    sub_E20A
+E1F9: 8D 0F           BSR    fill_32_blank
 E1FB: C6 0E           LDB    #$0E
 
 lE1FD:
@@ -7024,18 +7469,22 @@ E207: 5A              DECB
 E208: 26 F3           BNE    lE1FD
 
 ;------------------------------------------------------------------------------
-; sub_E20A  ($E20A)
+; fill_32_blank  ($E20A) ; JS: sub_E20A
+; -> src/game/main/gp2_2b_boot.js
+; Store $2020 at U++ 32 times (two fill_16_words).
 ; Called from: $E1F9 program_coinage
 ;------------------------------------------------------------------------------
-sub_E20A:
+fill_32_blank:
 E20A: 8E 20 20        LDX    #$2020
 E20D: 8D 03           BSR    fill_16_words
 E20F: 8E 20 20        LDX    #$2020
 
 ;------------------------------------------------------------------------------
 ; fill_16_words  ($E212)
+; -> src/game/main/gp2_2b_boot.js
 ; Store X at ,U++ sixteen times.
-; Called from: $E200 program_coinage, $E205 program_coinage, $E20D sub_E20A
+; Called from: $E200 program_coinage, $E205 program_coinage, $E20D
+; fill_32_blank
 ;------------------------------------------------------------------------------
 fill_16_words:
 E212: 86 10           LDA    #$10
@@ -7048,6 +7497,7 @@ E219: 39              RTS
 
 ;------------------------------------------------------------------------------
 ; task_results  ($E21A)
+; -> src/game/main/gp2_2b_results.js
 ; Mode 8 task: stage results screen, sub-state $1160 through
 ; results_steps.
 ; Table entry at: $FFC6
@@ -7060,26 +7510,30 @@ E221: 6E 96           JMP    [A,X]           ; [table results_steps]
 
 ; Referenced from: $E21A task_results
 results_steps:
-E223: E2 2F                    FDB    sub_E22F ; [0] $E22F
-E225: E2 9A                    FDB    sub_E29A ; [1] $E29A
-E227: E2 D0                    FDB    sub_E2D0 ; [2] $E2D0
-E229: E3 46                    FDB    sub_E346 ; [3] $E346
-E22B: E3 AD                    FDB    sub_E3AD ; [4] $E3AD
-E22D: E3 32                    FDB    sub_E332 ; [5] $E332
+E223: E2 2F                    FDB    results_draw ; [0] $E22F
+E225: E2 9A                    FDB    results_count_hits ; [1] $E29A
+E227: E2 D0                    FDB    results_markers ; [2] $E2D0
+E229: E3 46                    FDB    results_show_bonus ; [3] $E346
+E22B: E3 AD                    FDB    results_payout ; [4] $E3AD
+E22D: E3 32                    FDB    results_no_bonus ; [5] $E332
 
 ;------------------------------------------------------------------------------
-; sub_E22F  ($E22F)
+; results_draw  ($E22F) ; JS: sub_E22F
+; -> src/game/main/gp2_2b_results.js
+; Results step 0: reset the counters, results_hits_left = results_count, print
+; EARNINGS / 100 X / 200 X / TOTAL; when results_delay wraps go to step 1 with
+; the player's bonus kind in results_bonus_kind.
 ; Table entry at: $E223
 ;------------------------------------------------------------------------------
-sub_E22F:
+results_draw:
 E22F: 7F 09 A4        CLR    entry_fire_latch ; [$09A4]
-E232: 7F 11 61        CLR    $1161
-E235: 7F 11 63        CLR    $1163
-E238: 7F 11 69        CLR    $1169
-E23B: 7F 11 6A        CLR    $116A
-E23E: 7F 11 6B        CLR    $116B
-E241: B6 11 64        LDA    $1164
-E244: B7 11 62        STA    $1162
+E232: 7F 11 61        CLR    results_blink   ; [$1161]
+E235: 7F 11 63        CLR    results_hits100 ; [$1163]
+E238: 7F 11 69        CLR    results_earnings ; [$1169]
+E23B: 7F 11 6A        CLR    results_timer   ; [$116A]
+E23E: 7F 11 6B        CLR    results_hits200 ; [$116B]
+E241: B6 11 64        LDA    results_count   ; [$1164]
+E244: B7 11 62        STA    results_hits_left ; [$1162]
 E247: 8E 02 F0        LDX    #TILE_RAM+$2F0  ; [#$02F0]
 E24A: CE E8 6C        LDU    #dat_E86C
 E24D: C6 0C           LDB    #$0C
@@ -7102,35 +7556,38 @@ E276: F7 07 12        STB    TILE_ATTR+$312  ; [$0712]
 E279: 5C              INCB
 E27A: B7 03 14        STA    TILE_RAM+$314   ; [$0314]
 E27D: F7 07 14        STB    TILE_ATTR+$314  ; [$0714]
-E280: 7C 11 5B        INC    $115B
+E280: 7C 11 5B        INC    results_delay   ; [$115B]
 E283: 10 26 05 D0     LBNE   lE857
 E287: 7C 11 60        INC    results_step    ; [$1160]
-E28A: B6 11 71        LDA    $1171
+E28A: B6 11 71        LDA    bonus_kind_p1   ; [$1171]
 E28D: D6 2D           LDB    <cur_player     ; [$102D]
 E28F: 27 03           BEQ    lE294
-E291: B6 11 72        LDA    $1172
+E291: B6 11 72        LDA    bonus_kind_p2   ; [$1172]
 
 lE294:
-E294: B7 11 66        STA    $1166
+E294: B7 11 66        STA    results_bonus_kind ; [$1166]
 E297: 7E E8 57        JMP    lE857
 
 ;------------------------------------------------------------------------------
-; sub_E29A  ($E29A)
+; results_count_hits  ($E29A) ; JS: sub_E29A
+; -> src/game/main/gp2_2b_results.js
+; Results step 1: every other frame count one hit (results_count down; sound
+; $17, results_count_one draws it); last hit sound $0A; below 0 -> step 2.
 ; Table entry at: $E225
 ;------------------------------------------------------------------------------
-sub_E29A:
-E29A: 7C 11 61        INC    $1161
-E29D: B6 11 61        LDA    $1161
+results_count_hits:
+E29A: 7C 11 61        INC    results_blink   ; [$1161]
+E29D: B6 11 61        LDA    results_blink   ; [$1161]
 E2A0: 84 01           ANDA   #$01
 E2A2: 10 26 05 B1     LBNE   lE857
-E2A6: 7A 11 64        DEC    $1164
-E2A9: B6 11 64        LDA    $1164
+E2A6: 7A 11 64        DEC    results_count   ; [$1164]
+E2A9: B6 11 64        LDA    results_count   ; [$1164]
 E2AC: 81 FF           CMPA   #$FF
 E2AE: 27 1A           BEQ    lE2CA
 E2B0: 86 01           LDA    #$01
 E2B2: B7 60 57        STA    snd_request+23  ; [$6057]
-E2B5: BD E3 FF        JSR    sub_E3FF
-E2B8: B6 11 64        LDA    $1164
+E2B5: BD E3 FF        JSR    results_count_one
+E2B8: B6 11 64        LDA    results_count   ; [$1164]
 E2BB: 10 26 05 98     LBNE   lE857
 E2BF: 7F 60 57        CLR    snd_request+23  ; [$6057]
 E2C2: 86 01           LDA    #$01
@@ -7142,17 +7599,21 @@ E2CA: 7C 11 60        INC    results_step    ; [$1160]
 E2CD: 7E E8 57        JMP    lE857
 
 ;------------------------------------------------------------------------------
-; sub_E2D0  ($E2D0)
+; results_markers  ($E2D0) ; JS: sub_E2D0
+; -> src/game/main/gp2_2b_results.js
+; Results step 2: draw the remaining hit markers (tile $60) of the bonus kind's
+; pattern, print the bonus line (results_bonus_line), step 3; no bonus line ->
+; results_no_bonus.
 ; Table entry at: $E227
 ;------------------------------------------------------------------------------
-sub_E2D0:
-E2D0: B6 11 66        LDA    $1166
+results_markers:
+E2D0: B6 11 66        LDA    results_bonus_kind ; [$1166]
 E2D3: 84 07           ANDA   #$07
 E2D5: 48              ASLA
-E2D6: 8E A0 00        LDX    #dat_A000
+E2D6: 8E A0 00        LDX    #mark_patterns
 E2D9: AE 86           LDX    A,X
 E2DB: 4F              CLRA
-E2DC: F6 11 62        LDB    $1162
+E2DC: F6 11 62        LDB    results_hits_left ; [$1162]
 
 lE2DF:
 E2DF: 5A              DECB
@@ -7174,10 +7635,10 @@ E2F6: 86 0A           LDA    #$0A
 E2F8: A7 89 04 00     STA    TILE_ATTR,X     ; [$0400]
 
 lE2FC:
-E2FC: B6 11 66        LDA    $1166
+E2FC: B6 11 66        LDA    results_bonus_kind ; [$1166]
 E2FF: 84 07           ANDA   #$07
 E301: 48              ASLA
-E302: 8E A0 00        LDX    #dat_A000
+E302: 8E A0 00        LDX    #mark_patterns
 E305: AE 86           LDX    A,X
 E307: 4F              CLRA
 E308: 20 D5           BRA    lE2DF
@@ -7190,40 +7651,47 @@ E312: A7 89 F4 00     STA    -$0C00,X
 E316: 20 E4           BRA    lE2FC
 
 lE318:
-E318: B6 11 66        LDA    $1166
+E318: B6 11 66        LDA    results_bonus_kind ; [$1166]
 E31B: 84 07           ANDA   #$07
 E31D: 48              ASLA
 E31E: 8E E4 CA        LDX    #dat_E4CA
 E321: AE 86           LDX    A,X
 E323: A6 84           LDA    ,X
 E325: 81 20           CMPA   #$20
-E327: 27 09           BEQ    sub_E332
-E329: BD E4 DA        JSR    sub_E4DA
+E327: 27 09           BEQ    results_no_bonus
+E329: BD E4 DA        JSR    results_bonus_line
 E32C: 7C 11 60        INC    results_step    ; [$1160]
 E32F: 7E E8 57        JMP    lE857
 
 ;------------------------------------------------------------------------------
-; sub_E332  ($E332)
+; results_no_bonus  ($E332) ; JS: sub_E332
+; -> src/game/main/gp2_2b_results.js
+; Results step 5: wait until results_delay wraps, then results_timer = $FF and
+; pay out the total.
 ; Jumped to from: $E327
 ; Table entry at: $E22D
 ;------------------------------------------------------------------------------
-sub_E332:
+results_no_bonus:
 E332: 86 05           LDA    #$05
 E334: B7 11 60        STA    results_step    ; [$1160]
-E337: 7C 11 5B        INC    $115B
+E337: 7C 11 5B        INC    results_delay   ; [$115B]
 E33A: 10 26 05 19     LBNE   lE857
 E33E: 86 FF           LDA    #$FF
-E340: B7 11 6A        STA    $116A
+E340: B7 11 6A        STA    results_timer   ; [$116A]
 E343: 7E E7 91        JMP    lE791
 
 ;------------------------------------------------------------------------------
-; sub_E346  ($E346)
+; results_show_bonus  ($E346) ; JS: sub_E346
+; -> src/game/main/gp2_2b_results.js
+; Results step 3: show the bonus line until results_timer wraps (then step 4);
+; kinds 1 and 4 wait for fire (sound 8) and cycle a digit at $017A; the line
+; blinks every 4th frame.
 ; Table entry at: $E229
 ;------------------------------------------------------------------------------
-sub_E346:
-E346: 7C 11 6A        INC    $116A
+results_show_bonus:
+E346: 7C 11 6A        INC    results_timer   ; [$116A]
 E349: 27 5C           BEQ    lE3A7
-E34B: B6 11 66        LDA    $1166
+E34B: B6 11 66        LDA    results_bonus_kind ; [$1166]
 E34E: 84 07           ANDA   #$07
 E350: 80 01           SUBA   #$01
 E352: 27 04           BEQ    lE358
@@ -7235,7 +7703,8 @@ E358: B6 09 A4        LDA    entry_fire_latch ; [$09A4]
 E35B: 26 2E           BNE    lE38B
 E35D: 86 01           LDA    #$01
 E35F: B7 60 48        STA    snd_request+8   ; [$6048]
-E362: B6 68 05        LDA    IO56XX+$05      ; [$6805] 56XX P1 fire/start1
+E362: B6 68 05        LDA    IO56XX+$05      ; either fire button [$6805] 56XX
+                                             ; P1 fire/start1
 E365: BA 68 07        ORA    IO56XX+$07      ; [$6807] 56XX P2 fire/start2
 E368: 84 02           ANDA   #$02
 E36A: 27 09           BEQ    lE375
@@ -7244,11 +7713,13 @@ E36F: 7F 60 48        CLR    snd_request+8   ; [$6048]
 E372: 7F 60 68        CLR    snd_active+8    ; [$6068]
 
 lE375:
-E375: CE EA 19        LDU    #dat_EA19
-E378: B6 11 66        LDA    $1166
+E375: CE EA 19        LDU    #button_digits_gaplus ; BUG: compares the whole
+                                             ; $1166 with 4 where $E36x
+                                             ; used $1166 & 7
+E378: B6 11 66        LDA    results_bonus_kind ; [$1166]
 E37B: 80 04           SUBA   #$04
 E37D: 27 03           BEQ    lE382
-E37F: CE EA 11        LDU    #dat_EA11
+E37F: CE EA 11        LDU    #button_digits_good
 
 lE382:
 E382: 96 16           LDA    <frame_counter  ; [$1016]
@@ -7257,7 +7728,7 @@ E386: A6 C6           LDA    A,U
 E388: B7 01 7A        STA    TILE_RAM+$17A   ; [$017A]
 
 lE38B:
-E38B: B6 11 6A        LDA    $116A
+E38B: B6 11 6A        LDA    results_timer   ; [$116A]
 E38E: 84 03           ANDA   #$03
 E390: 26 12           BNE    lE3A4
 E392: C6 12           LDB    #$12
@@ -7280,16 +7751,19 @@ E3A7: 7C 11 60        INC    results_step    ; [$1160]
 E3AA: 7E E8 57        JMP    lE857
 
 ;------------------------------------------------------------------------------
-; sub_E3AD  ($E3AD)
+; results_payout  ($E3AD) ; JS: sub_E3AD
+; -> src/game/main/gp2_2b_results.js
+; Results step 4: with results_timer = 0 pay out the bonus by kind (tbl_E65F),
+; else count results_timer up.
 ; Table entry at: $E22B
 ;------------------------------------------------------------------------------
-sub_E3AD:
-E3AD: B6 11 6A        LDA    $116A
+results_payout:
+E3AD: B6 11 6A        LDA    results_timer   ; [$116A]
 E3B0: 26 03           BNE    lE3B5
 E3B2: 7E E6 54        JMP    lE654
 
 lE3B5:
-E3B5: 7C 11 6A        INC    $116A
+E3B5: 7C 11 6A        INC    results_timer   ; [$116A]
 E3B8: 10 26 04 9B     LBNE   lE857
 E3BC: 8E 00 40        LDX    #TILE_RAM+$40   ; [#$0040]
 E3BF: 86 20           LDA    #$20
@@ -7310,36 +7784,40 @@ E3D5: 7C 11 06        INC    stage_p1        ; [$1106]
 lE3D8:
 E3D8: 96 2D           LDA    <cur_player     ; [$102D]
 E3DA: 26 05           BNE    lE3E1
-E3DC: 7C 11 71        INC    $1171
+E3DC: 7C 11 71        INC    bonus_kind_p1   ; [$1171]
 E3DF: 20 03           BRA    lE3E4
 
 lE3E1:
-E3E1: 7C 11 72        INC    $1172
+E3E1: 7C 11 72        INC    bonus_kind_p2   ; [$1172]
 
 lE3E4:
-E3E4: 7F 11 62        CLR    $1162
+E3E4: 7F 11 62        CLR    results_hits_left ; [$1162]
 E3E7: 7F 11 60        CLR    results_step    ; [$1160]
-E3EA: 3C EF           CWAI   #$EF
+E3EA: 3C EF           CWAI   #$EF            ; wait for vblank
 E3EC: 7C 60 45        INC    snd_request+5   ; [$6045]
 E3EF: 0F 2F           CLR    <game_mode      ; [$102F]
 E3F1: 0F 30           CLR    <main_task      ; [$1030]
 E3F3: 0F 7A           CLR    <sub_task       ; [$107A]
 E3F5: B6 09 F4        LDA    attract_flag    ; [$09F4]
-E3F8: 10 26 EC 2D     LBNE   lD029
+E3F8: 10 26 EC 2D     LBNE   demo_end
 E3FC: 7E FE B5        JMP    task_dispatch
 
 ;------------------------------------------------------------------------------
-; sub_E3FF  ($E3FF)
-; Called from: $E2B5 sub_E29A
+; results_count_one  ($E3FF) ; JS: sub_E3FF
+; -> src/game/main/gp2_2b_results.js
+; Count one hit: blank its marker; below tile $1000 a 100-point hit
+; (results_hits100, earnings + 1), else a 200-point hit (earnings + 2,
+; results_hits200); BCD, redraws the digits.
+; Called from: $E2B5 results_count_hits
 ;------------------------------------------------------------------------------
-sub_E3FF:
-E3FF: B6 11 66        LDA    $1166
+results_count_one:
+E3FF: B6 11 66        LDA    results_bonus_kind ; [$1166]
 E402: 84 07           ANDA   #$07
 E404: 48              ASLA
-E405: 8E A0 00        LDX    #dat_A000
+E405: 8E A0 00        LDX    #mark_patterns
 E408: AE 86           LDX    A,X
-E40A: 4F              CLRA
-E40B: F6 11 64        LDB    $1164
+E40A: 4F              CLRA                   ; 16-bit 2 * $1164
+E40B: F6 11 64        LDB    results_count   ; [$1164]
 E40E: 58              ASLB
 E40F: 49              ROLA
 E410: AE 8B           LDX    D,X
@@ -7348,27 +7826,27 @@ E415: 24 4E           BCC    lE465
 E417: 86 20           LDA    #$20
 E419: A7 84           STA    ,X
 E41B: 6F 89 04 00     CLR    TILE_ATTR,X     ; [$0400]
-E41F: B6 11 63        LDA    $1163
+E41F: B6 11 63        LDA    results_hits100 ; [$1163]
 E422: 8B 01           ADDA   #$01
 E424: 19              DAA
-E425: B7 11 63        STA    $1163
+E425: B7 11 63        STA    results_hits100 ; [$1163]
 E428: BD C2 87        JSR    bcd_hi_to_char
 E42B: B7 01 F2        STA    TILE_RAM+$1F2   ; [$01F2]
 E42E: B7 01 52        STA    TILE_RAM+$152   ; [$0152]
-E431: B6 11 63        LDA    $1163
+E431: B6 11 63        LDA    results_hits100 ; [$1163]
 E434: BD C2 8B        JSR    bcd_lo_to_char
 E437: B7 01 D2        STA    TILE_RAM+$1D2   ; [$01D2]
 E43A: B7 01 32        STA    TILE_RAM+$132   ; [$0132]
-E43D: B6 11 69        LDA    $1169
+E43D: B6 11 69        LDA    results_earnings ; [$1169]
 E440: 8B 01           ADDA   #$01
 E442: 19              DAA
-E443: B7 11 69        STA    $1169
+E443: B7 11 69        STA    results_earnings ; [$1169]
 E446: BD C2 87        JSR    bcd_hi_to_char
 E449: B7 01 56        STA    TILE_RAM+$156   ; [$0156]
-E44C: B6 11 69        LDA    $1169
+E44C: B6 11 69        LDA    results_earnings ; [$1169]
 E44F: BD C2 8B        JSR    bcd_lo_to_char
 E452: B7 01 36        STA    TILE_RAM+$136   ; [$0136]
-E455: B6 11 69        LDA    $1169
+E455: B6 11 69        LDA    results_earnings ; [$1169]
 E458: 26 0A           BNE    lE464
 E45A: B6 01 76        LDA    TILE_RAM+$176   ; [$0176]
 E45D: 8B 01           ADDA   #$01
@@ -7382,14 +7860,14 @@ lE465:
 E465: 86 20           LDA    #$20
 E467: A7 89 F0 00     STA    -$1000,X
 E46B: 6F 89 F4 00     CLR    -$0C00,X
-E46F: B6 11 69        LDA    $1169
+E46F: B6 11 69        LDA    results_earnings ; [$1169]
 E472: 8B 02           ADDA   #$02
 E474: 19              DAA
-E475: B7 11 69        STA    $1169
+E475: B7 11 69        STA    results_earnings ; [$1169]
 E478: BD C2 87        JSR    bcd_hi_to_char
 E47B: B7 01 54        STA    TILE_RAM+$154   ; [$0154]
 E47E: B7 01 56        STA    TILE_RAM+$156   ; [$0156]
-E481: B6 11 69        LDA    $1169
+E481: B6 11 69        LDA    results_earnings ; [$1169]
 E484: BD C2 8B        JSR    bcd_lo_to_char
 E487: B7 01 34        STA    TILE_RAM+$134   ; [$0134]
 E48A: B7 01 36        STA    TILE_RAM+$136   ; [$0136]
@@ -7404,13 +7882,13 @@ E49E: B7 01 76        STA    TILE_RAM+$176   ; [$0176]
 E4A1: B7 01 74        STA    TILE_RAM+$174   ; [$0174]
 
 lE4A4:
-E4A4: B6 11 6B        LDA    $116B
+E4A4: B6 11 6B        LDA    results_hits200 ; [$116B]
 E4A7: 8B 01           ADDA   #$01
 E4A9: 19              DAA
-E4AA: B7 11 6B        STA    $116B
+E4AA: B7 11 6B        STA    results_hits200 ; [$116B]
 E4AD: BD C2 87        JSR    bcd_hi_to_char
 E4B0: B7 01 F4        STA    TILE_RAM+$1F4   ; [$01F4]
-E4B3: B6 11 6B        LDA    $116B
+E4B3: B6 11 6B        LDA    results_hits200 ; [$116B]
 E4B6: BD C2 8B        JSR    bcd_lo_to_char
 E4B9: B7 01 D4        STA    TILE_RAM+$1D4   ; [$01D4]
 E4BC: B6 01 74        LDA    TILE_RAM+$174   ; [$0174]
@@ -7423,38 +7901,43 @@ E4C4: 86 31           LDA    #$31
 E4C6: B7 02 14        STA    TILE_RAM+$214   ; [$0214]
 E4C9: 39              RTS
 
-; Referenced from: $E31E sub_E2D0
+; Referenced from: $E31E results_markers
 dat_E4CA:
 E4CA: 00 EA 00 AA 00 88 00 68  FCB    $00,$EA,$00,$AA,$00,$88,$00,$68
 E4D2: 00 6B 00 CB 00 6B 00 AB  FCB    $00,$6B,$00,$CB,$00,$6B,$00,$AB
 
 ;------------------------------------------------------------------------------
-; sub_E4DA  ($E4DA)
-; Called from: $E329 sub_E2D0
+; results_bonus_line  ($E4DA) ; JS: sub_E4DA
+; -> src/game/main/gp2_2b_results.js
+; Print the bonus line of kind results_bonus_kind & 7 through tbl_E4E5 (JMP
+; [A,X]; the entry's RTS returns to the caller).
+; Called from: $E329 results_markers
 ;------------------------------------------------------------------------------
-sub_E4DA:
-E4DA: B6 11 66        LDA    $1166
+results_bonus_line:
+E4DA: B6 11 66        LDA    results_bonus_kind ; [$1166]
 E4DD: 84 07           ANDA   #$07
 E4DF: 48              ASLA
 E4E0: 8E E4 E5        LDX    #tbl_E4E5
 E4E3: 6E 96           JMP    [A,X]           ; [table tbl_E4E5]
 
-; Referenced from: $E4E0 sub_E4DA
+; Referenced from: $E4E0 results_bonus_line
 tbl_E4E5:
-E4E5: E4 F5                    FDB    sub_E4F5 ; [0] $E4F5
-E4E7: E5 0C                    FDB    sub_E50C ; [1] $E50C
-E4E9: E5 3A                    FDB    sub_E53A ; [2] $E53A
-E4EB: E5 63                    FDB    sub_E563 ; [3] $E563
-E4ED: E5 0C                    FDB    sub_E50C ; [4] $E50C
-E4EF: E5 F3                    FDB    sub_E5F3 ; [5] $E5F3
-E4F1: E6 26                    FDB    sub_E626 ; [6] $E626
-E4F3: E6 3D                    FDB    sub_E63D ; [7] $E63D
+E4E5: E4 F5                    FDB    line_bonus ; [0] $E4F5
+E4E7: E5 0C                    FDB    line_gaplus ; [1] $E50C
+E4E9: E5 3A                    FDB    line_double ; [2] $E53A
+E4EB: E5 63                    FDB    line_triple ; [3] $E563
+E4ED: E5 0C                    FDB    line_gaplus ; [4] $E50C
+E4EF: E5 F3                    FDB    line_lucky ; [5] $E5F3
+E4F1: E6 26                    FDB    line_byebye ; [6] $E626
+E4F3: E6 3D                    FDB    line_extend ; [7] $E63D
 
 ;------------------------------------------------------------------------------
-; sub_E4F5  ($E4F5)
+; line_bonus  ($E4F5) ; JS: sub_E4F5
+; -> src/game/main/gp2_2b_results.js
+; Bonus kind 0: "BONUS" COMPLETED / BONUS POINTS 10000.
 ; Table entry at: $E4E5
 ;------------------------------------------------------------------------------
-sub_E4F5:
+line_bonus:
 E4F5: 8E 03 18        LDX    #TILE_RAM+$318  ; [#$0318]
 E4F8: CE E8 B4        LDU    #dat_E8B4
 E4FB: C6 0C           LDB    #$0C
@@ -7466,13 +7949,16 @@ E508: BD E8 5C        JSR    print_string_attr
 E50B: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_E50C  ($E50C)
+; line_gaplus  ($E50C) ; JS: sub_E50C
+; -> src/game/main/gp2_2b_results.js
+; Kinds 1 and 4: "GAPLUS" (kind 4 " GOOD ") COMPLETED / BONUS POINTS 00000 /
+; PUSH FIRING BUTTON.
 ; Table entry at: $E4E7, $E4ED
 ;------------------------------------------------------------------------------
-sub_E50C:
+line_gaplus:
 E50C: 8E 03 18        LDX    #TILE_RAM+$318  ; [#$0318]
 E50F: CE E8 DA        LDU    #dat_E8DA
-E512: B6 11 66        LDA    $1166
+E512: B6 11 66        LDA    results_bonus_kind ; [$1166]
 E515: 84 07           ANDA   #$07
 E517: 81 04           CMPA   #$04
 E519: 26 03           BNE    lE51E
@@ -7492,10 +7978,13 @@ E536: BD E8 5C        JSR    print_string_attr
 E539: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_E53A  ($E53A)
+; line_double  ($E53A) ; JS: sub_E53A
+; -> src/game/main/gp2_2b_results.js
+; Kind 2: "DOUBLE" COMPLETED; the bonus is the earnings again (digits copied to
+; $013A-$017A).
 ; Table entry at: $E4E9
 ;------------------------------------------------------------------------------
-sub_E53A:
+line_double:
 E53A: 8E 03 18        LDX    #TILE_RAM+$318  ; [#$0318]
 E53D: CE E9 00        LDU    #dat_E900
 E540: C6 0C           LDB    #$0C
@@ -7513,10 +8002,13 @@ E55F: B7 01 7A        STA    TILE_RAM+$17A   ; [$017A]
 E562: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_E563  ($E563)
+; line_triple  ($E563) ; JS: sub_E563
+; -> src/game/main/gp2_2b_results.js
+; Kind 3: "TRIPLE" COMPLETED; the bonus is twice the earnings, doubled digit by
+; digit in BCD.
 ; Table entry at: $E4EB
 ;------------------------------------------------------------------------------
-sub_E563:
+line_triple:
 E563: 8E 03 18        LDX    #TILE_RAM+$318  ; [#$0318]
 E566: CE E9 26        LDU    #dat_E926
 E569: C6 0C           LDB    #$0C
@@ -7527,40 +8019,40 @@ E574: C6 0C           LDB    #$0C
 E576: BD E8 5C        JSR    print_string_attr
 E579: B6 01 36        LDA    TILE_RAM+$136   ; [$0136]
 E57C: 84 0F           ANDA   #$0F
-E57E: B7 11 64        STA    $1164
-E581: BB 11 64        ADDA   $1164
+E57E: B7 11 64        STA    results_count   ; [$1164]
+E581: BB 11 64        ADDA   results_count   ; [$1164]
 E584: 19              DAA
-E585: B7 11 64        STA    $1164
+E585: B7 11 64        STA    results_count   ; [$1164]
 E588: 84 0F           ANDA   #$0F
 E58A: 8A 30           ORA    #$30
 E58C: B7 01 3A        STA    TILE_RAM+$13A   ; [$013A]
-E58F: 74 11 64        LSR    $1164
-E592: 74 11 64        LSR    $1164
-E595: 74 11 64        LSR    $1164
-E598: 74 11 64        LSR    $1164
+E58F: 74 11 64        LSR    results_count   ; [$1164]
+E592: 74 11 64        LSR    results_count   ; [$1164]
+E595: 74 11 64        LSR    results_count   ; [$1164]
+E598: 74 11 64        LSR    results_count   ; [$1164]
 E59B: B6 01 56        LDA    TILE_RAM+$156   ; [$0156]
 E59E: 84 0F           ANDA   #$0F
-E5A0: B7 11 67        STA    $1167
-E5A3: BB 11 67        ADDA   $1167
+E5A0: B7 11 67        STA    results_bcd_tmp ; [$1167]
+E5A3: BB 11 67        ADDA   results_bcd_tmp ; [$1167]
 E5A6: 19              DAA
-E5A7: BB 11 64        ADDA   $1164
+E5A7: BB 11 64        ADDA   results_count   ; [$1164]
 E5AA: 19              DAA
-E5AB: B7 11 64        STA    $1164
+E5AB: B7 11 64        STA    results_count   ; [$1164]
 E5AE: 84 0F           ANDA   #$0F
 E5B0: 8A 30           ORA    #$30
 E5B2: B7 01 5A        STA    TILE_RAM+$15A   ; [$015A]
-E5B5: 74 11 64        LSR    $1164
-E5B8: 74 11 64        LSR    $1164
-E5BB: 74 11 64        LSR    $1164
-E5BE: 74 11 64        LSR    $1164
+E5B5: 74 11 64        LSR    results_count   ; [$1164]
+E5B8: 74 11 64        LSR    results_count   ; [$1164]
+E5BB: 74 11 64        LSR    results_count   ; [$1164]
+E5BE: 74 11 64        LSR    results_count   ; [$1164]
 E5C1: B6 01 76        LDA    TILE_RAM+$176   ; [$0176]
 E5C4: 84 0F           ANDA   #$0F
-E5C6: B7 11 67        STA    $1167
-E5C9: BB 11 67        ADDA   $1167
+E5C6: B7 11 67        STA    results_bcd_tmp ; [$1167]
+E5C9: BB 11 67        ADDA   results_bcd_tmp ; [$1167]
 E5CC: 19              DAA
-E5CD: BB 11 64        ADDA   $1164
+E5CD: BB 11 64        ADDA   results_count   ; [$1164]
 E5D0: 19              DAA
-E5D1: B7 11 64        STA    $1164
+E5D1: B7 11 64        STA    results_count   ; [$1164]
 E5D4: 84 0F           ANDA   #$0F
 E5D6: 8A 30           ORA    #$30
 E5D8: B7 01 7A        STA    TILE_RAM+$17A   ; [$017A]
@@ -7574,10 +8066,13 @@ E5E4: BD E8 5C 8E 03 1A CE E9  FCB    $BD,$E8,$5C,$8E,$03,$1A,$CE,$E9
 E5EC: 5F C6 0C BD E8 5C 39     FCB    $5F,$C6,$0C,$BD,$E8,$5C,$39
 
 ;------------------------------------------------------------------------------
-; sub_E5F3  ($E5F3)
+; line_lucky  ($E5F3) ; JS: sub_E5F3
+; -> src/game/main/gp2_2b_results.js
+; Kind 5: "LUCKY" COMPLETED / ONE COMPONENT ADDED, and a component sprite in
+; shadow entry $0F2C.
 ; Table entry at: $E4EF
 ;------------------------------------------------------------------------------
-sub_E5F3:
+line_lucky:
 E5F3: 8E 03 38        LDX    #TILE_RAM+$338  ; [#$0338]
 E5F6: CE E9 72        LDU    #dat_E972
 E5F9: C6 0C           LDB    #$0C
@@ -7603,10 +8098,12 @@ E622: BD E8 5C        JSR    print_string_attr
 E625: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_E626  ($E626)
+; line_byebye  ($E626) ; JS: sub_E626
+; -> src/game/main/gp2_2b_results.js
+; Kind 6: "BYEBYE" COMPLETED / ONE COMPONENT DROPPED.
 ; Table entry at: $E4F1
 ;------------------------------------------------------------------------------
-sub_E626:
+line_byebye:
 E626: 8E 03 58        LDX    #TILE_RAM+$358  ; [#$0358]
 E629: CE E9 9A        LDU    #dat_E99A
 E62C: C6 0C           LDB    #$0C
@@ -7618,10 +8115,12 @@ E639: BD E8 5C        JSR    print_string_attr
 E63C: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_E63D  ($E63D)
+; line_extend  ($E63D) ; JS: sub_E63D
+; -> src/game/main/gp2_2b_results.js
+; Kind 7: "EXTEND" COMPLETED / YOU GET A SHIP.
 ; Table entry at: $E4F3
 ;------------------------------------------------------------------------------
-sub_E63D:
+line_extend:
 E63D: 8E 03 18        LDX    #TILE_RAM+$318  ; [#$0318]
 E640: CE E9 C5        LDU    #dat_E9C5
 E643: C6 0C           LDB    #$0C
@@ -7633,28 +8132,31 @@ E650: BD E8 5C        JSR    print_string_attr
 E653: 39              RTS
 
 lE654:
-E654: B6 11 66        LDA    $1166
+E654: B6 11 66        LDA    results_bonus_kind ; [$1166]
 E657: 84 07           ANDA   #$07
 E659: 48              ASLA
 E65A: 8E E6 5F        LDX    #tbl_E65F
 E65D: 6E 96           JMP    [A,X]           ; [table tbl_E65F]
 
-; Referenced from: $E65A sub_E63D
+; Referenced from: $E65A line_extend
 tbl_E65F:
-E65F: E6 6F                    FDB    sub_E66F ; [0] $E66F
-E661: E6 D6                    FDB    sub_E6D6 ; [1] $E6D6
-E663: E6 FC                    FDB    sub_E6FC ; [2] $E6FC
-E665: E7 7A                    FDB    sub_E77A ; [3] $E77A
-E667: E6 D6                    FDB    sub_E6D6 ; [4] $E6D6
-E669: E7 A6                    FDB    sub_E7A6 ; [5] $E7A6
-E66B: E8 11                    FDB    sub_E811 ; [6] $E811
-E66D: E8 3B                    FDB    sub_E83B ; [7] $E83B
+E65F: E6 6F                    FDB    payout_bonus ; [0] $E66F
+E661: E6 D6                    FDB    payout_gaplus ; [1] $E6D6
+E663: E6 FC                    FDB    payout_double ; [2] $E6FC
+E665: E7 7A                    FDB    payout_triple ; [3] $E77A
+E667: E6 D6                    FDB    payout_gaplus ; [4] $E6D6
+E669: E7 A6                    FDB    payout_lucky ; [5] $E7A6
+E66B: E8 11                    FDB    payout_byebye ; [6] $E811
+E66D: E8 3B                    FDB    payout_extend ; [7] $E83B
 
 ;------------------------------------------------------------------------------
-; sub_E66F  ($E66F)
+; payout_bonus  ($E66F) ; JS: sub_E66F
+; -> src/game/main/gp2_2b_results.js
+; Kind 0 pay-out: grand total = earnings + 10000, then the common pay-out
+; ($E68E).
 ; Table entry at: $E65F
 ;------------------------------------------------------------------------------
-sub_E66F:
+payout_bonus:
 E66F: 8E 03 1C        LDX    #TILE_RAM+$31C  ; [#$031C]
 E672: CE E9 EB        LDU    #dat_E9EB
 E675: 5F              CLRB
@@ -7672,56 +8174,61 @@ lE68E:
 E68E: F6 01 7C        LDB    TILE_RAM+$17C   ; [$017C]
 E691: C4 0F           ANDB   #$0F
 E693: 27 0F           BEQ    lE6A4
-E695: F7 11 62        STB    $1162
+E695: F7 11 62        STB    results_hits_left ; [$1162]
 
 lE698:
 E698: C6 64           LDB    #$64
-E69A: F7 11 64        STB    $1164
-E69D: 8D 29           BSR    sub_E6C8
-E69F: 7A 11 62        DEC    $1162
+E69A: F7 11 64        STB    results_count   ; [$1164]
+E69D: 8D 29           BSR    add_score_times
+E69F: 7A 11 62        DEC    results_hits_left ; [$1162]
 E6A2: 26 F4           BNE    lE698
 
 lE6A4:
 E6A4: F6 01 5C        LDB    TILE_RAM+$15C   ; [$015C]
 E6A7: C4 0F           ANDB   #$0F
 E6A9: 27 0F           BEQ    lE6BA
-E6AB: F7 11 62        STB    $1162
+E6AB: F7 11 62        STB    results_hits_left ; [$1162]
 
 lE6AE:
 E6AE: C6 0A           LDB    #$0A
-E6B0: F7 11 64        STB    $1164
-E6B3: 8D 13           BSR    sub_E6C8
-E6B5: 7A 11 62        DEC    $1162
+E6B0: F7 11 64        STB    results_count   ; [$1164]
+E6B3: 8D 13           BSR    add_score_times
+E6B5: 7A 11 62        DEC    results_hits_left ; [$1162]
 E6B8: 26 F4           BNE    lE6AE
 
 lE6BA:
 E6BA: F6 01 3C        LDB    TILE_RAM+$13C   ; [$013C]
 E6BD: C4 0F           ANDB   #$0F
 E6BF: 27 12           BEQ    lE6D3
-E6C1: F7 11 64        STB    $1164
-E6C4: 8D 02           BSR    sub_E6C8
+E6C1: F7 11 64        STB    results_count   ; [$1164]
+E6C4: 8D 02           BSR    add_score_times
 E6C6: 20 0B           BRA    lE6D3
 
 ;------------------------------------------------------------------------------
-; sub_E6C8  ($E6C8)
-; Called from: $E69D sub_E66F, $E6B3 sub_E66F, $E6C4 sub_E66F
+; add_score_times  ($E6C8) ; JS: sub_E6C8
+; -> src/game/main/gp2_2b_results.js
+; add_score(1) (10 points) results_count times.
+; Called from: $E69D payout_bonus, $E6B3 payout_bonus, $E6C4 payout_bonus
 ; Jumped to from: $E6D0
 ;------------------------------------------------------------------------------
-sub_E6C8:
+add_score_times:
 E6C8: 86 01           LDA    #$01
 E6CA: BD C1 D6        JSR    add_score
-E6CD: 7A 11 64        DEC    $1164
-E6D0: 26 F6           BNE    sub_E6C8
+E6CD: 7A 11 64        DEC    results_count   ; [$1164]
+E6D0: 26 F6           BNE    add_score_times
 E6D2: 39              RTS
 
 lE6D3:
 E6D3: 7E E3 B5        JMP    lE3B5
 
 ;------------------------------------------------------------------------------
-; sub_E6D6  ($E6D6)
+; payout_gaplus  ($E6D6) ; JS: sub_E6D6
+; -> src/game/main/gp2_2b_results.js
+; Kinds 1 and 4 pay-out: grand total = earnings with the button digit ($017A &
+; 7) added to the hundreds.
 ; Table entry at: $E661, $E667
 ;------------------------------------------------------------------------------
-sub_E6D6:
+payout_gaplus:
 E6D6: 8E 03 1C        LDX    #TILE_RAM+$31C  ; [#$031C]
 E6D9: CE E9 EB        LDU    #dat_E9EB
 E6DC: 5F              CLRB
@@ -7738,10 +8245,12 @@ E6F6: B7 01 3C        STA    TILE_RAM+$13C   ; [$013C]
 E6F9: 7E E6 8E        JMP    lE68E
 
 ;------------------------------------------------------------------------------
-; sub_E6FC  ($E6FC)
+; payout_double  ($E6FC) ; JS: sub_E6FC
+; -> src/game/main/gp2_2b_results.js
+; Kind 2 pay-out: grand total = earnings + bonus.
 ; Table entry at: $E663
 ;------------------------------------------------------------------------------
-sub_E6FC:
+payout_double:
 E6FC: 8E 03 1C        LDX    #TILE_RAM+$31C  ; [#$031C]
 E6FF: CE E9 EB        LDU    #dat_E9EB
 E702: 5F              CLRB
@@ -7750,56 +8259,58 @@ E703: BD E8 5C        JSR    print_string_attr
 lE706:
 E706: B6 01 36        LDA    TILE_RAM+$136   ; [$0136]
 E709: 84 0F           ANDA   #$0F
-E70B: B7 11 64        STA    $1164
+E70B: B7 11 64        STA    results_count   ; [$1164]
 E70E: B6 01 3A        LDA    TILE_RAM+$13A   ; [$013A]
 E711: 84 0F           ANDA   #$0F
-E713: BB 11 64        ADDA   $1164
+E713: BB 11 64        ADDA   results_count   ; [$1164]
 E716: 19              DAA
-E717: B7 11 64        STA    $1164
+E717: B7 11 64        STA    results_count   ; [$1164]
 E71A: 84 0F           ANDA   #$0F
 E71C: 8A 30           ORA    #$30
 E71E: B7 01 3C        STA    TILE_RAM+$13C   ; [$013C]
-E721: 74 11 64        LSR    $1164
-E724: 74 11 64        LSR    $1164
-E727: 74 11 64        LSR    $1164
-E72A: 74 11 64        LSR    $1164
+E721: 74 11 64        LSR    results_count   ; [$1164]
+E724: 74 11 64        LSR    results_count   ; [$1164]
+E727: 74 11 64        LSR    results_count   ; [$1164]
+E72A: 74 11 64        LSR    results_count   ; [$1164]
 E72D: B6 01 56        LDA    TILE_RAM+$156   ; [$0156]
 E730: 84 0F           ANDA   #$0F
-E732: B7 11 67        STA    $1167
+E732: B7 11 67        STA    results_bcd_tmp ; [$1167]
 E735: B6 01 5A        LDA    TILE_RAM+$15A   ; [$015A]
 E738: 84 0F           ANDA   #$0F
-E73A: BB 11 67        ADDA   $1167
+E73A: BB 11 67        ADDA   results_bcd_tmp ; [$1167]
 E73D: 19              DAA
-E73E: BB 11 64        ADDA   $1164
+E73E: BB 11 64        ADDA   results_count   ; [$1164]
 E741: 19              DAA
-E742: B7 11 64        STA    $1164
+E742: B7 11 64        STA    results_count   ; [$1164]
 E745: 84 0F           ANDA   #$0F
 E747: 8A 30           ORA    #$30
 E749: B7 01 5C        STA    TILE_RAM+$15C   ; [$015C]
-E74C: 74 11 64        LSR    $1164
-E74F: 74 11 64        LSR    $1164
-E752: 74 11 64        LSR    $1164
-E755: 74 11 64        LSR    $1164
+E74C: 74 11 64        LSR    results_count   ; [$1164]
+E74F: 74 11 64        LSR    results_count   ; [$1164]
+E752: 74 11 64        LSR    results_count   ; [$1164]
+E755: 74 11 64        LSR    results_count   ; [$1164]
 E758: B6 01 76        LDA    TILE_RAM+$176   ; [$0176]
 E75B: 84 0F           ANDA   #$0F
-E75D: B7 11 67        STA    $1167
+E75D: B7 11 67        STA    results_bcd_tmp ; [$1167]
 E760: B6 01 7A        LDA    TILE_RAM+$17A   ; [$017A]
 E763: 84 0F           ANDA   #$0F
-E765: BB 11 67        ADDA   $1167
+E765: BB 11 67        ADDA   results_bcd_tmp ; [$1167]
 E768: 19              DAA
-E769: BB 11 64        ADDA   $1164
+E769: BB 11 64        ADDA   results_count   ; [$1164]
 E76C: 19              DAA
-E76D: B7 11 64        STA    $1164
+E76D: B7 11 64        STA    results_count   ; [$1164]
 E770: 84 0F           ANDA   #$0F
 E772: 8A 30           ORA    #$30
 E774: B7 01 7C        STA    TILE_RAM+$17C   ; [$017C]
 E777: 7E E6 8E        JMP    lE68E
 
 ;------------------------------------------------------------------------------
-; sub_E77A  ($E77A)
+; payout_triple  ($E77A) ; JS: sub_E77A
+; -> src/game/main/gp2_2b_results.js
+; Kind 3 pay-out, the same as payout_double.
 ; Table entry at: $E665
 ;------------------------------------------------------------------------------
-sub_E77A:
+payout_triple:
 E77A: 8E 03 1C        LDX    #TILE_RAM+$31C  ; [#$031C]
 E77D: CE E9 EB        LDU    #dat_E9EB
 E780: 5F              CLRB
@@ -7822,10 +8333,13 @@ E7A0: B7 01 7C        STA    TILE_RAM+$17C   ; [$017C]
 E7A3: 7E E6 8E        JMP    lE68E
 
 ;------------------------------------------------------------------------------
-; sub_E7A6  ($E7A6)
+; payout_lucky  ($E7A6) ; JS: sub_E7A6
+; -> src/game/main/gp2_2b_results.js
+; Kind 5 pay-out: move the component sprite up a step a frame (sound 6) to its
+; place, copy it to entry $0F28 (or $0F26) and park it.
 ; Table entry at: $E669
 ;------------------------------------------------------------------------------
-sub_E7A6:
+payout_lucky:
 E7A6: B6 0F 2C        LDA    $0F2C
 E7A9: 81 27           CMPA   #$27
 E7AB: 27 32           BEQ    lE7DF
@@ -7867,10 +8381,13 @@ E80B: 7F 1F 2D        CLR    $1F2D
 E80E: 7E E8 57        JMP    lE857
 
 ;------------------------------------------------------------------------------
-; sub_E811  ($E811)
+; payout_byebye  ($E811) ; JS: sub_E811
+; -> src/game/main/gp2_2b_results.js
+; Kind 6 pay-out: count the dropped component's timer down (sound 6), then
+; clear its flag.
 ; Table entry at: $E66B
 ;------------------------------------------------------------------------------
-sub_E811:
+payout_byebye:
 E811: B6 1F 27        LDA    $1F27
 E814: 10 27 FF 6F     LBEQ   lE787
 E818: B6 1F 29        LDA    $1F29
@@ -7892,20 +8409,23 @@ E835: B7 60 46        STA    snd_request+6   ; [$6046]
 E838: 7E E8 57        JMP    lE857
 
 ;------------------------------------------------------------------------------
-; sub_E83B  ($E83B)
+; payout_extend  ($E83B) ; JS: sub_E83B
+; -> src/game/main/gp2_2b_results.js
+; Kind 7 pay-out: one more life for the current player (flag_extra_ship redraws
+; the reserve; sound $15).
 ; Table entry at: $E66D
 ;------------------------------------------------------------------------------
-sub_E83B:
+payout_extend:
 E83B: 96 2D           LDA    <cur_player     ; [$102D]
 E83D: 27 0C           BEQ    lE84B
 E83F: 7C 11 05        INC    lives_p2        ; [$1105]
-E842: BD FB 9E        JSR    sub_FB9E
+E842: BD FB 9E        JSR    flag_extra_ship
 E845: 7C 60 55        INC    snd_request+21  ; [$6055]
 E848: 7E E7 87        JMP    lE787
 
 lE84B:
 E84B: 7C 11 04        INC    lives_p1        ; [$1104]
-E84E: BD FB 9E        JSR    sub_FB9E
+E84E: BD FB 9E        JSR    flag_extra_ship
 E851: 7C 60 55        INC    snd_request+21  ; [$6055]
 E854: 7E E7 87        JMP    lE787
 
@@ -7915,14 +8435,16 @@ E859: 7E FE B5        JMP    task_dispatch
 
 ;------------------------------------------------------------------------------
 ; print_string_attr  ($E85C)
+; -> src/game/main/gp2_2b_results.js
 ; Print the zero-terminated string at U from tile address X going
 ; right (X -= $20 per character), writing attribute B to each cell.
-; Called from: $E24F sub_E22F, $E259 sub_E22F, $E263 sub_E22F, $E26D sub_E22F,
-; $E4FD sub_E4F5, $E508 sub_E4F5, $E520 sub_E50C, $E52B sub_E50C, $E536
-; sub_E50C, $E542 sub_E53A, $E54D sub_E53A, $E56B sub_E563, $E576 sub_E563,
-; $E5FB sub_E5F3, $E622 sub_E5F3, $E62E sub_E626, $E639 sub_E626, $E645
-; sub_E63D, $E650 sub_E63D, $E676 sub_E66F, $E6DD sub_E6D6, $E703 sub_E6FC,
-; $E781 sub_E77A, $E78E sub_E77A
+; Called from: $E24F results_draw, $E259 results_draw, $E263 results_draw,
+; $E26D results_draw, $E4FD line_bonus, $E508 line_bonus, $E520 line_gaplus,
+; $E52B line_gaplus, $E536 line_gaplus, $E542 line_double, $E54D line_double,
+; $E56B line_triple, $E576 line_triple, $E5FB line_lucky, $E622 line_lucky,
+; $E62E line_byebye, $E639 line_byebye, $E645 line_extend, $E650 line_extend,
+; $E676 payout_bonus, $E6DD payout_gaplus, $E703 payout_double, $E781
+; payout_triple, $E78E payout_triple
 ; Jumped to from: $E869
 ;------------------------------------------------------------------------------
 print_string_attr:
@@ -7936,91 +8458,91 @@ E869: 20 F1           BRA    print_string_attr
 lE86B:
 E86B: 39              RTS
 
-; Referenced from: $E24A sub_E22F
+; Referenced from: $E24A results_draw
 dat_E86C:
 ;   "    EARNINGS     "
 E86C: 20 20 20 20 45 41 52 4E  FCB    $20,$20,$20,$20,$45,$41,$52,$4E
 E874: 49 4E 47 53 20 20 20 20  FCB    $49,$4E,$47,$53,$20,$20,$20,$20
 E87C: 20 00                    FCB    $20,$00
 
-; Referenced from: $E255 sub_E22F
+; Referenced from: $E255 results_draw
 dat_E87E:
 ;   " 100 X  0 =    00"
 E87E: 20 31 30 30 20 58 20 20  FCB    $20,$31,$30,$30,$20,$58,$20,$20
 E886: 30 20 3D 20 20 20 20 30  FCB    $30,$20,$3D,$20,$20,$20,$20,$30
 E88E: 30 00                    FCB    $30,$00
 
-; Referenced from: $E25F sub_E22F
+; Referenced from: $E25F results_draw
 dat_E890:
 ;   " 200 X  0 =    00"
 E890: 20 32 30 30 20 58 20 20  FCB    $20,$32,$30,$30,$20,$58,$20,$20
 E898: 30 20 3D 20 20 20 20 30  FCB    $30,$20,$3D,$20,$20,$20,$20,$30
 E8A0: 30 00                    FCB    $30,$00
 
-; Referenced from: $E269 sub_E22F
+; Referenced from: $E269 results_draw
 dat_E8A2:
 ;   "    TOTAL      00"
 E8A2: 20 20 20 20 54 4F 54 41  FCB    $20,$20,$20,$20,$54,$4F,$54,$41
 E8AA: 4C 20 20 20 20 20 20 30  FCB    $4C,$20,$20,$20,$20,$20,$20,$30
 E8B2: 30 00                    FCB    $30,$00
 
-; Referenced from: $E4F8 sub_E4F5
+; Referenced from: $E4F8 line_bonus
 dat_E8B4:
 ;   ""BONUS"  COMPLETED"
 E8B4: 68 42 4F 4E 55 53 69 20  FCB    $68,$42,$4F,$4E,$55,$53,$69,$20
 E8BC: 20 43 4F 4D 50 4C 45 54  FCB    $20,$43,$4F,$4D,$50,$4C,$45,$54
 E8C4: 45 44 00                 FCB    $45,$44,$00
 
-; Referenced from: $E503 sub_E4F5
+; Referenced from: $E503 line_bonus
 dat_E8C7:
 ;   "BONUS POINTS 10000"
 E8C7: 42 4F 4E 55 53 20 50 4F  FCB    $42,$4F,$4E,$55,$53,$20,$50,$4F
 E8CF: 49 4E 54 53 20 31 30 30  FCB    $49,$4E,$54,$53,$20,$31,$30,$30
 E8D7: 30 30 00                 FCB    $30,$30,$00
 
-; Referenced from: $E50F sub_E50C
+; Referenced from: $E50F line_gaplus
 dat_E8DA:
 ;   ""GAPLUS" COMPLETED"
 E8DA: 68 47 41 50 4C 55 53 69  FCB    $68,$47,$41,$50,$4C,$55,$53,$69
 E8E2: 20 43 4F 4D 50 4C 45 54  FCB    $20,$43,$4F,$4D,$50,$4C,$45,$54
 E8EA: 45 44 00                 FCB    $45,$44,$00
 
-; Referenced from: $E526 sub_E50C
+; Referenced from: $E526 line_gaplus
 dat_E8ED:
 ;   "BONUS POINTS 00000"
 E8ED: 42 4F 4E 55 53 20 50 4F  FCB    $42,$4F,$4E,$55,$53,$20,$50,$4F
 E8F5: 49 4E 54 53 20 30 30 30  FCB    $49,$4E,$54,$53,$20,$30,$30,$30
 E8FD: 30 30 00                 FCB    $30,$30,$00
 
-; Referenced from: $E53D sub_E53A
+; Referenced from: $E53D line_double
 dat_E900:
 ;   ""DOUBLE" COMPLETED"
 E900: 68 44 4F 55 42 4C 45 69  FCB    $68,$44,$4F,$55,$42,$4C,$45,$69
 E908: 20 43 4F 4D 50 4C 45 54  FCB    $20,$43,$4F,$4D,$50,$4C,$45,$54
 E910: 45 44 00                 FCB    $45,$44,$00
 
-; Referenced from: $E548 sub_E53A
+; Referenced from: $E548 line_double
 dat_E913:
 ;   "BONUS POINTS    00"
 E913: 42 4F 4E 55 53 20 50 4F  FCB    $42,$4F,$4E,$55,$53,$20,$50,$4F
 E91B: 49 4E 54 53 20 20 20 20  FCB    $49,$4E,$54,$53,$20,$20,$20,$20
 E923: 30 30 00                 FCB    $30,$30,$00
 
-; Referenced from: $E566 sub_E563
+; Referenced from: $E566 line_triple
 dat_E926:
 ;   ""TRIPLE" COMPLETED"
 E926: 68 54 52 49 50 4C 45 69  FCB    $68,$54,$52,$49,$50,$4C,$45,$69
 E92E: 20 43 4F 4D 50 4C 45 54  FCB    $20,$43,$4F,$4D,$50,$4C,$45,$54
 E936: 45 44 00                 FCB    $45,$44,$00
 
-; Referenced from: $E571 sub_E563
+; Referenced from: $E571 line_triple
 dat_E939:
 ;   "BONUS POINTS    00"
 E939: 42 4F 4E 55 53 20 50 4F  FCB    $42,$4F,$4E,$55,$53,$20,$50,$4F
 E941: 49 4E 54 53 20 20 20 20  FCB    $49,$4E,$54,$53,$20,$20,$20,$20
 E949: 30 30 00                 FCB    $30,$30,$00
 
-; Referenced from: $E51B sub_E50C
+; Referenced from: $E51B line_gaplus
 dat_E94C:
 ;   "" GOOD " COMPLETED"
 E94C: 68 20 47 4F 4F 44 20 69  FCB    $68,$20,$47,$4F,$4F,$44,$20,$69
@@ -8031,102 +8553,110 @@ E95F: 20 20 20 20 20 4E 4F 20  FCB    $20,$20,$20,$20,$20,$4E,$4F,$20
 E967: 42 4F 4E 55 53 20 20 20  FCB    $42,$4F,$4E,$55,$53,$20,$20,$20
 E96F: 20 20 00                 FCB    $20,$20,$00
 
-; Referenced from: $E5F6 sub_E5F3
+; Referenced from: $E5F6 line_lucky
 dat_E972:
 ;   ""LUCKY"   COMPLETED"
 E972: 68 4C 55 43 4B 59 69 20  FCB    $68,$4C,$55,$43,$4B,$59,$69,$20
 E97A: 20 20 43 4F 4D 50 4C 45  FCB    $20,$20,$43,$4F,$4D,$50,$4C,$45
 E982: 54 45 44 00              FCB    $54,$45,$44,$00
 
-; Referenced from: $E61D sub_E5F3
+; Referenced from: $E61D line_lucky
 dat_E986:
 ;   "ONE COMPONENT ADDED"
 E986: 4F 4E 45 20 43 4F 4D 50  FCB    $4F,$4E,$45,$20,$43,$4F,$4D,$50
 E98E: 4F 4E 45 4E 54 20 41 44  FCB    $4F,$4E,$45,$4E,$54,$20,$41,$44
 E996: 44 45 44 00              FCB    $44,$45,$44,$00
 
-; Referenced from: $E629 sub_E626
+; Referenced from: $E629 line_byebye
 dat_E99A:
 ;   ""BYEBYE"   COMPLETED"
 E99A: 68 42 59 45 42 59 45 69  FCB    $68,$42,$59,$45,$42,$59,$45,$69
 E9A2: 20 20 20 43 4F 4D 50 4C  FCB    $20,$20,$20,$43,$4F,$4D,$50,$4C
 E9AA: 45 54 45 44 00           FCB    $45,$54,$45,$44,$00
 
-; Referenced from: $E634 sub_E626
+; Referenced from: $E634 line_byebye
 dat_E9AF:
 ;   "ONE COMPONENT DROPPED"
 E9AF: 4F 4E 45 20 43 4F 4D 50  FCB    $4F,$4E,$45,$20,$43,$4F,$4D,$50
 E9B7: 4F 4E 45 4E 54 20 44 52  FCB    $4F,$4E,$45,$4E,$54,$20,$44,$52
 E9BF: 4F 50 50 45 44 00        FCB    $4F,$50,$50,$45,$44,$00
 
-; Referenced from: $E640 sub_E63D
+; Referenced from: $E640 line_extend
 dat_E9C5:
 ;   ""EXTEND" COMPLETED"
 E9C5: 68 45 58 54 45 4E 44 69  FCB    $68,$45,$58,$54,$45,$4E,$44,$69
 E9CD: 20 43 4F 4D 50 4C 45 54  FCB    $20,$43,$4F,$4D,$50,$4C,$45,$54
 E9D5: 45 44 00                 FCB    $45,$44,$00
 
-; Referenced from: $E64B sub_E63D
+; Referenced from: $E64B line_extend
 dat_E9D8:
 ;   " YOU GET A SHIP   "
 E9D8: 20 59 4F 55 20 47 45 54  FCB    $20,$59,$4F,$55,$20,$47,$45,$54
 E9E0: 20 41 20 53 48 49 50 20  FCB    $20,$41,$20,$53,$48,$49,$50,$20
 E9E8: 20 20 00                 FCB    $20,$20,$00
 
-; Referenced from: $E672 sub_E66F, $E6D9 sub_E6D6, $E6FF sub_E6FC, $E77D
-; sub_E77A, $E78A sub_E77A
+; Referenced from: $E672 payout_bonus, $E6D9 payout_gaplus, $E6FF
+; payout_double, $E77D payout_triple, $E78A payout_triple
 dat_E9EB:
 ;   " GRAND TOTAL    00"
 E9EB: 20 47 52 41 4E 44 20 54  FCB    $20,$47,$52,$41,$4E,$44,$20,$54
 E9F3: 4F 54 41 4C 20 20 20 20  FCB    $4F,$54,$41,$4C,$20,$20,$20,$20
 E9FB: 30 30 00                 FCB    $30,$30,$00
 
-; Referenced from: $E531 sub_E50C
+; Referenced from: $E531 line_gaplus
 dat_E9FE:
 ;   "PUSH FIRING BUTTON"
 E9FE: 50 55 53 48 20 46 49 52  FCB    $50,$55,$53,$48,$20,$46,$49,$52
 EA06: 49 4E 47 20 42 55 54 54  FCB    $49,$4E,$47,$20,$42,$55,$54,$54
 EA0E: 4F 4E 00                 FCB    $4F,$4E,$00
 
-; Referenced from: $E37F sub_E346
-dat_EA11:
+; Digit cycle of the " GOOD " bonus (kind 4).
+; Referenced from: $E37F results_show_bonus
+button_digits_good:
 EA11: 31 32 33 34 31 32 33 34  FCB    $31,$32,$33,$34,$31,$32,$33,$34
 
-; Referenced from: $E375 sub_E346
-dat_EA19:
+; Digit cycle of the "GAPLUS" bonus (kind 1).
+; Referenced from: $E375 results_show_bonus
+button_digits_gaplus:
 EA19: 34 35 36 37 30 35 36 37  FCB    $34,$35,$36,$37,$30,$35,$36,$37
 
 ;------------------------------------------------------------------------------
-; sub_EA21  ($EA21)
+; task_challenge_marks  ($EA21) ; JS: sub_EA21
+; -> src/game/main/gp2_2b_stage.js
+; Mode 7 task: the player's challenging pattern (bonus_kind_p1/p2) into
+; results_bonus_kind; draw results_count (max $A5) marks of that pattern
+; (mark_patterns).
 ; Table entry at: $FFA8
 ;------------------------------------------------------------------------------
-sub_EA21:
-EA21: B6 11 71        LDA    $1171
+task_challenge_marks:
+EA21: B6 11 71        LDA    bonus_kind_p1   ; [$1171]
 EA24: D6 2D           LDB    <cur_player     ; [$102D]
 EA26: 27 03           BEQ    lEA2B
-EA28: B6 11 72        LDA    $1172
+EA28: B6 11 72        LDA    bonus_kind_p2   ; [$1172]
 
 lEA2B:
-EA2B: B7 11 66        STA    $1166
-EA2E: B6 11 64        LDA    $1164
+EA2B: B7 11 66        STA    results_bonus_kind ; [$1166]
+EA2E: B6 11 64        LDA    results_count   ; [$1164]
 EA31: 27 51           BEQ    lEA84
-EA33: B6 11 66        LDA    $1166
+EA33: B6 11 66        LDA    results_bonus_kind ; [$1166]
 EA36: 84 07           ANDA   #$07
 EA38: 48              ASLA
-EA39: 8E A0 00        LDX    #dat_A000
+EA39: 8E A0 00        LDX    #mark_patterns
 EA3C: AE 86           LDX    A,X
 EA3E: 4F              CLRA
-EA3F: F6 11 64        LDB    $1164
+EA3F: F6 11 64        LDB    results_count   ; [$1164]
 EA42: C1 A5           CMPB   #$A5
 EA44: 25 05           BCS    lEA4B
 EA46: C6 A5           LDB    #$A5
-EA48: F7 11 64        STB    $1164
+EA48: F7 11 64        STB    results_count   ; [$1164]
 
 lEA4B:
-EA4B: 5A              DECB
+EA4B: 5A              DECB                   ; done after entry 0
 EA4C: C1 FF           CMPB   #$FF
 EA4E: 27 34           BEQ    lEA84
-EA50: 58              ASLB
+EA50: 58              ASLB                   ; D = B * 2 (9 bits); the rorb
+                                             ; after ldx d,x restores B (C is 1
+                                             ; after coma, as after aslb)
 EA51: 24 03           BCC    lEA56
 EA53: 43              COMA
 EA54: 86 01           LDA    #$01
@@ -8142,10 +8672,10 @@ EA62: 86 0A           LDA    #$0A
 EA64: A7 89 04 00     STA    TILE_ATTR,X     ; [$0400]
 
 lEA68:
-EA68: B6 11 66        LDA    $1166
+EA68: B6 11 66        LDA    results_bonus_kind ; [$1166]
 EA6B: 84 07           ANDA   #$07
 EA6D: 48              ASLA
-EA6E: 8E A0 00        LDX    #dat_A000
+EA6E: 8E A0 00        LDX    #mark_patterns
 EA71: AE 86           LDX    A,X
 EA73: 4F              CLRA
 EA74: 20 D5           BRA    lEA4B
@@ -8162,10 +8692,13 @@ EA84: 0C 30           INC    <main_task      ; [$1030]
 EA86: 7E FE B5        JMP    task_dispatch
 
 ;------------------------------------------------------------------------------
-; sub_EA89  ($EA89)
+; task_clear_parked_flags  ($EA89) ; JS: sub_EA89
+; -> src/game/main/gp2_2b_stage.js
+; Modes 0-6 task: for the 37 shadow entries $16CE-$1716 parked at Y >= $E0
+; clear the flag byte at +$0801.
 ; Table entry at: $FED4, $FEEC, $FF0A, $FF28, $FF4A, $FF6E, $FF96
 ;------------------------------------------------------------------------------
-sub_EA89:
+task_clear_parked_flags:
 EA89: 8E 16 CC        LDX    #$16CC
 
 lEA8C:
@@ -8184,6 +8717,7 @@ EAA1: 7E FE B5        JMP    task_dispatch
 
 ;------------------------------------------------------------------------------
 ; task_stage_events  ($EAA4)
+; -> src/game/main/gp2_2b_stage.js
 ; Mode 1 task: on the stages listed at $EACC run the stage event
 ; steps (index $116E).
 ; Table entry at: $FF06
@@ -8196,22 +8730,22 @@ EAA7: A6 80           LDA    ,X+
 EAA9: 10 27 00 A6     LBEQ   lEB53
 EAAD: 91 35           CMPA   <stage          ; [$1035]
 EAAF: 26 F6           BNE    lEAA7
-EAB1: B6 11 6E        LDA    $116E
+EAB1: B6 11 6E        LDA    event_step      ; [$116E]
 EAB4: 48              ASLA
 EAB5: 8E EA BA        LDX    #tbl_EABA
 EAB8: 6E 96           JMP    [A,X]           ; [table tbl_EABA]
 
 ; Referenced from: $EAB5 task_stage_events
 tbl_EABA:
-EABA: EA D5                    FDB    sub_EAD5 ; [0] $EAD5
-EABC: EB 06                    FDB    sub_EB06 ; [1] $EB06
-EABE: EB 2B                    FDB    sub_EB2B ; [2] $EB2B
-EAC0: EB 5B                    FDB    sub_EB5B ; [3] $EB5B
-EAC2: EB 5B                    FDB    sub_EB5B ; [4] $EB5B
-EAC4: EB 5B                    FDB    sub_EB5B ; [5] $EB5B
-EAC6: EB 5B                    FDB    sub_EB5B ; [6] $EB5B
-EAC8: EB 5B                    FDB    sub_EB5B ; [7] $EB5B
-EACA: EB 5B                    FDB    sub_EB5B ; [8] $EB5B
+EABA: EA D5                    FDB    stage_event1_step0 ; [0] $EAD5
+EABC: EB 06                    FDB    stage_event1_step1 ; [1] $EB06
+EABE: EB 2B                    FDB    stage_event1_step2 ; [2] $EB2B
+EAC0: EB 5B                    FDB    stage_events_reset ; [3] $EB5B
+EAC2: EB 5B                    FDB    stage_events_reset ; [4] $EB5B
+EAC4: EB 5B                    FDB    stage_events_reset ; [5] $EB5B
+EAC6: EB 5B                    FDB    stage_events_reset ; [6] $EB5B
+EAC8: EB 5B                    FDB    stage_events_reset ; [7] $EB5B
+EACA: EB 5B                    FDB    stage_events_reset ; [8] $EB5B
 
 ; Referenced from: $EAA4 task_stage_events
 dat_EACC:
@@ -8219,53 +8753,62 @@ EACC: 03 08 12 1C 26 30 3A 44  FCB    $03,$08,$12,$1C,$26,$30,$3A,$44
 EAD4: 00                       FCB    $00
 
 ;------------------------------------------------------------------------------
-; sub_EAD5  ($EAD5)
+; stage_event1_step0  ($EAD5) ; JS: sub_EAD5
+; -> src/game/main/gp2_2b_stage.js
+; Mode-1 event step 0: sound 24 every frame; at frame $3C star_dir_flags = 2 (0
+; flipped), starfield $87/$87, next step.
 ; Table entry at: $EABA
 ;------------------------------------------------------------------------------
-sub_EAD5:
+stage_event1_step0:
 EAD5: 86 01           LDA    #$01
 EAD7: B7 60 58        STA    snd_request+24  ; [$6058]
-EADA: 7C 11 6F        INC    $116F
-EADD: B6 11 6F        LDA    $116F
+EADA: 7C 11 6F        INC    event_timer     ; [$116F]
+EADD: B6 11 6F        LDA    event_timer     ; [$116F]
 EAE0: 81 3C           CMPA   #$3C
-EAE2: 26 1D           BNE    sub_EB01
+EAE2: 26 1D           BNE    task_next
 EAE4: 96 2C           LDA    <flip_screen    ; [$102C]
 EAE6: 26 14           BNE    lEAFC
 EAE8: 86 02           LDA    #$02
-EAEA: B7 11 70        STA    $1170
+EAEA: B7 11 70        STA    star_dir_flags  ; [$1170]
 
 lEAED:
 EAED: 86 87           LDA    #$87
 EAEF: B7 A0 03        STA    STARFIELD+$03   ; [$A003]
 EAF2: 86 87           LDA    #$87
 EAF4: B7 A0 02        STA    STARFIELD+$02   ; [$A002]
-EAF7: 7C 11 6E        INC    $116E
-EAFA: 20 05           BRA    sub_EB01
+EAF7: 7C 11 6E        INC    event_step      ; [$116E]
+EAFA: 20 05           BRA    task_next
 
 lEAFC:
-EAFC: 7F 11 70        CLR    $1170
+EAFC: 7F 11 70        CLR    star_dir_flags  ; [$1170]
 EAFF: 20 EC           BRA    lEAED
 
 ;------------------------------------------------------------------------------
-; sub_EB01  ($EB01)
+; task_next  ($EB01) ; JS: sub_EB01
+; -> src/game/main/gp2_2b_stage.js
+; INC <main_task / JMP task_dispatch: common end of the event steps (and
+; tbl_EB82 step 8).
 ; Jumped to from: $EAE2, $EAFA, $EB0E, $EB1F, $EB33, $EB73, $EBA6, $EBB1,
 ; $EBC6, $EBDD, $EBE9, $EBF4, $EC04, $EC16, $EC2B, $EC42, $EC5F, $EC74, $EC7B,
 ; $EC81, $EC88, $ECA1
 ; Table entry at: $EB92
 ;------------------------------------------------------------------------------
-sub_EB01:
+task_next:
 EB01: 0C 30           INC    <main_task      ; [$1030]
 EB03: 7E FE B5        JMP    task_dispatch
 
 ;------------------------------------------------------------------------------
-; sub_EB06  ($EB06)
+; stage_event1_step1  ($EB06) ; JS: sub_EB06
+; -> src/game/main/gp2_2b_stage.js
+; Mode-1 event step 1: at frame $78 starfield $80/$80 ($86/$86 flipped), next
+; step.
 ; Table entry at: $EABC
 ;------------------------------------------------------------------------------
-sub_EB06:
-EB06: 7C 11 6F        INC    $116F
-EB09: B6 11 6F        LDA    $116F
+stage_event1_step1:
+EB06: 7C 11 6F        INC    event_timer     ; [$116F]
+EB09: B6 11 6F        LDA    event_timer     ; [$116F]
 EB0C: 81 78           CMPA   #$78
-EB0E: 26 F1           BNE    sub_EB01
+EB0E: 26 F1           BNE    task_next
 EB10: 96 2C           LDA    <flip_screen    ; [$102C]
 EB12: 26 0D           BNE    lEB21
 EB14: 86 80           LDA    #$80
@@ -8273,8 +8816,8 @@ EB16: B7 A0 03        STA    STARFIELD+$03   ; [$A003]
 EB19: B7 A0 02        STA    STARFIELD+$02   ; [$A002]
 
 lEB1C:
-EB1C: 7C 11 6E        INC    $116E
-EB1F: 20 E0           BRA    sub_EB01
+EB1C: 7C 11 6E        INC    event_step      ; [$116E]
+EB1F: 20 E0           BRA    task_next
 
 lEB21:
 EB21: 86 86           LDA    #$86
@@ -8283,14 +8826,17 @@ EB26: B7 A0 02        STA    STARFIELD+$02   ; [$A002]
 EB29: 20 F1           BRA    lEB1C
 
 ;------------------------------------------------------------------------------
-; sub_EB2B  ($EB2B)
+; stage_event1_step2  ($EB2B) ; JS: sub_EB2B
+; -> src/game/main/gp2_2b_stage.js
+; Mode-1 event step 2: at frame $B4 starfield $81/$82 ($86/$85 flipped),
+; frame_counter = 7, wait a frame, next game mode.
 ; Table entry at: $EABE
 ;------------------------------------------------------------------------------
-sub_EB2B:
-EB2B: 7C 11 6F        INC    $116F
-EB2E: B6 11 6F        LDA    $116F
+stage_event1_step2:
+EB2B: 7C 11 6F        INC    event_timer     ; [$116F]
+EB2E: B6 11 6F        LDA    event_timer     ; [$116F]
 EB31: 81 B4           CMPA   #$B4
-EB33: 26 CC           BNE    sub_EB01
+EB33: 26 CC           BNE    task_next
 EB35: 96 2C           LDA    <flip_screen    ; [$102C]
 EB37: 26 0F           BNE    lEB48
 EB39: 86 81           LDA    #$81
@@ -8311,77 +8857,89 @@ EB4E: B7 A0 02        STA    STARFIELD+$02   ; [$A002]
 EB51: 20 EF           BRA    lEB42
 
 lEB53:
-EB53: 3C EF           CWAI   #$EF
+EB53: 3C EF           CWAI   #$EF            ; wait for vblank
 EB55: 0C 2F           INC    <game_mode      ; [$102F]
 EB57: 0F 7A           CLR    <sub_task       ; [$107A]
 EB59: 0F 30           CLR    <main_task      ; [$1030]
 
 ;------------------------------------------------------------------------------
-; sub_EB5B  ($EB5B)
+; stage_events_reset  ($EB5B) ; JS: sub_EB5B
+; -> src/game/main/gp2_2b_stage.js
+; Clear event_step, event_timer and $107A... ($107C) and jump to task_dispatch
+; without advancing the task (also tbl_EABA steps 3-8, never reached).
 ; Table entry at: $EAC0, $EAC2, $EAC4, $EAC6, $EAC8, $EACA
 ;------------------------------------------------------------------------------
-sub_EB5B:
-EB5B: 7F 11 6E        CLR    $116E
-EB5E: 7F 11 6F        CLR    $116F
+stage_events_reset:
+EB5B: 7F 11 6E        CLR    event_step      ; [$116E]
+EB5E: 7F 11 6F        CLR    event_timer     ; [$116F]
 EB61: 0F 7C           CLR    <$7C            ; [$107C]
 EB63: 7E FE B5        JMP    task_dispatch
 
 ;------------------------------------------------------------------------------
-; sub_EB66  ($EB66)
+; task_stage_events_play  ($EB66) ; JS: sub_EB66
+; -> src/game/main/gp2_2b_stage.js
+; Mode 5 task: when $1010 is $10 set the starfield for it (star_dir_flags = 1);
+; otherwise on the stages listed at dat_EB94 run event step event_step
+; (tbl_EB82).
 ; Table entry at: $FF90
 ;------------------------------------------------------------------------------
-sub_EB66:
+task_stage_events_play:
 EB66: 96 10           LDA    <$10            ; [$1010]
 EB68: 80 10           SUBA   #$10
 EB6A: 10 27 01 1D     LBEQ   lEC8B
-EB6E: 8E EB 94        LDX    #dat_EB94
+EB6E: 8E EB 94        LDX    #event_stages
 
 lEB71:
 EB71: A6 80           LDA    ,X+
-EB73: 27 8C           BEQ    sub_EB01
+EB73: 27 8C           BEQ    task_next
 EB75: 91 35           CMPA   <stage          ; [$1035]
 EB77: 26 F8           BNE    lEB71
-EB79: B6 11 6E        LDA    $116E
+EB79: B6 11 6E        LDA    event_step      ; [$116E]
 EB7C: 48              ASLA
 EB7D: 8E EB 82        LDX    #tbl_EB82
 EB80: 6E 96           JMP    [A,X]           ; [table tbl_EB82]
 
-; Referenced from: $EB7D sub_EB66
+; Referenced from: $EB7D task_stage_events_play
 tbl_EB82:
-EB82: EB 9B                    FDB    sub_EB9B ; [0] $EB9B
-EB84: EB A9                    FDB    sub_EBA9 ; [1] $EBA9
-EB86: EB D5                    FDB    sub_EBD5 ; [2] $EBD5
-EB88: EB EC                    FDB    sub_EBEC ; [3] $EBEC
-EB8A: EC 0E                    FDB    sub_EC0E ; [4] $EC0E
-EB8C: EC 3A                    FDB    sub_EC3A ; [5] $EC3A
-EB8E: EC 71                    FDB    sub_EC71 ; [6] $EC71
-EB90: EC 7E                    FDB    sub_EC7E ; [7] $EC7E
-EB92: EB 01                    FDB    sub_EB01 ; [8] $EB01
+EB82: EB 9B                    FDB    stage_event5_step0 ; [0] $EB9B
+EB84: EB A9                    FDB    stage_event5_step1 ; [1] $EBA9
+EB86: EB D5                    FDB    stage_event5_step2 ; [2] $EBD5
+EB88: EB EC                    FDB    stage_event5_step3 ; [3] $EBEC
+EB8A: EC 0E                    FDB    stage_event5_step4 ; [4] $EC0E
+EB8C: EC 3A                    FDB    stage_event5_step5 ; [5] $EC3A
+EB8E: EC 71                    FDB    stage_event5_step6 ; [6] $EC71
+EB90: EC 7E                    FDB    stage_event5_step7 ; [7] $EC7E
+EB92: EB 01                    FDB    task_next ; [8] $EB01
 
-; Referenced from: $EB6E sub_EB66
-dat_EB94:
+; Stages with mode-5 starfield events.
+; Referenced from: $EB6E task_stage_events_play
+event_stages:
 EB94: 0D 17 21 2B 35 3F 00     FCB    $0D,$17,$21,$2B,$35,$3F,$00
 
 ;------------------------------------------------------------------------------
-; sub_EB9B  ($EB9B)
+; stage_event5_step0  ($EB9B) ; JS: sub_EB9B
+; -> src/game/main/gp2_2b_stage.js
+; Mode-5 event step 0: star_dir_flags = 1, sound 24, next step.
 ; Table entry at: $EB82
 ;------------------------------------------------------------------------------
-sub_EB9B:
+stage_event5_step0:
 EB9B: 86 01           LDA    #$01
-EB9D: B7 11 70        STA    $1170
+EB9D: B7 11 70        STA    star_dir_flags  ; [$1170]
 EBA0: B7 60 58        STA    snd_request+24  ; [$6058]
-EBA3: 7C 11 6E        INC    $116E
-EBA6: 7E EB 01        JMP    sub_EB01
+EBA3: 7C 11 6E        INC    event_step      ; [$116E]
+EBA6: 7E EB 01        JMP    task_next
 
 ;------------------------------------------------------------------------------
-; sub_EBA9  ($EBA9)
+; stage_event5_step1  ($EBA9) ; JS: sub_EBA9
+; -> src/game/main/gp2_2b_stage.js
+; Mode-5 event step 1: at frame $32 starfield $87/$86 ($87/$80 flipped).
 ; Table entry at: $EB84
 ;------------------------------------------------------------------------------
-sub_EBA9:
-EBA9: 7C 11 6F        INC    $116F
-EBAC: B6 11 6F        LDA    $116F
+stage_event5_step1:
+EBA9: 7C 11 6F        INC    event_timer     ; [$116F]
+EBAC: B6 11 6F        LDA    event_timer     ; [$116F]
 EBAF: 81 32           CMPA   #$32
-EBB1: 10 26 FF 4C     LBNE   sub_EB01
+EBB1: 10 26 FF 4C     LBNE   task_next
 EBB5: 96 2C           LDA    <flip_screen    ; [$102C]
 EBB7: 26 10           BNE    lEBC9
 EBB9: 86 87           LDA    #$87
@@ -8390,8 +8948,8 @@ EBBE: 86 86           LDA    #$86
 EBC0: B7 A0 02        STA    STARFIELD+$02   ; [$A002]
 
 lEBC3:
-EBC3: 7C 11 6E        INC    $116E
-EBC6: 7E EB 01        JMP    sub_EB01
+EBC3: 7C 11 6E        INC    event_step      ; [$116E]
+EBC6: 7E EB 01        JMP    task_next
 
 lEBC9:
 EBC9: 86 87           LDA    #$87
@@ -8401,36 +8959,40 @@ EBD0: B7 A0 02        STA    STARFIELD+$02   ; [$A002]
 EBD3: 20 EE           BRA    lEBC3
 
 ;------------------------------------------------------------------------------
-; sub_EBD5  ($EBD5)
+; stage_event5_step2  ($EBD5) ; JS: sub_EBD5
+; -> src/game/main/gp2_2b_stage.js
+; Mode-5 event step 2: at frame $64 starfield register 2 = $87.
 ; Table entry at: $EB86
 ;------------------------------------------------------------------------------
-sub_EBD5:
-EBD5: 7C 11 6F        INC    $116F
-EBD8: B6 11 6F        LDA    $116F
+stage_event5_step2:
+EBD5: 7C 11 6F        INC    event_timer     ; [$116F]
+EBD8: B6 11 6F        LDA    event_timer     ; [$116F]
 EBDB: 81 64           CMPA   #$64
-EBDD: 10 26 FF 20     LBNE   sub_EB01
+EBDD: 10 26 FF 20     LBNE   task_next
 EBE1: 86 87           LDA    #$87
 EBE3: B7 A0 02        STA    STARFIELD+$02   ; [$A002]
-EBE6: 7C 11 6E        INC    $116E
-EBE9: 7E EB 01        JMP    sub_EB01
+EBE6: 7C 11 6E        INC    event_step      ; [$116E]
+EBE9: 7E EB 01        JMP    task_next
 
 ;------------------------------------------------------------------------------
-; sub_EBEC  ($EBEC)
+; stage_event5_step3  ($EBEC) ; JS: sub_EBEC
+; -> src/game/main/gp2_2b_stage.js
+; Mode-5 event step 3: at frame $96 starfield register 2 = $80 ($86 flipped).
 ; Table entry at: $EB88
 ;------------------------------------------------------------------------------
-sub_EBEC:
-EBEC: 7C 11 6F        INC    $116F
-EBEF: B6 11 6F        LDA    $116F
+stage_event5_step3:
+EBEC: 7C 11 6F        INC    event_timer     ; [$116F]
+EBEF: B6 11 6F        LDA    event_timer     ; [$116F]
 EBF2: 81 96           CMPA   #$96
-EBF4: 10 26 FF 09     LBNE   sub_EB01
+EBF4: 10 26 FF 09     LBNE   task_next
 EBF8: 96 2C           LDA    <flip_screen    ; [$102C]
 EBFA: 26 0B           BNE    lEC07
 EBFC: 86 80           LDA    #$80
 EBFE: B7 A0 02        STA    STARFIELD+$02   ; [$A002]
 
 lEC01:
-EC01: 7C 11 6E        INC    $116E
-EC04: 7E EB 01        JMP    sub_EB01
+EC01: 7C 11 6E        INC    event_step      ; [$116E]
+EC04: 7E EB 01        JMP    task_next
 
 lEC07:
 EC07: 86 86           LDA    #$86
@@ -8438,14 +9000,16 @@ EC09: B7 A0 02        STA    STARFIELD+$02   ; [$A002]
 EC0C: 20 F3           BRA    lEC01
 
 ;------------------------------------------------------------------------------
-; sub_EC0E  ($EC0E)
+; stage_event5_step4  ($EC0E) ; JS: sub_EC0E
+; -> src/game/main/gp2_2b_stage.js
+; Mode-5 event step 4: at frame $C8 starfield $80/$81 ($86/$85 flipped).
 ; Table entry at: $EB8A
 ;------------------------------------------------------------------------------
-sub_EC0E:
-EC0E: 7C 11 6F        INC    $116F
-EC11: B6 11 6F        LDA    $116F
+stage_event5_step4:
+EC0E: 7C 11 6F        INC    event_timer     ; [$116F]
+EC11: B6 11 6F        LDA    event_timer     ; [$116F]
 EC14: 81 C8           CMPA   #$C8
-EC16: 10 26 FE E7     LBNE   sub_EB01
+EC16: 10 26 FE E7     LBNE   task_next
 EC1A: 96 2C           LDA    <flip_screen    ; [$102C]
 EC1C: 26 10           BNE    lEC2E
 EC1E: 86 80           LDA    #$80
@@ -8454,8 +9018,8 @@ EC23: 86 81           LDA    #$81
 EC25: B7 A0 02        STA    STARFIELD+$02   ; [$A002]
 
 lEC28:
-EC28: 7C 11 6E        INC    $116E
-EC2B: 7E EB 01        JMP    sub_EB01
+EC28: 7C 11 6E        INC    event_step      ; [$116E]
+EC2B: 7E EB 01        JMP    task_next
 
 lEC2E:
 EC2E: 86 86           LDA    #$86
@@ -8465,30 +9029,33 @@ EC35: B7 A0 02        STA    STARFIELD+$02   ; [$A002]
 EC38: 20 EE           BRA    lEC28
 
 ;------------------------------------------------------------------------------
-; sub_EC3A  ($EC3A)
+; stage_event5_step5  ($EC3A) ; JS: sub_EC3A
+; -> src/game/main/gp2_2b_stage.js
+; Mode-5 event step 5: at frame $FA star_dir_flags = 2 and starfield $81/$82
+; (flipped: 0, $85/$84), event_timer = 0.
 ; Table entry at: $EB8C
 ;------------------------------------------------------------------------------
-sub_EC3A:
-EC3A: 7C 11 6F        INC    $116F
-EC3D: B6 11 6F        LDA    $116F
+stage_event5_step5:
+EC3A: 7C 11 6F        INC    event_timer     ; [$116F]
+EC3D: B6 11 6F        LDA    event_timer     ; [$116F]
 EC40: 81 FA           CMPA   #$FA
-EC42: 10 26 FE BB     LBNE   sub_EB01
+EC42: 10 26 FE BB     LBNE   task_next
 EC46: 96 2C           LDA    <flip_screen    ; [$102C]
 EC48: 26 18           BNE    lEC62
 EC4A: 86 02           LDA    #$02
-EC4C: B7 11 70        STA    $1170
+EC4C: B7 11 70        STA    star_dir_flags  ; [$1170]
 EC4F: 86 81           LDA    #$81
 EC51: B7 A0 03        STA    STARFIELD+$03   ; [$A003]
 EC54: 86 82           LDA    #$82
 EC56: B7 A0 02        STA    STARFIELD+$02   ; [$A002]
 
 lEC59:
-EC59: 7C 11 6E        INC    $116E
-EC5C: 7F 11 6F        CLR    $116F
-EC5F: 7E EB 01        JMP    sub_EB01
+EC59: 7C 11 6E        INC    event_step      ; [$116E]
+EC5C: 7F 11 6F        CLR    event_timer     ; [$116F]
+EC5F: 7E EB 01        JMP    task_next
 
 lEC62:
-EC62: 7F 11 70        CLR    $1170
+EC62: 7F 11 70        CLR    star_dir_flags  ; [$1170]
 EC65: 86 85           LDA    #$85
 EC67: B7 A0 03        STA    STARFIELD+$03   ; [$A003]
 EC6A: 86 84           LDA    #$84
@@ -8496,36 +9063,41 @@ EC6C: B7 A0 02        STA    STARFIELD+$02   ; [$A002]
 EC6F: 20 E8           BRA    lEC59
 
 ;------------------------------------------------------------------------------
-; sub_EC71  ($EC71)
+; stage_event5_step6  ($EC71) ; JS: sub_EC71
+; -> src/game/main/gp2_2b_stage.js
+; Mode-5 event step 6: wait until event_timer wraps (256 frames), next step.
 ; Table entry at: $EB8E
 ;------------------------------------------------------------------------------
-sub_EC71:
-EC71: 7C 11 6F        INC    $116F
-EC74: 10 26 FE 89     LBNE   sub_EB01
-EC78: 7C 11 6E        INC    $116E
-EC7B: 7E EB 01        JMP    sub_EB01
+stage_event5_step6:
+EC71: 7C 11 6F        INC    event_timer     ; [$116F]
+EC74: 10 26 FE 89     LBNE   task_next
+EC78: 7C 11 6E        INC    event_step      ; [$116E]
+EC7B: 7E EB 01        JMP    task_next
 
 ;------------------------------------------------------------------------------
-; sub_EC7E  ($EC7E)
+; stage_event5_step7  ($EC7E) ; JS: sub_EC7E
+; -> src/game/main/gp2_2b_stage.js
+; Mode-5 event step 7: the same 256-frame wait.
 ; Table entry at: $EB90
 ;------------------------------------------------------------------------------
-sub_EC7E:
-EC7E: 7C 11 6F        INC    $116F
-EC81: 10 26 FE 7C     LBNE   sub_EB01
-EC85: 7C 11 6E        INC    $116E
-EC88: 7E EB 01        JMP    sub_EB01
+stage_event5_step7:
+EC7E: 7C 11 6F        INC    event_timer     ; [$116F]
+EC81: 10 26 FE 7C     LBNE   task_next
+EC85: 7C 11 6E        INC    event_step      ; [$116E]
+EC88: 7E EB 01        JMP    task_next
 
 lEC8B:
 EC8B: 86 01           LDA    #$01
-EC8D: B7 11 70        STA    $1170
+EC8D: B7 11 70        STA    star_dir_flags  ; [$1170]
 EC90: 86 AF           LDA    #$AF
 EC92: B7 A0 01        STA    STARFIELD+$01   ; [$A001]
 EC95: 86 AF           LDA    #$AF
 EC97: B7 A0 03        STA    STARFIELD+$03   ; [$A003]
 EC9A: 86 9F           LDA    #$9F
 EC9C: B7 A0 02        STA    STARFIELD+$02   ; [$A002]
-EC9F: 21 B8           BRN    $EC59
-ECA1: 7E EB 01        JMP    sub_EB01
+EC9F: 21 B8           BRN    $EC59           ; QUIRK: BRN never branches: a
+                                             ; disabled jump to the step
+ECA1: 7E EB 01        JMP    task_next
 ECA4: 01 02 00 03 04 05 06 00  FCB    $01,$02,$00,$03,$04,$05,$06,$00
                                              ; [unreached]
 ECAC: 07 08 09 0A 00 0B 0C 0D  FCB    $07,$08,$09,$0A,$00,$0B,$0C,$0D
@@ -8588,22 +9160,28 @@ EE6C: 1B 00 1C 1D 1E 17 00 1F  FCB    $1B,$00,$1C,$1D,$1E,$17,$00,$1F
 EE74: 20 21 1B 00 22 23 24 25  FCB    $20,$21,$1B,$00,$22,$23,$24,$25
 EE7C: 00 26 27 28 29 00 2A 2B  FCB    $00,$26,$27,$28,$29,$00,$2A,$2B
 
+; load_stage_params: 4 bytes per record to $1036-$1039 (moving-slot counts for
+; task_attack_timer).
 ; Referenced from: $F4C5 load_stage_params
-dat_EE84:
+stage_attack_counts:
 EE84: 03 03 03 03 03 03 03 04  FCB    $03,$03,$03,$03,$03,$03,$03,$04
 EE8C: 03 03 04 04 03 04 05 05  FCB    $03,$03,$04,$04,$03,$04,$05,$05
 EE94: 04 04 05 06 05 05 06 07  FCB    $04,$04,$05,$06,$05,$05,$06,$07
 EE9C: 06 06 07 07 06 07 08 08  FCB    $06,$06,$07,$07,$06,$07,$08,$08
 
+; load_stage_params: 8 bytes per record to $103A-$1041 (trio launch timer
+; thresholds).
 ; Referenced from: $F4DC load_stage_params
-dat_EEA4:
+stage_trio_thresholds:
 EEA4: 01 7E 00 FE 00 BE 00 7E  FCB    $01,$7E,$00,$FE,$00,$BE,$00,$7E
 EEAC: 01 3E 00 BE 00 9E 00 7E  FCB    $01,$3E,$00,$BE,$00,$9E,$00,$7E
 EEB4: 00 FE 00 BE 00 7E 00 7E  FCB    $00,$FE,$00,$BE,$00,$7E,$00,$7E
 EEBC: 00 E6 00 A6 00 7A 00 7A  FCB    $00,$E6,$00,$A6,$00,$7A,$00,$7A
 
+; load_stage_params: 8 bytes per record to $1042-$1049 and $104A-$1051 (group
+; launch thresholds).
 ; Referenced from: $F4F3 load_stage_params, $F50A load_stage_params
-dat_EEC4:
+stage_group_thresholds:
 EEC4: 00 BF 00 95 00 7F 00 7F  FCB    $00,$BF,$00,$95,$00,$7F,$00,$7F
 EECC: 00 9F 00 7F 00 5F 00 5F  FCB    $00,$9F,$00,$7F,$00,$5F,$00,$5F
 EED4: 00 9F 00 5F 00 5F 00 4F  FCB    $00,$9F,$00,$5F,$00,$5F,$00,$4F
@@ -8637,8 +9215,9 @@ EFAC: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
 EFB4: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
 EFBC: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
 
+; load_stage_params: words to $1064 (end of the enemy shot slots).
 ; Referenced from: $F521 load_stage_params
-dat_EFC4:
+stage_shot_limit:
 EFC4: 0E D0 0E D2 0E D4 0E D6  FCB    $0E,$D0,$0E,$D2,$0E,$D4,$0E,$D6
 EFCC: 0E D8 0E DA 0E DC        FCB    $0E,$D8,$0E,$DA,$0E,$DC
 
@@ -8735,8 +9314,10 @@ F252: 05 07 07 05 07 07 07 07  FCB    $05,$07,$07,$05,$07,$07,$07,$07
 F25A: 05 04 04 00 00 00 07 05  FCB    $05,$04,$04,$00,$00,$00,$07,$05
 F262: 07 07 05 07              FCB    $07,$07,$05,$07
 
+; load_stage_params: 8 records of 4 path pointers to $1052-$1059 (the dive
+; paths, sub path_XXXX streams).
 ; Referenced from: $F563 load_stage_params
-dat_F266:
+stage_dive_paths:
 F266: C4 DB CB 5A C4 DB CB 5A  FCB    $C4,$DB,$CB,$5A,$C4,$DB,$CB,$5A
 F26E: C5 B1 CC 2C C5 B1 CC 2C  FCB    $C5,$B1,$CC,$2C,$C5,$B1,$CC,$2C
 F276: C6 7F CC FA C6 7F CC FA  FCB    $C6,$7F,$CC,$FA,$C6,$7F,$CC,$FA
@@ -8809,23 +9390,27 @@ F46E: 00 00 00 00 00 00 00 00  FCB    $00,$00,$00,$00,$00,$00,$00,$00
 F476: 00 00 00 28 04 01 03 02  FCB    $00,$00,$00,$28,$04,$01,$03,$02
 F47E: 00 00 00 28 04 01 03 02  FCB    $00,$00,$00,$28,$04,$01,$03,$02
 
+; load_stage_params: table pointers by difficulty ($1004), signed index.
 ; Referenced from: $F4B4 load_stage_params
-dat_F486:
+stage_tables_by_difficulty:
 F486: EC A4 EC E0 ED 1C ED 58  FCB    $EC,$A4,$EC,$E0,$ED,$1C,$ED,$58
 F48E: ED 94 ED D0 EE 0C EE 48  FCB    $ED,$94,$ED,$D0,$EE,$0C,$EE,$48
 
+; load_stage_params: bytes for $100F-$1011 (+1 at difficulty >= 5).
 ; Referenced from: $F591 load_stage_params
-dat_F496:
+stage_speeds:
 F496: 18 20 28 30 38 40 48 50  FCB    $18,$20,$28,$30,$38,$40,$48,$50
 F49E: 58 60 68 70 78 80 88     FCB    $58,$60,$68,$70,$78,$80,$88
 
 ;------------------------------------------------------------------------------
 ; load_stage_params  ($F4A5)
+; -> src/game/main/gp2_2b_stage.js
 ; Load the stage's parameters. $1035 = stage (reduced to < 60 by
 ; subtracting 30); tables indexed by difficulty $1004 and stage give
 ; the enemy groups, speeds and the formation layout copied to
 ; $1036-$1059 and $1052-$1059.
-; Called from: $D823 task_stage_start, $DC4A sub_DC1C
+; QUIRK: the third lookup uses the old $1011; table indexes are signed (A,X).
+; Called from: $D823 task_stage_start, $DC4A print_string_attr_r
 ;------------------------------------------------------------------------------
 load_stage_params:
 F4A5: 96 35           LDA    <stage          ; [$1035]
@@ -8838,9 +9423,9 @@ F4AD: 20 F8           BRA    lF4A7
 
 lF4AF:
 F4AF: 97 35           STA    <stage          ; [$1035]
-F4B1: 96 04           LDA    <difficulty     ; [$1004]
+F4B1: 96 04           LDA    <difficulty     ; signed offset [$1004]
 F4B3: 48              ASLA
-F4B4: 8E F4 86        LDX    #dat_F486
+F4B4: 8E F4 86        LDX    #stage_tables_by_difficulty
 F4B7: AE 86           LDX    A,X
 F4B9: 96 35           LDA    <stage          ; [$1035]
 F4BB: A6 86           LDA    A,X
@@ -8848,59 +9433,59 @@ F4BD: C6 08           LDB    #$08
 F4BF: 3D              MUL
 F4C0: 8E EF D2        LDX    #dat_EFD2
 F4C3: 30 8B           LEAX   D,X
-F4C5: CE EE 84        LDU    #dat_EE84
+F4C5: CE EE 84        LDU    #stage_attack_counts ; 4 bytes to $1036
 F4C8: A6 80           LDA    ,X+
 F4CA: C6 04           LDB    #$04
 F4CC: 3D              MUL
 F4CD: 33 CB           LEAU   D,U
 F4CF: C6 04           LDB    #$04
-F4D1: 10 8E 10 36     LDY    #$1036
+F4D1: 10 8E 10 36     LDY    #stage_params   ; [#$1036]
 
 lF4D5:
 F4D5: A6 C0           LDA    ,U+
 F4D7: A7 A0           STA    ,Y+
 F4D9: 5A              DECB
 F4DA: 26 F9           BNE    lF4D5
-F4DC: CE EE A4        LDU    #dat_EEA4
+F4DC: CE EE A4        LDU    #stage_trio_thresholds ; 8 bytes to $103A
 F4DF: A6 80           LDA    ,X+
 F4E1: C6 08           LDB    #$08
 F4E3: 3D              MUL
 F4E4: 33 CB           LEAU   D,U
 F4E6: C6 08           LDB    #$08
-F4E8: 10 8E 10 3A     LDY    #$103A
+F4E8: 10 8E 10 3A     LDY    #stage_params+4 ; [#$103A]
 
 lF4EC:
 F4EC: A6 C0           LDA    ,U+
 F4EE: A7 A0           STA    ,Y+
 F4F0: 5A              DECB
 F4F1: 26 F9           BNE    lF4EC
-F4F3: CE EE C4        LDU    #dat_EEC4
+F4F3: CE EE C4        LDU    #stage_group_thresholds
 F4F6: A6 80           LDA    ,X+
 F4F8: C6 08           LDB    #$08
 F4FA: 3D              MUL
 F4FB: 33 CB           LEAU   D,U
 F4FD: C6 08           LDB    #$08
-F4FF: 10 8E 10 42     LDY    #$1042
+F4FF: 10 8E 10 42     LDY    #stage_params+12 ; [#$1042]
 
 lF503:
 F503: A6 C0           LDA    ,U+
 F505: A7 A0           STA    ,Y+
 F507: 5A              DECB
 F508: 26 F9           BNE    lF503
-F50A: CE EE C4        LDU    #dat_EEC4
+F50A: CE EE C4        LDU    #stage_group_thresholds
 F50D: A6 80           LDA    ,X+
 F50F: C6 08           LDB    #$08
 F511: 3D              MUL
 F512: 33 CB           LEAU   D,U
 F514: C6 08           LDB    #$08
-F516: 10 8E 10 4A     LDY    #$104A
+F516: 10 8E 10 4A     LDY    #stage_params+20 ; [#$104A]
 
 lF51A:
 F51A: A6 C0           LDA    ,U+
 F51C: A7 A0           STA    ,Y+
 F51E: 5A              DECB
 F51F: 26 F9           BNE    lF51A
-F521: CE EF C4        LDU    #dat_EFC4
+F521: CE EF C4        LDU    #stage_shot_limit
 F524: A6 80           LDA    ,X+
 F526: 48              ASLA
 F527: EC C6           LDD    A,U
@@ -8925,18 +9510,18 @@ F54D: 97 70           STA    <$70            ; [$1070]
 F54F: A6 80           LDA    ,X+
 F551: 97 12           STA    <$12            ; [$1012]
 F553: A6 80           LDA    ,X+
-F555: 97 71           STA    <$71            ; [$1071]
+F555: 97 71           STA    <refill_left    ; [$1071]
 F557: A6 80           LDA    ,X+
 F559: B7 11 02        STA    $1102
 F55C: A6 80           LDA    ,X+
 F55E: B7 11 03        STA    $1103
 F561: A6 80           LDA    ,X+
-F563: 8E F2 66        LDX    #dat_F266
+F563: 8E F2 66        LDX    #stage_dive_paths
 F566: C6 08           LDB    #$08
 F568: 3D              MUL
 F569: 30 8B           LEAX   D,X
 F56B: C6 08           LDB    #$08
-F56D: CE 10 52        LDU    #$1052
+F56D: CE 10 52        LDU    #stage_params+28 ; [#$1052]
 
 lF570:
 F570: A6 80           LDA    ,X+
@@ -8958,7 +9543,7 @@ F58A: 3D              MUL
 F58B: 30 8B           LEAX   D,X
 F58D: A6 80           LDA    ,X+
 F58F: 9B 11           ADDA   <$11            ; [$1011]
-F591: CE F4 96        LDU    #dat_F496
+F591: CE F4 96        LDU    #stage_speeds
 F594: A6 C6           LDA    A,U
 F596: 97 0F           STA    <$0F            ; [$100F]
 F598: A6 80           LDA    ,X+
@@ -8989,14 +9574,19 @@ F5C3: 39              RTS
 
 ;------------------------------------------------------------------------------
 ; task_spawn_effect  ($F5C4)
+; -> src/game/main/gp2_2b_fx.js
+; Take one request (effect_request > 0) and start an effect in the first free
+; slot of effect_step ($110C-$110E) at effect_pos with flags $40 / $110B.
+; QUIRK: a request is lost when all three slots are busy (the DEC has already
+; happened).
 ; Table entry at: $FEE2, $FF00, $FF1E, $FF40, $FF60, $FF86, $FFA0
 ;------------------------------------------------------------------------------
 task_spawn_effect:
-F5C4: B6 11 08        LDA    $1108
+F5C4: B6 11 08        LDA    effect_request  ; [$1108]
 F5C7: 27 2C           BEQ    lF5F5
-F5C9: 7A 11 08        DEC    $1108
+F5C9: 7A 11 08        DEC    effect_request  ; [$1108]
 F5CC: C6 FE           LDB    #$FE
-F5CE: 8E 11 0C        LDX    #$110C
+F5CE: 8E 11 0C        LDX    #effect_step    ; [#$110C]
 
 lF5D1:
 F5D1: CB 02           ADDB   #$02
@@ -9004,14 +9594,14 @@ F5D3: 8C 11 0F        CMPX   #$110F
 F5D6: 27 1D           BEQ    lF5F5
 F5D8: A6 80           LDA    ,X+
 F5DA: 26 F5           BNE    lF5D1
-F5DC: 86 01           LDA    #$01
+F5DC: 86 01           LDA    #$01            ; the slot starts at step 1
 F5DE: A7 1F           STA    -$1,X
 F5E0: 8E 0E 8C        LDX    #$0E8C
 F5E3: 30 85           LEAX   B,X
-F5E5: FC 11 09        LDD    $1109
+F5E5: FC 11 09        LDD    effect_pos      ; [$1109]
 F5E8: ED 89 08 00     STD    $0800,X
 F5EC: 86 40           LDA    #$40
-F5EE: F6 11 0B        LDB    $110B
+F5EE: F6 11 0B        LDB    effect_flags    ; [$110B]
 F5F1: ED 89 10 00     STD    $1000,X
 
 lF5F5:
@@ -9020,30 +9610,33 @@ F5F7: 7E FE B5        JMP    task_dispatch
 
 ;------------------------------------------------------------------------------
 ; task_animate_effects  ($F5FA)
+; -> src/game/main/gp2_2b_fx.js
+; For each busy effect slot (shadow $0E8C/$0E8E/$0E90) increment its step and
+; run effect_steps[old step] with U = the entry (8-bit ASLA, signed offset).
 ; Table entry at: $FEE4, $FF02, $FF20, $FF42, $FF62, $FF88, $FFA2
 ;------------------------------------------------------------------------------
 task_animate_effects:
-F5FA: B6 11 0C        LDA    $110C
+F5FA: B6 11 0C        LDA    effect_step     ; [$110C]
 F5FD: 27 0C           BEQ    lF60B
-F5FF: 7C 11 0C        INC    $110C
+F5FF: 7C 11 0C        INC    effect_step     ; [$110C]
 F602: CE 0E 8C        LDU    #$0E8C
 F605: 48              ASLA
 F606: 8E F6 2F        LDX    #effect_steps
 F609: AD 96           JSR    [A,X]           ; [table effect_steps]
 
 lF60B:
-F60B: B6 11 0D        LDA    $110D
+F60B: B6 11 0D        LDA    effect_step+1   ; [$110D]
 F60E: 27 0C           BEQ    lF61C
-F610: 7C 11 0D        INC    $110D
+F610: 7C 11 0D        INC    effect_step+1   ; [$110D]
 F613: CE 0E 8E        LDU    #$0E8E
 F616: 48              ASLA
 F617: 8E F6 2F        LDX    #effect_steps
 F61A: AD 96           JSR    [A,X]           ; [table effect_steps]
 
 lF61C:
-F61C: B6 11 0E        LDA    $110E
+F61C: B6 11 0E        LDA    effect_step+2   ; [$110E]
 F61F: 27 D4           BEQ    lF5F5
-F621: 7C 11 0E        INC    $110E
+F621: 7C 11 0E        INC    effect_step+2   ; [$110E]
 F624: CE 0E 90        LDU    #$0E90
 F627: 48              ASLA
 F628: 8E F6 2F        LDX    #effect_steps
@@ -9053,81 +9646,95 @@ F62D: 20 C6           BRA    lF5F5
 ; Referenced from: $F606 task_animate_effects, $F617 task_animate_effects,
 ; $F628 task_animate_effects
 effect_steps:
-F62F: F6 73                    FDB    sub_F673 ; [0] $F673
-F631: F6 75                    FDB    sub_F675 ; [1] $F675
-F633: F6 7B                    FDB    sub_F67B ; [2] $F67B
-F635: F6 7B                    FDB    sub_F67B ; [3] $F67B
-F637: F6 7B                    FDB    sub_F67B ; [4] $F67B
-F639: F6 7B                    FDB    sub_F67B ; [5] $F67B
-F63B: F6 7B                    FDB    sub_F67B ; [6] $F67B
-F63D: F6 7B                    FDB    sub_F67B ; [7] $F67B
-F63F: F6 7B                    FDB    sub_F67B ; [8] $F67B
-F641: F6 7E                    FDB    sub_F67E ; [9] $F67E
-F643: F6 7B                    FDB    sub_F67B ; [10] $F67B
-F645: F6 7B                    FDB    sub_F67B ; [11] $F67B
-F647: F6 7B                    FDB    sub_F67B ; [12] $F67B
-F649: F6 7B                    FDB    sub_F67B ; [13] $F67B
-F64B: F6 7B                    FDB    sub_F67B ; [14] $F67B
-F64D: F6 7B                    FDB    sub_F67B ; [15] $F67B
-F64F: F6 7B                    FDB    sub_F67B ; [16] $F67B
-F651: F6 84                    FDB    sub_F684 ; [17] $F684
-F653: F6 7B                    FDB    sub_F67B ; [18] $F67B
-F655: F6 7B                    FDB    sub_F67B ; [19] $F67B
-F657: F6 7B                    FDB    sub_F67B ; [20] $F67B
-F659: F6 7B                    FDB    sub_F67B ; [21] $F67B
-F65B: F6 7B                    FDB    sub_F67B ; [22] $F67B
-F65D: F6 7B                    FDB    sub_F67B ; [23] $F67B
-F65F: F6 BA                    FDB    sub_F6BA ; [24] $F6BA
-F661: F6 7B                    FDB    sub_F67B ; [25] $F67B
-F663: F6 7B                    FDB    sub_F67B ; [26] $F67B
-F665: F6 7B                    FDB    sub_F67B ; [27] $F67B
-F667: F6 7B                    FDB    sub_F67B ; [28] $F67B
-F669: F6 7B                    FDB    sub_F67B ; [29] $F67B
-F66B: F6 7B                    FDB    sub_F67B ; [30] $F67B
-F66D: F6 7B                    FDB    sub_F67B ; [31] $F67B
-F66F: F6 C0                    FDB    sub_F6C0 ; [32] $F6C0
-F671: F6 C5                    FDB    sub_F6C5 ; [33] $F6C5
+F62F: F6 73                    FDB    effect_exit ; [0] $F673
+F631: F6 75                    FDB    effect_start ; [1] $F675
+F633: F6 7B                    FDB    effect_colour ; [2] $F67B
+F635: F6 7B                    FDB    effect_colour ; [3] $F67B
+F637: F6 7B                    FDB    effect_colour ; [4] $F67B
+F639: F6 7B                    FDB    effect_colour ; [5] $F67B
+F63B: F6 7B                    FDB    effect_colour ; [6] $F67B
+F63D: F6 7B                    FDB    effect_colour ; [7] $F67B
+F63F: F6 7B                    FDB    effect_colour ; [8] $F67B
+F641: F6 7E                    FDB    effect_step9 ; [9] $F67E
+F643: F6 7B                    FDB    effect_colour ; [10] $F67B
+F645: F6 7B                    FDB    effect_colour ; [11] $F67B
+F647: F6 7B                    FDB    effect_colour ; [12] $F67B
+F649: F6 7B                    FDB    effect_colour ; [13] $F67B
+F64B: F6 7B                    FDB    effect_colour ; [14] $F67B
+F64D: F6 7B                    FDB    effect_colour ; [15] $F67B
+F64F: F6 7B                    FDB    effect_colour ; [16] $F67B
+F651: F6 84                    FDB    effect_grow ; [17] $F684
+F653: F6 7B                    FDB    effect_colour ; [18] $F67B
+F655: F6 7B                    FDB    effect_colour ; [19] $F67B
+F657: F6 7B                    FDB    effect_colour ; [20] $F67B
+F659: F6 7B                    FDB    effect_colour ; [21] $F67B
+F65B: F6 7B                    FDB    effect_colour ; [22] $F67B
+F65D: F6 7B                    FDB    effect_colour ; [23] $F67B
+F65F: F6 BA                    FDB    effect_step24 ; [24] $F6BA
+F661: F6 7B                    FDB    effect_colour ; [25] $F67B
+F663: F6 7B                    FDB    effect_colour ; [26] $F67B
+F665: F6 7B                    FDB    effect_colour ; [27] $F67B
+F667: F6 7B                    FDB    effect_colour ; [28] $F67B
+F669: F6 7B                    FDB    effect_colour ; [29] $F67B
+F66B: F6 7B                    FDB    effect_colour ; [30] $F67B
+F66D: F6 7B                    FDB    effect_colour ; [31] $F67B
+F66F: F6 C0                    FDB    effect_hide ; [32] $F6C0
+F671: F6 C5                    FDB    effect_free_slot ; [33] $F6C5
 
 ;------------------------------------------------------------------------------
-; sub_F673  ($F673)
+; effect_exit  ($F673) ; JS: sub_F673
+; -> src/game/main/gp2_2b_fx.js
+; effect_steps[0] (step $80 only): BRA $F5F5 -- does the calling task's INC
+; <main_task / JMP task_dispatch from inside the JSR.
+; QUIRK: leaves the task from inside a JSR; the return address stays on the
+; stack until the next LDS.
 ; Table entry at: $F62F
 ;------------------------------------------------------------------------------
-sub_F673:
+effect_exit:
 F673: 20 80           BRA    lF5F5
 
 ;------------------------------------------------------------------------------
-; sub_F675  ($F675)
+; effect_start  ($F675) ; JS: sub_F675
+; -> src/game/main/gp2_2b_fx.js
+; Effect step 1: sprite code/colour $68,$32 at ,U.
 ; Table entry at: $F631
 ;------------------------------------------------------------------------------
-sub_F675:
+effect_start:
 F675: CC 68 32        LDD    #$6832
 F678: ED C4           STD    ,U
 F67A: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_F67B  ($F67B)
+; effect_colour  ($F67B) ; JS: sub_F67B
+; -> src/game/main/gp2_2b_fx.js
+; Most effect steps: INC 1,U (the colour byte).
 ; Table entry at: $F633, $F635, $F637, $F639, $F63B, $F63D, $F63F, $F643,
 ; $F645, $F647, $F649, $F64B, $F64D, $F64F, $F653, $F655, $F657, $F659, $F65B,
 ; $F65D, $F661, $F663, $F665, $F667, $F669, $F66B, $F66D
 ;------------------------------------------------------------------------------
-sub_F67B:
+effect_colour:
 F67B: 6C 41           INC    $1,U
 F67D: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_F67E  ($F67E)
+; effect_step9  ($F67E) ; JS: sub_F67E
+; -> src/game/main/gp2_2b_fx.js
+; Effect step 9: code/colour $69,$32 at ,U.
 ; Table entry at: $F641
 ;------------------------------------------------------------------------------
-sub_F67E:
+effect_step9:
 F67E: CC 69 32        LDD    #$6932
 F681: ED C4           STD    ,U
 F683: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_F684  ($F684)
+; effect_grow  ($F684) ; JS: sub_F684
+; -> src/game/main/gp2_2b_fx.js
+; Effect step 17: code $60,$32, then double size: Y -= 8, X -= 8 (+8 flipped)
+; with the carry into the X high bit, flags $68.
 ; Table entry at: $F651
 ;------------------------------------------------------------------------------
-sub_F684:
+effect_grow:
 F684: CC 60 32        LDD    #$6032
 F687: ED C4           STD    ,U
 F689: 96 2C           LDA    <flip_screen    ; [$102C]
@@ -9141,7 +9748,7 @@ F69D: C9 00           ADCB   #$00
 F69F: 20 12           BRA    lF6B3
 
 lF6A1:
-F6A1: EC C9 08 00     LDD    $0800,U
+F6A1: EC C9 08 00     LDD    $0800,U         ; the borrow of the SUBB
 F6A5: 80 08           SUBA   #$08
 F6A7: C0 08           SUBB   #$08
 F6A9: ED C9 08 00     STD    $0800,U
@@ -9154,78 +9761,92 @@ F6B5: ED C9 10 00     STD    $1000,U
 F6B9: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_F6BA  ($F6BA)
+; effect_step24  ($F6BA) ; JS: sub_F6BA
+; -> src/game/main/gp2_2b_fx.js
+; Effect step 24: code/colour $64,$32 at ,U.
 ; Table entry at: $F65F
 ;------------------------------------------------------------------------------
-sub_F6BA:
+effect_step24:
 F6BA: CC 64 32        LDD    #$6432
 F6BD: ED C4           STD    ,U
 F6BF: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_F6C0  ($F6C0)
+; effect_hide  ($F6C0) ; JS: sub_F6C0
+; -> src/game/main/gp2_2b_fx.js
+; Effect step 32: CLR $1001,U -- the sprite is no longer in use.
 ; Table entry at: $F66F
 ;------------------------------------------------------------------------------
-sub_F6C0:
+effect_hide:
 F6C0: 6F C9 10 01     CLR    $1001,U
 F6C4: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_F6C5  ($F6C5)
+; effect_free_slot  ($F6C5) ; JS: sub_F6C5
+; -> src/game/main/gp2_2b_fx.js
+; Effect step 33: free the slot that owns U ($0E8C -> $110C, $0E8E -> $110D,
+; else $110E).
 ; Table entry at: $F671
 ;------------------------------------------------------------------------------
-sub_F6C5:
+effect_free_slot:
 F6C5: 11 83 0E 8C     CMPU   #$0E8C
 F6C9: 27 0A           BEQ    lF6D5
 F6CB: 11 83 0E 8E     CMPU   #$0E8E
 F6CF: 27 08           BEQ    lF6D9
-F6D1: 7F 11 0E        CLR    $110E
+F6D1: 7F 11 0E        CLR    effect_step+2   ; [$110E]
 F6D4: 39              RTS
 
 lF6D5:
-F6D5: 7F 11 0C        CLR    $110C
+F6D5: 7F 11 0C        CLR    effect_step     ; [$110C]
 F6D8: 39              RTS
 
 lF6D9:
-F6D9: 7F 11 0D        CLR    $110D
+F6D9: 7F 11 0D        CLR    effect_step+1   ; [$110D]
 F6DC: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_F6DD  ($F6DD)
+; task_player_explosion  ($F6DD) ; JS: sub_F6DD
+; -> src/game/main/gp2_2b_fx.js
+; While player_exploding: $80 to $112A and $101A, and every 8th frame one step
+; of tbl_F6FC (explosion_step); the last step ends in fighter_reset_lose_life.
 ; Table entry at: $FEE6, $FF04, $FF22, $FF44, $FF64, $FF8A
 ;------------------------------------------------------------------------------
-sub_F6DD:
-F6DD: B6 11 0F        LDA    $110F
+task_player_explosion:
+F6DD: B6 11 0F        LDA    player_exploding ; [$110F]
 F6E0: 10 27 01 F1     LBEQ   lF8D5
 F6E4: 86 80           LDA    #$80
-F6E6: B7 11 2A        STA    $112A
+F6E6: B7 11 2A        STA    ready_active    ; [$112A]
 F6E9: 97 1A           STA    <$1A            ; [$101A]
 F6EB: 96 16           LDA    <frame_counter  ; [$1016]
 F6ED: 84 07           ANDA   #$07
 F6EF: 10 26 01 E2     LBNE   lF8D5
-F6F3: B6 11 10        LDA    $1110
+F6F3: B6 11 10        LDA    explosion_step  ; [$1110]
 F6F6: 8E F6 FC        LDX    #tbl_F6FC
 F6F9: 48              ASLA
 F6FA: 6E 96           JMP    [A,X]           ; [table tbl_F6FC]
 
-; Referenced from: $F6F6 sub_F6DD
+; Referenced from: $F6F6 task_player_explosion
 tbl_F6FC:
-F6FC: F7 0C                    FDB    sub_F70C ; [0] $F70C
-F6FE: F7 6D                    FDB    sub_F76D ; [1] $F76D
-F700: F7 DA                    FDB    sub_F7DA ; [2] $F7DA
-F702: F7 EA                    FDB    sub_F7EA ; [3] $F7EA
-F704: F7 FA                    FDB    sub_F7FA ; [4] $F7FA
-F706: F8 0E                    FDB    sub_F80E ; [5] $F80E
-F708: F8 19                    FDB    sub_F819 ; [6] $F819
-F70A: F8 24                    FDB    sub_F824 ; [7] $F824
+F6FC: F7 0C                    FDB    explosion_start ; [0] $F70C
+F6FE: F7 6D                    FDB    explosion_grow ; [1] $F76D
+F700: F7 DA                    FDB    explosion_step2 ; [2] $F7DA
+F702: F7 EA                    FDB    explosion_step3 ; [3] $F7EA
+F704: F7 FA                    FDB    explosion_step4 ; [4] $F7FA
+F706: F8 0E                    FDB    explosion_step5 ; [5] $F80E
+F708: F8 19                    FDB    explosion_step6 ; [6] $F819
+F70A: F8 24                    FDB    explosion_end ; [7] $F824
 
 ;------------------------------------------------------------------------------
-; sub_F70C  ($F70C)
+; explosion_start  ($F70C) ; JS: sub_F70C
+; -> src/game/main/gp2_2b_fx.js
+; Explosion step 0: explosion sprite at $0F32 centred on the player; the
+; player's sprite and state cleared, the six dual-fighter flags $1EC3-$1ECD
+; cleared.
 ; Table entry at: $F6FC
 ;------------------------------------------------------------------------------
-sub_F70C:
+explosion_start:
 F70C: 86 01           LDA    #$01
-F70E: 97 D9           STA    <$D9            ; [$10D9]
+F70E: 97 D9           STA    <player_frozen  ; [$10D9]
 F710: 97 E9           STA    <$E9            ; [$10E9]
 F712: CC 8E 26        LDD    #$8E26
 F715: FD 0F 32        STD    $0F32
@@ -9248,17 +9869,17 @@ F736: C2 00           SBCB   #$00
 lF738:
 F738: 86 08           LDA    #$08
 F73A: FD 1F 32        STD    $1F32
-F73D: B6 16 00        LDA    player_y        ; [$1600]
+F73D: B6 16 00        LDA    player_y        ; player_y [$1600]
 F740: B7 17 32        STA    $1732
 F743: 7F 1E 01        CLR    $1E01
 F746: 7F 1E 8B        CLR    $1E8B
 F749: 0F 21           CLR    <$21            ; [$1021]
 F74B: 7F 11 77        CLR    $1177
-F74E: 7F 11 14        CLR    $1114
+F74E: 7F 11 14        CLR    bonus_obj_count ; [$1114]
 F751: B6 1F 2D        LDA    $1F2D
 F754: 84 80           ANDA   #$80
 F756: 27 05           BEQ    lF75D
-F758: 0F 18           CLR    <$18            ; [$1018]
+F758: 0F 18           CLR    <seq_step       ; [$1018]
 F75A: 7F 1F 2D        CLR    $1F2D
 
 lF75D:
@@ -9269,14 +9890,17 @@ lF762:
 F762: 6F 81           CLR    ,X++
 F764: 4A              DECA
 F765: 26 FB           BNE    lF762
-F767: 7C 11 10        INC    $1110
+F767: 7C 11 10        INC    explosion_step  ; [$1110]
 F76A: 7E F8 D5        JMP    lF8D5
 
 ;------------------------------------------------------------------------------
-; sub_F76D  ($F76D)
+; explosion_grow  ($F76D) ; JS: sub_F76D
+; -> src/game/main/gp2_2b_fx.js
+; Explosion step 1: (special case in mode 5 for a captured ship) then the
+; explosion grows to two sprites ($0F30/$0F32, 16 pixels apart).
 ; Table entry at: $F6FE
 ;------------------------------------------------------------------------------
-sub_F76D:
+explosion_grow:
 F76D: 96 2F           LDA    <game_mode      ; [$102F]
 F76F: 80 05           SUBA   #$05
 F771: 26 40           BNE    lF7B3
@@ -9319,71 +9943,85 @@ F7C9: 8B 10           ADDA   #$10
 F7CB: FD 17 30        STD    $1730
 F7CE: FC 1F 32        LDD    $1F32
 F7D1: FD 1F 30        STD    $1F30
-F7D4: 7C 11 10        INC    $1110
+F7D4: 7C 11 10        INC    explosion_step  ; [$1110]
 F7D7: 7E F8 D5        JMP    lF8D5
 
 ;------------------------------------------------------------------------------
-; sub_F7DA  ($F7DA)
+; explosion_step2  ($F7DA) ; JS: sub_F7DA
+; -> src/game/main/gp2_2b_fx.js
+; Explosion step 2: codes $CE/$DE.
 ; Table entry at: $F700
 ;------------------------------------------------------------------------------
-sub_F7DA:
+explosion_step2:
 F7DA: 86 CE           LDA    #$CE
 F7DC: B7 0F 30        STA    $0F30
 F7DF: 86 DE           LDA    #$DE
 F7E1: B7 0F 32        STA    $0F32
-F7E4: 7C 11 10        INC    $1110
+F7E4: 7C 11 10        INC    explosion_step  ; [$1110]
 F7E7: 7E F8 D5        JMP    lF8D5
 
 ;------------------------------------------------------------------------------
-; sub_F7EA  ($F7EA)
+; explosion_step3  ($F7EA) ; JS: sub_F7EA
+; -> src/game/main/gp2_2b_fx.js
+; Explosion step 3: codes $EE/$FE.
 ; Table entry at: $F702
 ;------------------------------------------------------------------------------
-sub_F7EA:
+explosion_step3:
 F7EA: 86 EE           LDA    #$EE
 F7EC: B7 0F 30        STA    $0F30
 F7EF: 86 FE           LDA    #$FE
 F7F1: B7 0F 32        STA    $0F32
-F7F4: 7C 11 10        INC    $1110
+F7F4: 7C 11 10        INC    explosion_step  ; [$1110]
 F7F7: 7E F8 D5        JMP    lF8D5
 
 ;------------------------------------------------------------------------------
-; sub_F7FA  ($F7FA)
+; explosion_step4  ($F7FA) ; JS: sub_F7FA
+; -> src/game/main/gp2_2b_fx.js
+; Explosion step 4: back to one sprite, code $58,$27 at $0F32, flags $68.
 ; Table entry at: $F704
 ;------------------------------------------------------------------------------
-sub_F7FA:
+explosion_step4:
 F7FA: 7F 1F 31        CLR    $1F31
 F7FD: CC 58 27        LDD    #$5827
 F800: FD 0F 32        STD    $0F32
 F803: 86 68           LDA    #$68
 F805: B7 1F 32        STA    $1F32
-F808: 7C 11 10        INC    $1110
+F808: 7C 11 10        INC    explosion_step  ; [$1110]
 F80B: 7E F8 D5        JMP    lF8D5
 
 ;------------------------------------------------------------------------------
-; sub_F80E  ($F80E)
+; explosion_step5  ($F80E) ; JS: sub_F80E
+; -> src/game/main/gp2_2b_fx.js
+; Explosion step 5: code $5C at $0F32.
 ; Table entry at: $F706
 ;------------------------------------------------------------------------------
-sub_F80E:
+explosion_step5:
 F80E: C6 5C           LDB    #$5C
 F810: F7 0F 32        STB    $0F32
-F813: 7C 11 10        INC    $1110
+F813: 7C 11 10        INC    explosion_step  ; [$1110]
 F816: 7E F8 D5        JMP    lF8D5
 
 ;------------------------------------------------------------------------------
-; sub_F819  ($F819)
+; explosion_step6  ($F819) ; JS: sub_F819
+; -> src/game/main/gp2_2b_fx.js
+; Explosion step 6: $F8 at $0F30 (a countdown to 0).
 ; Table entry at: $F708
 ;------------------------------------------------------------------------------
-sub_F819:
+explosion_step6:
 F819: 86 F8           LDA    #$F8
 F81B: B7 0F 30        STA    $0F30
-F81E: 7C 11 10        INC    $1110
+F81E: 7C 11 10        INC    explosion_step  ; [$1110]
 F821: 7E F8 D5        JMP    lF8D5
 
 ;------------------------------------------------------------------------------
-; sub_F824  ($F824)
+; explosion_end  ($F824) ; JS: sub_F824
+; -> src/game/main/gp2_2b_fx.js
+; Explosion step 7: count $0F30 up to 0; then (not in mode 4) reset the
+; player's sprite and captured ships, ready timers = $FF in mode 5, and jump to
+; fighter_reset_lose_life.
 ; Table entry at: $F70A
 ;------------------------------------------------------------------------------
-sub_F824:
+explosion_end:
 F824: B6 0F 30        LDA    $0F30
 F827: 81 F7           CMPA   #$F7
 F829: 24 05           BCC    lF830
@@ -9397,9 +10035,9 @@ F836: 10 26 00 9B     LBNE   lF8D5
 F83A: 96 2F           LDA    <game_mode      ; [$102F]
 F83C: 81 04           CMPA   #$04
 F83E: 10 27 00 93     LBEQ   lF8D5
-F842: 7F 11 10        CLR    $1110
+F842: 7F 11 10        CLR    explosion_step  ; [$1110]
 F845: 7F 1F 33        CLR    $1F33
-F848: 7F 11 0F        CLR    $110F
+F848: 7F 11 0F        CLR    player_exploding ; [$110F]
 F84B: 96 2E           LDA    <two_players    ; [$102E]
 F84D: 27 0B           BEQ    lF85A
 F84F: 96 2D           LDA    <cur_player     ; [$102D]
@@ -9455,28 +10093,32 @@ F8BB: 26 0E           BNE    lF8CB
 F8BD: 96 2D           LDA    <cur_player     ; [$102D]
 F8BF: 26 06           BNE    lF8C7
 F8C1: 86 FF           LDA    #$FF
-F8C3: 97 23           STA    <$23            ; [$1023]
+F8C3: 97 23           STA    <ready_timer_p1 ; [$1023]
 F8C5: 20 04           BRA    lF8CB
 
 lF8C7:
 F8C7: 86 FF           LDA    #$FF
-F8C9: 97 24           STA    <$24            ; [$1024]
+F8C9: 97 24           STA    <ready_timer_p2 ; [$1024]
 
 lF8CB:
 F8CB: 7F 11 11        CLR    $1111
 F8CE: 0F E9           CLR    <$E9            ; [$10E9]
-F8D0: 0F D9           CLR    <$D9            ; [$10D9]
-F8D2: 7E D9 CF        JMP    lD9CF
+F8D0: 0F D9           CLR    <player_frozen  ; [$10D9]
+F8D2: 7E D9 CF        JMP    fighter_reset_lose_life
 
 lF8D5:
 F8D5: 0C 30           INC    <main_task      ; [$1030]
 F8D7: 7E FE B5        JMP    task_dispatch
 
 ;------------------------------------------------------------------------------
-; sub_F8DA  ($F8DA)
+; task_cycle_colours  ($F8DA) ; JS: sub_F8DA
+; -> src/game/main/gp2_2b_fx.js
+; Every 4th frame move the 16 shadow codes $0EA2-$0EC0 one code down/up
+; (decided by the first); the seven shots $0ECE-$0EDA with code >= $4F get the
+; blink code dat_F91D.
 ; Table entry at: $FED6, $FEEE, $FF0C, $FF2A, $FF4C, $FF70, $FF98, $FFAA
 ;------------------------------------------------------------------------------
-sub_F8DA:
+task_cycle_colours:
 F8DA: 96 16           LDA    <frame_counter  ; [$1016]
 F8DC: 84 03           ANDA   #$03
 F8DE: 10 26 00 36     LBNE   lF918
@@ -9511,7 +10153,7 @@ F908: 96 16           LDA    <frame_counter  ; [$1016]
 F90A: 84 0F           ANDA   #$0F
 F90C: 44              LSRA
 F90D: 44              LSRA
-F90E: CE F9 1D        LDU    #dat_F91D
+F90E: CE F9 1D        LDU    #shot_blink_codes
 F911: A6 C6           LDA    A,U
 
 lF913:
@@ -9523,15 +10165,21 @@ lF918:
 F918: 0C 30           INC    <main_task      ; [$1030]
 F91A: 7E FE B5        JMP    task_dispatch
 
-; Referenced from: $F90E sub_F8DA
-dat_F91D:
+; Blink codes of the enemy shots by (frame_counter & $0F) >> 2.
+; Referenced from: $F90E task_cycle_colours
+shot_blink_codes:
 F91D: 4F 5E 4F 5F              FCB    $4F,$5E,$4F,$5F
 
 ;------------------------------------------------------------------------------
-; sub_F921  ($F921)
+; task_shot_collisions  ($F921) ; JS: sub_F921
+; -> src/game/main/gp2_2b_fx.js
+; JMP $F9D5: unless $101A, test the six captured ships $0EC2-$0ECC against the
+; seven enemy shots $0ECE-$0EDA; the first hit spawns an effect, frees the
+; shot, sound $0B, and removes the ship.
+; QUIRK: only one hit a frame. $F924-$F9CF is skipped (dead code).
 ; Table entry at: $FF38, $FF58, $FF7E
 ;------------------------------------------------------------------------------
-sub_F921:
+task_shot_collisions:
 F921: 7E F9 D5        JMP    lF9D5
 
 ; Disassembles as code; F921 jumps over it: disabled routine?
@@ -9580,14 +10228,14 @@ F9F4: A6 C9 08 01     LDA    $0801,U
 F9F8: 54              LSRB
 F9F9: 46              RORA
 F9FA: 8B 03           ADDA   #$03
-F9FC: 97 C9           STA    <$C9            ; [$10C9]
+F9FC: 97 C9           STA    <hitbox+3       ; [$10C9]
 F9FE: 80 06           SUBA   #$06
-FA00: 97 C8           STA    <$C8            ; [$10C8]
+FA00: 97 C8           STA    <hitbox+2       ; [$10C8]
 FA02: A6 C9 08 00     LDA    $0800,U
 FA06: 8B 06           ADDA   #$06
-FA08: 97 C7           STA    <$C7            ; [$10C7]
+FA08: 97 C7           STA    <hitbox+1       ; [$10C7]
 FA0A: 80 0C           SUBA   #$0C
-FA0C: 97 C6           STA    <$C6            ; [$10C6]
+FA0C: 97 C6           STA    <hitbox         ; [$10C6]
 FA0E: 8E 0E CC        LDX    #$0ECC
 
 lFA11:
@@ -9601,20 +10249,20 @@ FA22: E6 89 10 01     LDB    $1001,X
 FA26: A6 89 08 01     LDA    $0801,X
 FA2A: 54              LSRB
 FA2B: 46              RORA
-FA2C: 91 C8           CMPA   <$C8            ; [$10C8]
+FA2C: 91 C8           CMPA   <hitbox+2       ; [$10C8]
 FA2E: 25 E1           BCS    lFA11
-FA30: 91 C9           CMPA   <$C9            ; [$10C9]
+FA30: 91 C9           CMPA   <hitbox+3       ; [$10C9]
 FA32: 24 DD           BCC    lFA11
 FA34: A6 89 08 00     LDA    $0800,X
-FA38: 91 C6           CMPA   <$C6            ; [$10C6]
+FA38: 91 C6           CMPA   <hitbox         ; [$10C6]
 FA3A: 25 D5           BCS    lFA11
-FA3C: 91 C7           CMPA   <$C7            ; [$10C7]
+FA3C: 91 C7           CMPA   <hitbox+1       ; [$10C7]
 FA3E: 24 D1           BCC    lFA11
-FA40: 7C 11 08        INC    $1108
+FA40: 7C 11 08        INC    effect_request  ; [$1108]
 FA43: EC C9 08 00     LDD    $0800,U
-FA47: FD 11 09        STD    $1109
+FA47: FD 11 09        STD    effect_pos      ; [$1109]
 FA4A: A6 C9 10 01     LDA    $1001,U
-FA4E: B7 11 0B        STA    $110B
+FA4E: B7 11 0B        STA    effect_flags    ; [$110B]
 FA51: 6F 89 10 01     CLR    $1001,X
 FA55: 86 01           LDA    #$01
 FA57: B7 60 4B        STA    snd_request+11  ; [$604B]
@@ -9636,6 +10284,7 @@ FA7A: 7E F9 D0        JMP    lF9D0
 
 ;------------------------------------------------------------------------------
 ; task_bonus_life  ($FA7D)
+; -> src/game/main/gp2_2b_bonus.js
 ; Extra ship check: compare the current player's score with the bonus
 ; settings ($1001-$1003) through bonus_steps ($1124 P1 / $1125 P2).
 ; Table entry at: $FEF4, $FF12, $FF30, $FF52, $FF76, $FFB0, $FFC4
@@ -9644,44 +10293,48 @@ task_bonus_life:
 FA7D: 96 2D           LDA    <cur_player     ; [$102D]
 FA7F: 10 26 00 91     LBNE   lFB14
 FA83: 8E FA 8C        LDX    #bonus_steps_p1
-FA86: B6 11 24        LDA    $1124
+FA86: B6 11 24        LDA    bonus_step_p1   ; [$1124]
 FA89: 48              ASLA
 FA8A: 6E 96           JMP    [A,X]           ; [table bonus_steps_p1]
 
 ; Referenced from: $FA83 task_bonus_life
 bonus_steps_p1:
-FA8C: FA 94                    FDB    sub_FA94 ; [0] $FA94
-FA8E: FA AB                    FDB    sub_FAAB ; [1] $FAAB
-FA90: FA DB                    FDB    sub_FADB ; [2] $FADB
-FA92: FB 0F                    FDB    sub_FB0F ; [3] $FB0F
+FA8C: FA 94                    FDB    bonus_first_p1 ; [0] $FA94
+FA8E: FA AB                    FDB    bonus_second_p1 ; [1] $FAAB
+FA90: FA DB                    FDB    bonus_every_p1 ; [2] $FADB
+FA92: FB 0F                    FDB    bonus_task_end ; [3] $FB0F
 
 ;------------------------------------------------------------------------------
-; sub_FA94  ($FA94)
+; bonus_first_p1  ($FA94) ; JS: sub_FA94
+; -> src/game/main/gp2_2b_bonus.js
+; Bonus life step 0 of P1: score_p1+1 (BCD x 10,000) >= bonus_first.
 ; Table entry at: $FA8C
 ;------------------------------------------------------------------------------
-sub_FA94:
+bonus_first_p1:
 FA94: B6 09 B1        LDA    score_p1+1      ; [$09B1]
 FA97: 91 01           CMPA   <bonus_first    ; [$1001]
-FA99: 25 74           BCS    sub_FB0F
+FA99: 25 74           BCS    bonus_task_end
 FA9B: 86 01           LDA    #$01
 FA9D: B7 60 55        STA    snd_request+21  ; [$6055]
 FAA0: 7C 11 04        INC    lives_p1        ; [$1104]
-FAA3: 7C 11 24        INC    $1124
-FAA6: BD FB 9E        JSR    sub_FB9E
-FAA9: 20 64           BRA    sub_FB0F
+FAA3: 7C 11 24        INC    bonus_step_p1   ; [$1124]
+FAA6: BD FB 9E        JSR    flag_extra_ship
+FAA9: 20 64           BRA    bonus_task_end
 
 ;------------------------------------------------------------------------------
-; sub_FAAB  ($FAAB)
+; bonus_second_p1  ($FAAB) ; JS: sub_FAAB
+; -> src/game/main/gp2_2b_bonus.js
+; Bonus life step 1 of P1: the second threshold.
 ; Table entry at: $FA8E
 ;------------------------------------------------------------------------------
-sub_FAAB:
+bonus_second_p1:
 FAAB: B6 09 B1        LDA    score_p1+1      ; [$09B1]
 FAAE: 91 02           CMPA   <bonus_second   ; [$1002]
-FAB0: 25 5D           BCS    sub_FB0F
+FAB0: 25 5D           BCS    bonus_task_end
 FAB2: 86 01           LDA    #$01
 FAB4: B7 60 55        STA    snd_request+21  ; [$6055]
 FAB7: 7C 11 04        INC    lives_p1        ; [$1104]
-FABA: 7C 11 24        INC    $1124
+FABA: 7C 11 24        INC    bonus_step_p1   ; [$1124]
 FABD: 96 02           LDA    <bonus_second   ; [$1002]
 FABF: D6 03           LDB    <bonus_every    ; [$1003]
 FAC1: 27 11           BEQ    lFAD4
@@ -9691,29 +10344,31 @@ FAC3: 8B 01           ADDA   #$01
 FAC5: 19              DAA
 FAC6: 5A              DECB
 FAC7: 26 FA           BNE    lFAC3
-FAC9: B7 11 7C        STA    $117C
-FACC: 7F 11 7B        CLR    $117B
-FACF: BD FB 9E        JSR    sub_FB9E
-FAD2: 20 3B           BRA    sub_FB0F
+FAC9: B7 11 7C        STA    next_bonus_p1+1 ; [$117C]
+FACC: 7F 11 7B        CLR    next_bonus_p1   ; [$117B]
+FACF: BD FB 9E        JSR    flag_extra_ship
+FAD2: 20 3B           BRA    bonus_task_end
 
 lFAD4:
 FAD4: C6 03           LDB    #$03
-FAD6: F7 11 24        STB    $1124
+FAD6: F7 11 24        STB    bonus_step_p1   ; [$1124]
 FAD9: 20 E8           BRA    lFAC3
 
 ;------------------------------------------------------------------------------
-; sub_FADB  ($FADB)
+; bonus_every_p1  ($FADB) ; JS: sub_FADB
+; -> src/game/main/gp2_2b_bonus.js
+; Bonus life step 2 of P1: every bonus_every after that (next_bonus_p1).
 ; Table entry at: $FA90
 ;------------------------------------------------------------------------------
-sub_FADB:
+bonus_every_p1:
 FADB: B6 09 B2        LDA    score_p1+2      ; [$09B2]
 FADE: F6 09 B1        LDB    score_p1+1      ; [$09B1]
-FAE1: B3 11 7B        SUBD   $117B
-FAE4: 25 29           BCS    sub_FB0F
+FAE1: B3 11 7B        SUBD   next_bonus_p1   ; [$117B]
+FAE4: 25 29           BCS    bonus_task_end
 FAE6: 86 01           LDA    #$01
 FAE8: B7 60 55        STA    snd_request+21  ; [$6055]
 FAEB: 7C 11 04        INC    lives_p1        ; [$1104]
-FAEE: B6 11 7C        LDA    $117C
+FAEE: B6 11 7C        LDA    next_bonus_p1+1 ; [$117C]
 FAF1: D6 03           LDB    <bonus_every    ; [$1003]
 
 lFAF3:
@@ -9724,68 +10379,75 @@ FAF6: 25 0B           BCS    lFB03
 lFAF8:
 FAF8: 5A              DECB
 FAF9: 26 F8           BNE    lFAF3
-FAFB: B7 11 7C        STA    $117C
-FAFE: BD FB 9E        JSR    sub_FB9E
-FB01: 20 0C           BRA    sub_FB0F
+FAFB: B7 11 7C        STA    next_bonus_p1+1 ; [$117C]
+FAFE: BD FB 9E        JSR    flag_extra_ship
+FB01: 20 0C           BRA    bonus_task_end
 
 lFB03:
-FB03: B6 11 7B        LDA    $117B
+FB03: B6 11 7B        LDA    next_bonus_p1   ; [$117B]
 FB06: 8B 01           ADDA   #$01
 FB08: 19              DAA
-FB09: B7 11 7B        STA    $117B
+FB09: B7 11 7B        STA    next_bonus_p1   ; [$117B]
 FB0C: 4F              CLRA
 FB0D: 20 E9           BRA    lFAF8
 
 ;------------------------------------------------------------------------------
-; sub_FB0F  ($FB0F)
+; bonus_task_end  ($FB0F) ; JS: sub_FB0F
+; -> src/game/main/gp2_2b_bonus.js
+; INC <main_task / JMP task_dispatch: end of every task in $FA7D-$FB9D; also
+; step 3 of both tables (no more bonuses).
 ; Jumped to from: $FA99, $FAA9, $FAB0, $FAD2, $FAE4, $FB01, $FB2A, $FB39,
 ; $FB40, $FB61, $FB73, $FB8F
 ; Table entry at: $FA92, $FB23
 ;------------------------------------------------------------------------------
-sub_FB0F:
+bonus_task_end:
 FB0F: 0C 30           INC    <main_task      ; [$1030]
 FB11: 7E FE B5        JMP    task_dispatch
 
 lFB14:
 FB14: 8E FB 1D        LDX    #bonus_steps_p2
-FB17: B6 11 25        LDA    $1125
+FB17: B6 11 25        LDA    bonus_step_p2   ; [$1125]
 FB1A: 48              ASLA
 FB1B: 6E 96           JMP    [A,X]           ; [table bonus_steps_p2]
 
-; Referenced from: $FB14 sub_FB0F
+; Referenced from: $FB14 bonus_task_end
 bonus_steps_p2:
-FB1D: FB 25                    FDB    sub_FB25 ; [0] $FB25
-FB1F: FB 3B                    FDB    sub_FB3B ; [1] $FB3B
-FB21: FB 6A                    FDB    sub_FB6A ; [2] $FB6A
-FB23: FB 0F                    FDB    sub_FB0F ; [3] $FB0F
+FB1D: FB 25                    FDB    bonus_first_p2 ; [0] $FB25
+FB1F: FB 3B                    FDB    bonus_second_p2 ; [1] $FB3B
+FB21: FB 6A                    FDB    bonus_every_p2 ; [2] $FB6A
+FB23: FB 0F                    FDB    bonus_task_end ; [3] $FB0F
 
 ;------------------------------------------------------------------------------
-; sub_FB25  ($FB25)
+; bonus_first_p2  ($FB25) ; JS: sub_FB25
+; -> src/game/main/gp2_2b_bonus.js
+; Bonus life step 0 of P2.
 ; Table entry at: $FB1D
 ;------------------------------------------------------------------------------
-sub_FB25:
+bonus_first_p2:
 FB25: B6 09 B4        LDA    score_p2+1      ; [$09B4]
 FB28: 91 01           CMPA   <bonus_first    ; [$1001]
-FB2A: 25 E3           BCS    sub_FB0F
+FB2A: 25 E3           BCS    bonus_task_end
 FB2C: 86 01           LDA    #$01
 FB2E: B7 60 55        STA    snd_request+21  ; [$6055]
 FB31: 7C 11 05        INC    lives_p2        ; [$1105]
-FB34: 7C 11 25        INC    $1125
-FB37: 8D 65           BSR    sub_FB9E
-FB39: 20 D4           BRA    sub_FB0F
+FB34: 7C 11 25        INC    bonus_step_p2   ; [$1125]
+FB37: 8D 65           BSR    flag_extra_ship
+FB39: 20 D4           BRA    bonus_task_end
 
 ;------------------------------------------------------------------------------
-; sub_FB3B  ($FB3B)
+; bonus_second_p2  ($FB3B) ; JS: sub_FB3B
+; -> src/game/main/gp2_2b_bonus.js
+; Bonus life step 1 of P2 (see the BUG at $FB65).
 ; Table entry at: $FB1F
 ;------------------------------------------------------------------------------
-sub_FB3B:
+bonus_second_p2:
 FB3B: B6 09 B4        LDA    score_p2+1      ; [$09B4]
 FB3E: 91 02           CMPA   <bonus_second   ; [$1002]
-FB40: 25 CD           BCS    sub_FB0F
+FB40: 25 CD           BCS    bonus_task_end
 FB42: 86 01           LDA    #$01
 FB44: B7 60 55        STA    snd_request+21  ; [$6055]
 FB47: 7C 11 05        INC    lives_p2        ; [$1105]
-FB4A: 7C 11 25        INC    $1125
+FB4A: 7C 11 25        INC    bonus_step_p2   ; [$1125]
 FB4D: 96 02           LDA    <bonus_second   ; [$1002]
 FB4F: D6 03           LDB    <bonus_every    ; [$1003]
 FB51: 27 10           BEQ    lFB63
@@ -9795,29 +10457,35 @@ FB53: 8B 01           ADDA   #$01
 FB55: 19              DAA
 FB56: 5A              DECB
 FB57: 26 FA           BNE    lFB53
-FB59: B7 11 7E        STA    $117E
-FB5C: 7F 11 7D        CLR    $117D
-FB5F: 8D 3D           BSR    sub_FB9E
-FB61: 20 AC           BRA    sub_FB0F
+FB59: B7 11 7E        STA    next_bonus_p2+1 ; [$117E]
+FB5C: 7F 11 7D        CLR    next_bonus_p2   ; [$117D]
+FB5F: 8D 3D           BSR    flag_extra_ship
+FB61: 20 AC           BRA    bonus_task_end
 
 lFB63:
 FB63: C6 03           LDB    #$03
-FB65: B7 11 25        STA    $1125
+FB65: B7 11 25        STA    bonus_step_p2   ; BUG: STA, not STB: with
+                                             ; bonus_every 0 P2 stores
+                                             ; bonus_second as the step, and
+                                             ; the next pass jumps through code
+                                             ; [$1125]
 FB68: 20 E9           BRA    lFB53
 
 ;------------------------------------------------------------------------------
-; sub_FB6A  ($FB6A)
+; bonus_every_p2  ($FB6A) ; JS: sub_FB6A
+; -> src/game/main/gp2_2b_bonus.js
+; Bonus life step 2 of P2.
 ; Table entry at: $FB21
 ;------------------------------------------------------------------------------
-sub_FB6A:
+bonus_every_p2:
 FB6A: B6 09 B5        LDA    score_p2+2      ; [$09B5]
 FB6D: F6 09 B4        LDB    score_p2+1      ; [$09B4]
-FB70: B3 11 7D        SUBD   $117D
-FB73: 25 9A           BCS    sub_FB0F
+FB70: B3 11 7D        SUBD   next_bonus_p2   ; [$117D]
+FB73: 25 9A           BCS    bonus_task_end
 FB75: 86 01           LDA    #$01
 FB77: B7 60 55        STA    snd_request+21  ; [$6055]
 FB7A: 7C 11 05        INC    lives_p2        ; [$1105]
-FB7D: B6 11 7E        LDA    $117E
+FB7D: B6 11 7E        LDA    next_bonus_p2+1 ; [$117E]
 FB80: D6 03           LDB    <bonus_every    ; [$1003]
 
 lFB82:
@@ -9828,25 +10496,29 @@ FB85: 25 0B           BCS    lFB92
 lFB87:
 FB87: 5A              DECB
 FB88: 26 F8           BNE    lFB82
-FB8A: B7 11 7E        STA    $117E
-FB8D: 8D 0F           BSR    sub_FB9E
-FB8F: 7E FB 0F        JMP    sub_FB0F
+FB8A: B7 11 7E        STA    next_bonus_p2+1 ; [$117E]
+FB8D: 8D 0F           BSR    flag_extra_ship
+FB8F: 7E FB 0F        JMP    bonus_task_end
 
 lFB92:
-FB92: B6 11 7D        LDA    $117D
+FB92: B6 11 7D        LDA    next_bonus_p2   ; [$117D]
 FB95: 8B 01           ADDA   #$01
 FB97: 19              DAA
-FB98: B7 11 7D        STA    $117D
+FB98: B7 11 7D        STA    next_bonus_p2   ; [$117D]
 FB9B: 4F              CLRA
 FB9C: 20 E9           BRA    lFB87
 
 ;------------------------------------------------------------------------------
-; sub_FB9E  ($FB9E)
-; Called from: $E842 sub_E83B, $E84E sub_E83B, $FAA6 sub_FA94, $FACF sub_FAAB,
-; $FAFE sub_FADB, $FB37 sub_FB25, $FB5F sub_FB3B, $FB8D sub_FB6A, $FEA3
-; sub_FE18, $FEAB sub_FE18
+; flag_extra_ship  ($FB9E) ; JS: sub_FB9E
+; -> src/game/main/gp2_2b_bonus.js
+; Flag an extra reserve ship: the first of $1F17/$1F19/$1F1B with bit 7 clear
+; gets $81.
+; Called from: $E842 payout_extend, $E84E payout_extend, $FAA6 bonus_first_p1,
+; $FACF bonus_second_p1, $FAFE bonus_every_p1, $FB37 bonus_first_p2, $FB5F
+; bonus_second_p2, $FB8D bonus_every_p2, $FEA3 task_bonus_ship, $FEAB
+; task_bonus_ship
 ;------------------------------------------------------------------------------
-sub_FB9E:
+flag_extra_ship:
 FB9E: 8E 1F 17        LDX    #$1F17
 
 lFBA1:
@@ -9862,31 +10534,35 @@ lFBB0:
 FBB0: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_FBB1  ($FBB1)
+; task_ready_timer  ($FBB1) ; JS: sub_FBB1
+; -> src/game/main/gp2_2b_bonus.js
+; Modes 3, 5, 7: on frames with frame_counter & 7 != 0 count the player's ready
+; timer down (ready_timer_p1/p2 via ready_timer); at $60 blank the message
+; line, at $D0 print READY; ready_active while counting.
 ; Table entry at: $FF26, $FF6A, $FFA6
 ;------------------------------------------------------------------------------
-sub_FBB1:
+task_ready_timer:
 FBB1: 96 16           LDA    <frame_counter  ; [$1016]
 FBB3: 84 07           ANDA   #$07
 FBB5: 27 4B           BEQ    lFC02
 FBB7: 96 2D           LDA    <cur_player     ; [$102D]
 FBB9: 26 06           BNE    lFBC1
-FBBB: 96 23           LDA    <$23            ; [$1023]
-FBBD: 97 AB           STA    <$AB            ; [$10AB]
+FBBB: 96 23           LDA    <ready_timer_p1 ; [$1023]
+FBBD: 97 AB           STA    <ready_timer    ; [$10AB]
 FBBF: 20 04           BRA    lFBC5
 
 lFBC1:
-FBC1: 96 24           LDA    <$24            ; [$1024]
-FBC3: 97 AB           STA    <$AB            ; [$10AB]
+FBC1: 96 24           LDA    <ready_timer_p2 ; [$1024]
+FBC3: 97 AB           STA    <ready_timer    ; [$10AB]
 
 lFBC5:
-FBC5: 96 AB           LDA    <$AB            ; [$10AB]
+FBC5: 96 AB           LDA    <ready_timer    ; [$10AB]
 FBC7: 27 2B           BEQ    lFBF4
-FBC9: 0A AB           DEC    <$AB            ; [$10AB]
+FBC9: 0A AB           DEC    <ready_timer    ; [$10AB]
 FBCB: 27 24           BEQ    lFBF1
 FBCD: 86 01           LDA    #$01
-FBCF: B7 11 2A        STA    $112A
-FBD2: 96 AB           LDA    <$AB            ; [$10AB]
+FBCF: B7 11 2A        STA    ready_active    ; [$112A]
+FBD2: 96 AB           LDA    <ready_timer    ; [$10AB]
 FBD4: 81 60           CMPA   #$60
 FBD6: 27 12           BEQ    lFBEA
 FBD8: 81 D0           CMPA   #$D0
@@ -9895,47 +10571,49 @@ FBDC: B6 1E 01        LDA    $1E01
 FBDF: 84 80           ANDA   #$80
 FBE1: 27 0E           BEQ    lFBF1
 FBE3: 8E FC 07        LDX    #dat_FC07
-FBE6: 8D 37           BSR    sub_FC1F
+FBE6: 8D 37           BSR    print_msg_line
 FBE8: 20 0A           BRA    lFBF4
 
 lFBEA:
 FBEA: 8E FC 13        LDX    #dat_FC13
-FBED: 8D 30           BSR    sub_FC1F
+FBED: 8D 30           BSR    print_msg_line
 FBEF: 20 03           BRA    lFBF4
 
 lFBF1:
-FBF1: 7F 11 2A        CLR    $112A
+FBF1: 7F 11 2A        CLR    ready_active    ; [$112A]
 
 lFBF4:
 FBF4: 96 2D           LDA    <cur_player     ; [$102D]
 FBF6: 26 06           BNE    lFBFE
-FBF8: 96 AB           LDA    <$AB            ; [$10AB]
-FBFA: 97 23           STA    <$23            ; [$1023]
+FBF8: 96 AB           LDA    <ready_timer    ; [$10AB]
+FBFA: 97 23           STA    <ready_timer_p1 ; [$1023]
 FBFC: 20 04           BRA    lFC02
 
 lFBFE:
-FBFE: 96 AB           LDA    <$AB            ; [$10AB]
-FC00: 97 24           STA    <$24            ; [$1024]
+FBFE: 96 AB           LDA    <ready_timer    ; [$10AB]
+FC00: 97 24           STA    <ready_timer_p2 ; [$1024]
 
 lFC02:
 FC02: 0C 30           INC    <main_task      ; [$1030]
 FC04: 7E FE B5        JMP    task_dispatch
 
-; Referenced from: $FBE3 sub_FBB1
+; Referenced from: $FBE3 task_ready_timer
 dat_FC07:
 FC07: 20 20 20 52 45 41 44 59  FCB    $20,$20,$20,$52,$45,$41,$44,$59
 FC0F: 20 20 20 20              FCB    $20,$20,$20,$20
 
-; Referenced from: $FBEA sub_FBB1
+; Referenced from: $FBEA task_ready_timer
 dat_FC13:
 FC13: 20 20 20 20 20 20 20 20  FCB    $20,$20,$20,$20,$20,$20,$20,$20
 FC1B: 20 20 20 20              FCB    $20,$20,$20,$20
 
 ;------------------------------------------------------------------------------
-; sub_FC1F  ($FC1F)
-; Called from: $FBE6 sub_FBB1, $FBED sub_FBB1
+; print_msg_line  ($FC1F) ; JS: sub_FC1F
+; -> src/game/main/gp2_2b_bonus.js
+; Print 12 characters from X at tile $02B2 going right, attribute 0.
+; Called from: $FBE6 task_ready_timer, $FBED task_ready_timer
 ;------------------------------------------------------------------------------
-sub_FC1F:
+print_msg_line:
 FC1F: CE 02 B2        LDU    #TILE_RAM+$2B2  ; [#$02B2]
 FC22: C6 0C           LDB    #$0C
 
@@ -9949,10 +10627,14 @@ FC30: 26 F2           BNE    lFC24
 FC32: 39              RTS
 
 ;------------------------------------------------------------------------------
-; sub_FC33  ($FC33)
+; task_game_over_check  ($FC33) ; JS: sub_FC33
+; -> src/game/main/gp2_2b_bonus.js
+; Modes 5 and 9: when no player has lives and no credit/start is pending, wait
+; for the sub CPU (sub_task 0 or $1B), in mode 9 copy the TOP 5 from the screen
+; to hiscore_table/names, then game_over_to_attract.
 ; Table entry at: $FF92, $FFCC
 ;------------------------------------------------------------------------------
-sub_FC33:
+task_game_over_check:
 FC33: B6 11 04        LDA    lives_p1        ; [$1104]
 FC36: BA 11 05        ORA    lives_p2        ; [$1105]
 FC39: 84 0F           ANDA   #$0F
@@ -9982,7 +10664,9 @@ FC6C: 86 85           LDA    #$85
 FC6E: B7 A0 02        STA    STARFIELD+$02   ; [$A002]
 
 lFC71:
-FC71: 96 7A           LDA    <sub_task       ; [$107A]
+FC71: 96 7A           LDA    <sub_task       ; the sub CPU moves its task
+                                             ; index; wait until it is 0 or $1B
+                                             ; [$107A]
 FC73: 27 04           BEQ    lFC79
 FC75: 80 1B           SUBA   #$1B
 FC77: 26 F8           BNE    lFC71
@@ -9990,8 +10674,10 @@ FC77: 26 F8           BNE    lFC71
 lFC79:
 FC79: 96 2F           LDA    <game_mode      ; [$102F]
 FC7B: 81 09           CMPA   #$09
-FC7D: 10 26 DE 06     LBNE   lDA87
-FC81: 10 8E FC B3     LDY    #dat_FCB3
+FC7D: 10 26 DE 06     LBNE   game_over_to_attract
+FC81: 10 8E FC B3     LDY    #dat_FCB3       ; (tile address, RAM address)
+                                             ; pairs, 8 bytes each; a 0 tile
+                                             ; address ends the list
 
 lFC85:
 FC85: EE A1           LDU    ,Y++
@@ -10012,7 +10698,7 @@ FC99: 10 8E FC C9     LDY    #dat_FCC9
 
 lFC9D:
 FC9D: EE A1           LDU    ,Y++
-FC9F: 10 27 DD E4     LBEQ   lDA87
+FC9F: 10 27 DD E4     LBEQ   game_over_to_attract
 FCA3: AE A1           LDX    ,Y++
 FCA5: C6 0E           LDB    #$0E
 
@@ -10024,13 +10710,13 @@ FCAE: 5A              DECB
 FCAF: 26 F6           BNE    lFCA7
 FCB1: 20 EA           BRA    lFC9D
 
-; Referenced from: $FC81 sub_FC33
+; Referenced from: $FC81 task_game_over_check
 dat_FCB3:
 FCB3: 03 6F 09 00 03 72 09 10  FCB    $03,$6F,$09,$00,$03,$72,$09,$10
 FCBB: 03 75 09 20 03 78 09 30  FCB    $03,$75,$09,$20,$03,$78,$09,$30
 FCC3: 03 7B 09 40 00 00        FCB    $03,$7B,$09,$40,$00,$00
 
-; Referenced from: $FC99 sub_FC33
+; Referenced from: $FC99 task_game_over_check
 dat_FCC9:
 FCC9: 02 4F 09 50 02 52 09 60  FCB    $02,$4F,$09,$50,$02,$52,$09,$60
 FCD1: 02 55 09 70 02 58 09 80  FCB    $02,$55,$09,$70,$02,$58,$09,$80
@@ -10038,6 +10724,7 @@ FCD9: 02 5B 09 90 00 00        FCB    $02,$5B,$09,$90,$00,$00
 
 ;------------------------------------------------------------------------------
 ; operator_stats  ($FCDF)
+; -> src/game/main/gp2_2b_bonus.js
 ; Called every IRQ. With SW1:6 on (58XX $6816 bit 2, 'unused' in MAME)
 ; and P1 fire held, show the bookkeeping counters on screen: the BCD
 ; play clock $09FA-$09FB and the counters $09D6-$09DF. Also blanks a
@@ -10142,8 +10829,8 @@ FDEA: 39              RTS
 lFDEB:
 FDEB: 96 16           LDA    <frame_counter  ; [$1016]
 FDED: 26 FB           BNE    lFDEA
-FDEF: 7C 09 FF        INC    $09FF
-FDF2: B6 09 FF        LDA    $09FF
+FDEF: 7C 09 FF        INC    stats_blank_count ; [$09FF]
+FDF2: B6 09 FF        LDA    stats_blank_count ; [$09FF]
 FDF5: 84 07           ANDA   #$07
 FDF7: 26 F1           BNE    lFDEA
 FDF9: 8E 03 7A        LDX    #TILE_RAM+$37A  ; [#$037A]
@@ -10164,14 +10851,18 @@ FE13: B7 03 1C        STA    TILE_RAM+$31C   ; [$031C]
 FE16: 20 D2           BRA    lFDEA
 
 ;------------------------------------------------------------------------------
-; sub_FE18  ($FE18)
+; task_bonus_ship  ($FE18) ; JS: sub_FE18
+; -> src/game/main/gp2_2b_bonus.js
+; Mode 5: with one formation slot left and the slot (stage + score_p1) & $1F
+; occupied, put the bonus ship in shadow $0F14 (sound $19); a player touching
+; it wins a ship (sound $15).
 ; Table entry at: $FF6C
 ;------------------------------------------------------------------------------
-sub_FE18:
+task_bonus_ship:
 FE18: B6 1F 15        LDA    $1F15
 FE1B: 84 80           ANDA   #$80
 FE1D: 26 53           BNE    lFE72
-FE1F: B6 11 75        LDA    $1175
+FE1F: B6 11 75        LDA    bonus_ship_out  ; [$1175]
 FE22: 26 49           BNE    lFE6D
 FE24: 8E 18 60        LDX    #formation_flags ; [#$1860]
 FE27: 5F              CLRB
@@ -10206,7 +10897,7 @@ FE5A: C6 D0           LDB    #$D0
 FE5C: FD 17 14        STD    $1714
 FE5F: CC 40 80        LDD    #$4080
 FE62: FD 1F 14        STD    $1F14
-FE65: 7C 11 75        INC    $1175
+FE65: 7C 11 75        INC    bonus_ship_out  ; [$1175]
 FE68: 86 01           LDA    #$01
 FE6A: B7 60 59        STA    snd_request+25  ; [$6059]
 
@@ -10235,26 +10926,28 @@ FE99: B7 60 55        STA    snd_request+21  ; [$6055]
 FE9C: 96 2D           LDA    <cur_player     ; [$102D]
 FE9E: 26 08           BNE    lFEA8
 FEA0: 7C 11 04        INC    lives_p1        ; [$1104]
-FEA3: BD FB 9E        JSR    sub_FB9E
+FEA3: BD FB 9E        JSR    flag_extra_ship
 FEA6: 20 C5           BRA    lFE6D
 
 lFEA8:
 FEA8: 7C 11 05        INC    lives_p2        ; [$1105]
-FEAB: BD FB 9E        JSR    sub_FB9E
+FEAB: BD FB 9E        JSR    flag_extra_ship
 FEAE: 20 BD           BRA    lFE6D
 
 ;------------------------------------------------------------------------------
 ; task_dispatch_sync  ($FEB0)
+; -> src/game/main/gp2_2b_tasks.js
 ; Entered once per game start: tell the sub CPU ($0800 = $33), then
 ; fall into task_dispatch.
 ; Jumped to from: $CF0A, $CF11
 ;------------------------------------------------------------------------------
 task_dispatch_sync:
-FEB0: 86 33           LDA    #$33
+FEB0: 86 33           LDA    #$33            ; the sub CPU polls $0800
 FEB2: B7 08 00        STA    sub_handshake   ; [$0800]
 
 ;------------------------------------------------------------------------------
 ; task_dispatch  ($FEB5)
+; -> src/game/main/gp2_2b_tasks.js
 ; The main CPU's game-mode scheduler. A = game_mode ($102F), B =
 ; task index ($1030): jump through mode_task_lists[A][B]. Every task
 ; ends with INC <$30 / JMP task_dispatch, so each frame runs the
@@ -10293,127 +10986,127 @@ FED2: FF CA                    FDB    tasks_mode9 ; [9] $FFCA
 ; Mode 0: stage start.
 ; Referenced from: $FEC0 task_dispatch
 tasks_mode0:
-FED4: EA 89                    FDB    sub_EA89 ; [0] $EA89
-FED6: F8 DA                    FDB    sub_F8DA ; [1] $F8DA
+FED4: EA 89                    FDB    task_clear_parked_flags ; [0] $EA89
+FED6: F8 DA                    FDB    task_cycle_colours ; [1] $F8DA
 FED8: CF 14                    FDB    task_count_fighters ; [2] $CF14
 FEDA: CF 4F                    FDB    task_move_player ; [3] $CF4F
 FEDC: D1 68                    FDB    task_player_fire ; [4] $D168
 FEDE: D1 D0                    FDB    task_move_shots ; [5] $D1D0
-FEE0: D2 23                    FDB    sub_D223 ; [6] $D223
+FEE0: D2 23                    FDB    task_dual_shots ; [6] $D223
 FEE2: F5 C4                    FDB    task_spawn_effect ; [7] $F5C4
 FEE4: F5 FA                    FDB    task_animate_effects ; [8] $F5FA
-FEE6: F6 DD                    FDB    sub_F6DD ; [9] $F6DD
+FEE6: F6 DD                    FDB    task_player_explosion ; [9] $F6DD
 FEE8: D7 1B                    FDB    task_stage_start ; [10] $D71B
 FEEA: D1 5B                    FDB    task_next_mode ; [11] $D15B
 
 ; Referenced from: $FEC2 task_dispatch
 tasks_mode1:
-FEEC: EA 89                    FDB    sub_EA89 ; [0] $EA89
-FEEE: F8 DA                    FDB    sub_F8DA ; [1] $F8DA
-FEF0: D8 F8                    FDB    sub_D8F8 ; [2] $D8F8
-FEF2: D2 8A                    FDB    sub_D28A ; [3] $D28A
+FEEC: EA 89                    FDB    task_clear_parked_flags ; [0] $EA89
+FEEE: F8 DA                    FDB    task_cycle_colours ; [1] $F8DA
+FEF0: D8 F8                    FDB    task_formation_offset ; [2] $D8F8
+FEF2: D2 8A                    FDB    task_shot_hits ; [3] $D28A
 FEF4: FA 7D                    FDB    task_bonus_life ; [4] $FA7D
 FEF6: CF 14                    FDB    task_count_fighters ; [5] $CF14
 FEF8: CF 4F                    FDB    task_move_player ; [6] $CF4F
 FEFA: D1 68                    FDB    task_player_fire ; [7] $D168
 FEFC: D1 D0                    FDB    task_move_shots ; [8] $D1D0
-FEFE: D2 23                    FDB    sub_D223 ; [9] $D223
+FEFE: D2 23                    FDB    task_dual_shots ; [9] $D223
 FF00: F5 C4                    FDB    task_spawn_effect ; [10] $F5C4
 FF02: F5 FA                    FDB    task_animate_effects ; [11] $F5FA
-FF04: F6 DD                    FDB    sub_F6DD ; [12] $F6DD
+FF04: F6 DD                    FDB    task_player_explosion ; [12] $F6DD
 FF06: EA A4                    FDB    task_stage_events ; [13] $EAA4
 FF08: D1 50                    FDB    task_end_frame ; [14] $D150
 
 ; Referenced from: $FEC4 task_dispatch
 tasks_mode2:
-FF0A: EA 89                    FDB    sub_EA89 ; [0] $EA89
-FF0C: F8 DA                    FDB    sub_F8DA ; [1] $F8DA
-FF0E: D8 F8                    FDB    sub_D8F8 ; [2] $D8F8
-FF10: D2 8A                    FDB    sub_D28A ; [3] $D28A
+FF0A: EA 89                    FDB    task_clear_parked_flags ; [0] $EA89
+FF0C: F8 DA                    FDB    task_cycle_colours ; [1] $F8DA
+FF0E: D8 F8                    FDB    task_formation_offset ; [2] $D8F8
+FF10: D2 8A                    FDB    task_shot_hits ; [3] $D28A
 FF12: FA 7D                    FDB    task_bonus_life ; [4] $FA7D
 FF14: CF 14                    FDB    task_count_fighters ; [5] $CF14
 FF16: CF 4F                    FDB    task_move_player ; [6] $CF4F
 FF18: D1 68                    FDB    task_player_fire ; [7] $D168
 FF1A: D1 D0                    FDB    task_move_shots ; [8] $D1D0
-FF1C: D2 23                    FDB    sub_D223 ; [9] $D223
+FF1C: D2 23                    FDB    task_dual_shots ; [9] $D223
 FF1E: F5 C4                    FDB    task_spawn_effect ; [10] $F5C4
 FF20: F5 FA                    FDB    task_animate_effects ; [11] $F5FA
-FF22: F6 DD                    FDB    sub_F6DD ; [12] $F6DD
+FF22: F6 DD                    FDB    task_player_explosion ; [12] $F6DD
 FF24: D1 50                    FDB    task_end_frame ; [13] $D150
 
 ; Referenced from: $FEC6 task_dispatch
 tasks_mode3:
-FF26: FB B1                    FDB    sub_FBB1 ; [0] $FBB1
-FF28: EA 89                    FDB    sub_EA89 ; [1] $EA89
-FF2A: F8 DA                    FDB    sub_F8DA ; [2] $F8DA
-FF2C: D8 F8                    FDB    sub_D8F8 ; [3] $D8F8
-FF2E: D2 8A                    FDB    sub_D28A ; [4] $D28A
+FF26: FB B1                    FDB    task_ready_timer ; [0] $FBB1
+FF28: EA 89                    FDB    task_clear_parked_flags ; [1] $EA89
+FF2A: F8 DA                    FDB    task_cycle_colours ; [2] $F8DA
+FF2C: D8 F8                    FDB    task_formation_offset ; [3] $D8F8
+FF2E: D2 8A                    FDB    task_shot_hits ; [4] $D28A
 FF30: FA 7D                    FDB    task_bonus_life ; [5] $FA7D
 FF32: CF 14                    FDB    task_count_fighters ; [6] $CF14
 FF34: CF 4F                    FDB    task_move_player ; [7] $CF4F
 FF36: D9 15                    FDB    task_player_hit_check ; [8] $D915
-FF38: F9 21                    FDB    sub_F921 ; [9] $F921
+FF38: F9 21                    FDB    task_shot_collisions ; [9] $F921
 FF3A: D1 68                    FDB    task_player_fire ; [10] $D168
 FF3C: D1 D0                    FDB    task_move_shots ; [11] $D1D0
-FF3E: D2 23                    FDB    sub_D223 ; [12] $D223
+FF3E: D2 23                    FDB    task_dual_shots ; [12] $D223
 FF40: F5 C4                    FDB    task_spawn_effect ; [13] $F5C4
 FF42: F5 FA                    FDB    task_animate_effects ; [14] $F5FA
-FF44: F6 DD                    FDB    sub_F6DD ; [15] $F6DD
-FF46: D8 B0                    FDB    sub_D8B0 ; [16] $D8B0
+FF44: F6 DD                    FDB    task_player_explosion ; [15] $F6DD
+FF46: D8 B0                    FDB    task_sound_queue ; [16] $D8B0
 FF48: D1 50                    FDB    task_end_frame ; [17] $D150
 
 ; Referenced from: $FEC8 task_dispatch
 tasks_mode4:
-FF4A: EA 89                    FDB    sub_EA89 ; [0] $EA89
-FF4C: F8 DA                    FDB    sub_F8DA ; [1] $F8DA
-FF4E: D8 F8                    FDB    sub_D8F8 ; [2] $D8F8
-FF50: D2 8A                    FDB    sub_D28A ; [3] $D28A
+FF4A: EA 89                    FDB    task_clear_parked_flags ; [0] $EA89
+FF4C: F8 DA                    FDB    task_cycle_colours ; [1] $F8DA
+FF4E: D8 F8                    FDB    task_formation_offset ; [2] $D8F8
+FF50: D2 8A                    FDB    task_shot_hits ; [3] $D28A
 FF52: FA 7D                    FDB    task_bonus_life ; [4] $FA7D
 FF54: CF 14                    FDB    task_count_fighters ; [5] $CF14
 FF56: CF 4F                    FDB    task_move_player ; [6] $CF4F
-FF58: F9 21                    FDB    sub_F921 ; [7] $F921
+FF58: F9 21                    FDB    task_shot_collisions ; [7] $F921
 FF5A: D1 68                    FDB    task_player_fire ; [8] $D168
 FF5C: D1 D0                    FDB    task_move_shots ; [9] $D1D0
-FF5E: D2 23                    FDB    sub_D223 ; [10] $D223
+FF5E: D2 23                    FDB    task_dual_shots ; [10] $D223
 FF60: F5 C4                    FDB    task_spawn_effect ; [11] $F5C4
 FF62: F5 FA                    FDB    task_animate_effects ; [12] $F5FA
-FF64: F6 DD                    FDB    sub_F6DD ; [13] $F6DD
-FF66: D8 B0                    FDB    sub_D8B0 ; [14] $D8B0
+FF64: F6 DD                    FDB    task_player_explosion ; [13] $F6DD
+FF66: D8 B0                    FDB    task_sound_queue ; [14] $D8B0
 FF68: D1 50                    FDB    task_end_frame ; [15] $D150
 
 ; Referenced from: $FECA task_dispatch
 tasks_mode5:
-FF6A: FB B1                    FDB    sub_FBB1 ; [0] $FBB1
-FF6C: FE 18                    FDB    sub_FE18 ; [1] $FE18
-FF6E: EA 89                    FDB    sub_EA89 ; [2] $EA89
-FF70: F8 DA                    FDB    sub_F8DA ; [3] $F8DA
-FF72: D8 F8                    FDB    sub_D8F8 ; [4] $D8F8
-FF74: D2 8A                    FDB    sub_D28A ; [5] $D28A
+FF6A: FB B1                    FDB    task_ready_timer ; [0] $FBB1
+FF6C: FE 18                    FDB    task_bonus_ship ; [1] $FE18
+FF6E: EA 89                    FDB    task_clear_parked_flags ; [2] $EA89
+FF70: F8 DA                    FDB    task_cycle_colours ; [3] $F8DA
+FF72: D8 F8                    FDB    task_formation_offset ; [4] $D8F8
+FF74: D2 8A                    FDB    task_shot_hits ; [5] $D28A
 FF76: FA 7D                    FDB    task_bonus_life ; [6] $FA7D
 FF78: CF 14                    FDB    task_count_fighters ; [7] $CF14
 FF7A: CF 4F                    FDB    task_move_player ; [8] $CF4F
 FF7C: D9 15                    FDB    task_player_hit_check ; [9] $D915
-FF7E: F9 21                    FDB    sub_F921 ; [10] $F921
+FF7E: F9 21                    FDB    task_shot_collisions ; [10] $F921
 FF80: D1 68                    FDB    task_player_fire ; [11] $D168
 FF82: D1 D0                    FDB    task_move_shots ; [12] $D1D0
-FF84: D2 23                    FDB    sub_D223 ; [13] $D223
+FF84: D2 23                    FDB    task_dual_shots ; [13] $D223
 FF86: F5 C4                    FDB    task_spawn_effect ; [14] $F5C4
 FF88: F5 FA                    FDB    task_animate_effects ; [15] $F5FA
-FF8A: F6 DD                    FDB    sub_F6DD ; [16] $F6DD
-FF8C: D8 B0                    FDB    sub_D8B0 ; [17] $D8B0
-FF8E: D5 88                    FDB    sub_D588 ; [18] $D588
-FF90: EB 66                    FDB    sub_EB66 ; [19] $EB66
-FF92: FC 33                    FDB    sub_FC33 ; [20] $FC33
+FF8A: F6 DD                    FDB    task_player_explosion ; [16] $F6DD
+FF8C: D8 B0                    FDB    task_sound_queue ; [17] $D8B0
+FF8E: D5 88                    FDB    task_formation_count ; [18] $D588
+FF90: EB 66                    FDB    task_stage_events_play ; [19] $EB66
+FF92: FC 33                    FDB    task_game_over_check ; [20] $FC33
 FF94: D1 50                    FDB    task_end_frame ; [21] $D150
 
 ; Mode 6: stage clear.
 ; Referenced from: $FECC task_dispatch
 tasks_mode6:
-FF96: EA 89                    FDB    sub_EA89 ; [0] $EA89
-FF98: F8 DA                    FDB    sub_F8DA ; [1] $F8DA
+FF96: EA 89                    FDB    task_clear_parked_flags ; [0] $EA89
+FF98: F8 DA                    FDB    task_cycle_colours ; [1] $F8DA
 FF9A: D6 76                    FDB    task_stage_clear ; [2] $D676
 FF9C: D1 D0                    FDB    task_move_shots ; [3] $D1D0
-FF9E: D2 23                    FDB    sub_D223 ; [4] $D223
+FF9E: D2 23                    FDB    task_dual_shots ; [4] $D223
 FFA0: F5 C4                    FDB    task_spawn_effect ; [5] $F5C4
 FFA2: F5 FA                    FDB    task_animate_effects ; [6] $F5FA
 FFA4: D1 50                    FDB    task_end_frame ; [7] $D150
@@ -10421,18 +11114,18 @@ FFA4: D1 50                    FDB    task_end_frame ; [7] $D150
 ; Mode 7: challenging stage.
 ; Referenced from: $FECE task_dispatch
 tasks_mode7:
-FFA6: FB B1                    FDB    sub_FBB1 ; [0] $FBB1
-FFA8: EA 21                    FDB    sub_EA21 ; [1] $EA21
-FFAA: F8 DA                    FDB    sub_F8DA ; [2] $F8DA
-FFAC: D8 F8                    FDB    sub_D8F8 ; [3] $D8F8
-FFAE: D2 8A                    FDB    sub_D28A ; [4] $D28A
+FFA6: FB B1                    FDB    task_ready_timer ; [0] $FBB1
+FFA8: EA 21                    FDB    task_challenge_marks ; [1] $EA21
+FFAA: F8 DA                    FDB    task_cycle_colours ; [2] $F8DA
+FFAC: D8 F8                    FDB    task_formation_offset ; [3] $D8F8
+FFAE: D2 8A                    FDB    task_shot_hits ; [4] $D28A
 FFB0: FA 7D                    FDB    task_bonus_life ; [5] $FA7D
 FFB2: CF 14                    FDB    task_count_fighters ; [6] $CF14
 FFB4: CF 4F                    FDB    task_move_player ; [7] $CF4F
 FFB6: D1 68                    FDB    task_player_fire ; [8] $D168
 FFB8: D1 D0                    FDB    task_move_shots ; [9] $D1D0
-FFBA: D2 23                    FDB    sub_D223 ; [10] $D223
-FFBC: D8 B0                    FDB    sub_D8B0 ; [11] $D8B0
+FFBA: D2 23                    FDB    task_dual_shots ; [10] $D223
+FFBC: D8 B0                    FDB    task_sound_queue ; [11] $D8B0
 FFBE: D1 50                    FDB    task_end_frame ; [12] $D150
 
 ; Mode 8: challenging stage results.
@@ -10448,7 +11141,7 @@ FFC8: D1 50                    FDB    task_end_frame ; [4] $D150
 ; Referenced from: $FED2 task_dispatch
 tasks_mode9:
 FFCA: AF BE                    FDB    task_hiscore_entry ; [0] $AFBE
-FFCC: FC 33                    FDB    sub_FC33 ; [1] $FC33
+FFCC: FC 33                    FDB    task_game_over_check ; [1] $FC33
 FFCE: D1 50                    FDB    task_end_frame ; [2] $D150
 
 str_copyright:

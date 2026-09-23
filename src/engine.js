@@ -31,9 +31,10 @@
  *    three MC6809 cores running the original program, fetched from roms/
  *    by src/dev/romfetch.js. The original, not the port, and the page
  *    says so on screen.
- *  - `port` ("JavaScript"): will drive src/game's scheduler once the port
- *    exists. Until then it is a placeholder that reports "port not ready
- *    yet".
+ *  - `port` ("JavaScript"): the port, src/game/port.js (the ported
+ *    routines on src/game/scheduler.js). It says "port not ready yet"
+ *    while a CPU's entry points are missing or a chip module does not
+ *    load, and stops (not ready, with the reason) if the port throws.
  *
  * The oracle board's own API lives in docs/oracle-notes.md; everything
  * this file assumes about it is in {@link BoardAdapter}, so an API change
@@ -314,40 +315,98 @@ export class EmulatedEngine {
 // ---------------------------------------------------------------- port
 
 /**
- * The JavaScript port. A placeholder until src/game has a scheduler: it
- * owns a Machine (so the renderer has memory to draw) and reports that it
- * is not ready. When the port lands, runFrame() becomes
- * `scheduler.stepFrame()` on this Machine.
+ * @typedef {object} PortLike what the engine uses of src/game/port.js
+ * @property {Uint8Array} mem @property {Uint8Array} starCtrl
+ * @property {Uint8Array} wsgRegs @property {boolean} soundEnable
+ * @property {InputState} inputs
+ * @property {null | ((cycle: number) => void)} onBang
+ * @property {() => void} runFrame @property {() => void} powerOn
+ */
+
+/**
+ * The JavaScript port (src/game/port.js): the ported routines of the
+ * three CPUs on the port's scheduler. Ready when every CPU's entry points
+ * are ported and every chip module loads (`portStatus()`); otherwise it
+ * owns a blank Machine and says what is missing. If the port throws while
+ * running (a porting bug), it stops, is no longer ready and says why.
  */
 export class PortEngine {
-  constructor() {
+  /**
+   * @param {PortLike | null} [port] the running port, or null
+   * @param {string} [why] why there is none
+   */
+  constructor(port = null, why = 'port not ready yet — play the ROM version') {
     this.kind = /** @type {EngineKind} */ ('port');
     this.label = PORT_LABEL;
     this.supportsAi = true;
     /** The self-playing AI's switch; the AI itself is still to be built. */
     this.aiEnabled = false;
+    /** @type {PortLike | null} */
+    this.port = port;
+    /** A blank board to draw while there is no port. */
     this.machine = new Machine();
-    this.ready = false;
-    this.why = 'port not ready yet — play the ROM version';
+    this.ready = port !== null;
+    this.why = port !== null ? '' : why;
     /** @type {((cycle: number) => void) | null} */
     this.onBang = null;
+    if (port !== null) port.onBang = (cycle) => this.onBang?.(cycle);
     this.machine.io.onBang = () => this.onBang?.(0);
   }
 
-  get mem() { return this.machine.mem; }
+  /**
+   * Load the port and power it on. Never throws: a port that cannot run
+   * gives an engine that is not ready and says why.
+   * @returns {Promise<PortEngine>}
+   */
+  static async create() {
+    try {
+      const mod = await import('./game/port.js');
+      const status = mod.portStatus();
+      if (!status.ready) {
+        return new PortEngine(null, 'port not ready yet ('
+          + `${status.problems[0]}) — play the ROM version`);
+      }
+      return new PortEngine(new mod.Port());
+    } catch (err) {
+      return new PortEngine(null,
+        `port not ready yet (${messageOf(err)}) — play the ROM version`);
+    }
+  }
 
-  get starControl() { return this.machine.starCtrl; }
+  get mem() { return this.port?.mem ?? this.machine.mem; }
+
+  get starControl() { return this.port?.starCtrl ?? this.machine.starCtrl; }
 
   /** @param {InputState} input */
   runFrame(input) {
-    copyInputs(input, this.machine.io.inputs);
+    const port = this.port;
+    if (port === null || !this.ready) {
+      copyInputs(input, this.machine.io.inputs);
+      return;
+    }
+    copyInputs(input, port.inputs);
+    try {
+      port.runFrame();
+    } catch (err) {
+      // A porting bug: stop here rather than run on from broken state.
+      this.ready = false;
+      this.why = `port stopped: ${messageOf(err)} — play the ROM version`;
+    }
   }
 
-  soundRegs() { return this.machine.mem.subarray(WSG_BASE, WSG_BASE + WSG_REGS); }
+  soundRegs() {
+    return this.port?.wsgRegs ?? this.machine.mem.subarray(WSG_BASE, WSG_BASE + WSG_REGS);
+  }
 
-  soundEnable() { return this.machine.soundEnable; }
+  soundEnable() { return this.port?.soundEnable ?? this.machine.soundEnable; }
 
-  reset() { this.machine.reset(); }
+  /** Power-on reset: RAM, latches and CPUs from scratch; inputs are kept. */
+  reset() {
+    if (this.port === null) { this.machine.reset(); return; }
+    this.port.powerOn();
+    this.ready = true;
+    this.why = '';
+  }
 }
 
 /**
@@ -357,7 +416,7 @@ export class PortEngine {
  * @returns {Promise<EmulatedEngine | PortEngine>}
  */
 export async function createEngine(kind, opts = {}) {
-  if (kind === 'port') return new PortEngine();
+  if (kind === 'port') return PortEngine.create();
   return EmulatedEngine.create(opts);
 }
 

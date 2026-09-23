@@ -1,0 +1,134 @@
+{
+  "labels": {
+    "C909": "logo_anim_start",
+    "C91B": "logo_anim_rise",
+    "C952": "logo_anim_spread",
+    "C9AE": "logo_anim_colours",
+    "CDA1": "start_turn",
+    "D029": "demo_end",
+    "D223": "task_dual_shots",
+    "D8B0": "task_sound_queue",
+    "D8F8": "task_formation_offset",
+    "D28A": "task_shot_hits",
+    "D431": "enemy_hit",
+    "D588": "task_formation_count",
+    "D9CF": "fighter_reset_lose_life",
+    "DA01": "player_dies",
+    "DA87": "game_over_to_attract",
+    "DAEA": "lose_life",
+    "DB04": "switch_to_p2",
+    "DB9D": "switch_to_p1",
+    "DC38": "new_ship",
+    "DBE2": "after_name_entry_p1",
+    "DC0B": "after_name_entry_p2",
+    "DC1C": "print_string_attr_r",
+    "DEC1": "count_game_time"
+  },
+  "comments": {},
+  "ram": {
+    "117A": {
+      "name": "logo_anim_step",
+      "size": 1
+    },
+    "1170": {
+      "name": "star_dir_flags",
+      "size": 1
+    },
+    "10D9": {
+      "name": "player_frozen",
+      "size": 1
+    },
+    "10DC": {
+      "name": "fighter_count",
+      "size": 1
+    },
+    "10DD": {
+      "name": "fighter_offsets",
+      "size": 2
+    },
+    "10C2": {
+      "name": "shot_ptr",
+      "size": 1
+    },
+    "10C4": {
+      "name": "slot_index",
+      "size": 1
+    },
+    "10C5": {
+      "name": "hit_diving",
+      "size": 1
+    },
+    "10C6": {
+      "name": "hitbox",
+      "size": 4
+    },
+    "10CA": {
+      "name": "hit_xhi",
+      "size": 1
+    },
+    "1076": {
+      "name": "shots_to_clear",
+      "size": 1
+    },
+    "1112": {
+      "name": "boss_chain",
+      "size": 1
+    },
+    "1113": {
+      "name": "hit_points",
+      "size": 1
+    },
+    "1131": {
+      "name": "boss_chain_timer",
+      "size": 1
+    },
+    "1066": {
+      "name": "boss_bonus_idx",
+      "size": 1
+    },
+    "100A": {
+      "name": "stage_text_timer",
+      "size": 1
+    },
+    "112D": {
+      "name": "formation_end",
+      "size": 1
+    },
+    "1165": {
+      "name": "clear_delay",
+      "size": 1
+    },
+    "10FE": {
+      "name": "player_dying",
+      "size": 1
+    },
+    "110F": {
+      "name": "player_hit",
+      "size": 1
+    },
+    "1C30": {
+      "name": "p1_saved_formation",
+      "size": 47
+    },
+    "1C60": {
+      "name": "p2_saved_formation",
+      "size": 47
+    },
+    "112F": {
+      "name": "p1_saved_mode",
+      "size": 1
+    },
+    "1130": {
+      "name": "p2_saved_mode",
+      "size": 1
+    },
+    "117F": {
+      "name": "p1_out_flag",
+      "size": 1
+    },
+    "1180": {
+      "name": "p2_out_flag",
+      "size": 1
+    }
+  }
+}

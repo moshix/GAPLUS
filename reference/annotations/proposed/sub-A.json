@@ -1,0 +1,44 @@
+{
+ "cpu": "sub",
+ "labels": {
+  "B014": {"name": "task_formation_move", "doc": [
+   "Formation mover task: for every slot with b1 in formation_flags,",
+   "point the slot pointers $1084-$10CB at its data, set its sprite",
+   "up on the first visit (b7), then step its path ($B0D4) or home in",
+   "on its formation position ($B242). Rewinds formation_ptr at $188D."]},
+  "B0D4": {"name": "formation_path_step", "doc": [
+   "Step a slot along its path: counter [$1090] minus speed [$10AD];",
+   "at 0 the path pointer advances: $F0 end, $FF/$FE new heading +",
+   "jump, else a heading."]},
+  "B163": {"name": "formation_move_sprite", "doc": [
+   "Move by <$98 units along heading A (dat_AAFF + 4*A: dy, dx, bits)."]},
+  "B20D": "formation_set_picture",
+  "B242": {"name": "formation_home", "doc": [
+   "Turn towards the formation position (octant tables dat_A9D6,",
+   "A96A, AA39, AA9C) or arrive within 4 units."]},
+  "B385": "task_attack_timer",
+  "B3D1": "task_effect",
+  "B461": "effect_animate",
+  "B90E": "task_animate_objects",
+  "BB50": "task_launch_objects",
+  "BB96": "task_challenge_seq",
+  "BCF3": "task_bonus_objects",
+  "BD18": "bonus_state_call",
+  "BEE5": "task_bonus_colours"
+ },
+ "comments": {
+  "B93B": "signed offset: fc $80-$FF reads $DF80-$DFFF, not $E080+"
+ },
+ "ram": {
+  "1096": {"name": "formation_slot", "size": 1,
+   "comment": "sub: index of the slot $B014 works on ($FF = none)"},
+  "111D": {"name": "object_state", "size": 4,
+   "comment": "sub: state of the 4 objects ($0EE2+10k), object_states"},
+  "1132": {"name": "bonus_state", "size": 5,
+   "comment": "sub: challenging-stage bonus object states (tbl_BEDD)"},
+  "113A": {"name": "bonus_free", "size": 5,
+   "comment": "sub: 1 = bonus object k done/free"},
+  "115A": {"name": "challenge_step", "size": 1,
+   "comment": "sub: challenging-stage sequencer step ($BB96)"}
+ }
+}

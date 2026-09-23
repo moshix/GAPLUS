@@ -1,0 +1,172 @@
+{
+  "labels": {
+    "E22F": "results_draw",
+    "E29A": "results_count_hits",
+    "E2D0": "results_markers",
+    "E346": "results_show_bonus",
+    "E3AD": "results_payout",
+    "E332": "results_no_bonus",
+    "E3FF": "results_count_one",
+    "E4DA": "results_bonus_line",
+    "E6C8": "add_score_times",
+    "E7A6": "payout_lucky",
+    "E811": "payout_byebye",
+    "E83B": "payout_extend",
+    "EA21": "task_challenge_marks",
+    "EA89": "task_clear_parked_flags",
+    "EB01": "task_next",
+    "EB5B": "stage_events_reset",
+    "EB66": "task_stage_events_play",
+    "EAD5": "stage_event1_step0",
+    "EB06": "stage_event1_step1",
+    "EB2B": "stage_event1_step2",
+    "F6DD": "task_player_explosion",
+    "F70C": "explosion_start",
+    "F824": "explosion_end",
+    "F8DA": "task_cycle_colours",
+    "F921": "task_shot_collisions",
+    "F6C5": "effect_free_slot",
+    "FA94": "bonus_first_p1",
+    "FAAB": "bonus_second_p1",
+    "FADB": "bonus_every_p1",
+    "FB25": "bonus_first_p2",
+    "FB3B": "bonus_second_p2",
+    "FB6A": "bonus_every_p2",
+    "FB0F": "bonus_task_end",
+    "FB9E": "flag_extra_ship",
+    "FBB1": "task_ready_timer",
+    "FC1F": "print_msg_line",
+    "FC33": "task_game_over_check",
+    "FE18": "task_bonus_ship"
+  },
+  "ram": {
+    "1161": {
+      "name": "results_blink",
+      "size": 1
+    },
+    "1162": {
+      "name": "results_hits_left",
+      "size": 1
+    },
+    "1163": {
+      "name": "results_hits100",
+      "size": 1
+    },
+    "1164": {
+      "name": "results_count",
+      "size": 1
+    },
+    "1166": {
+      "name": "results_bonus_kind",
+      "size": 1
+    },
+    "1167": {
+      "name": "results_bcd_tmp",
+      "size": 1
+    },
+    "1169": {
+      "name": "results_earnings",
+      "size": 1
+    },
+    "116A": {
+      "name": "results_timer",
+      "size": 1
+    },
+    "116B": {
+      "name": "results_hits200",
+      "size": 1
+    },
+    "115B": {
+      "name": "results_delay",
+      "size": 1
+    },
+    "1171": {
+      "name": "bonus_kind_p1",
+      "size": 1
+    },
+    "1172": {
+      "name": "bonus_kind_p2",
+      "size": 1
+    },
+    "116E": {
+      "name": "event_step",
+      "size": 1
+    },
+    "116F": {
+      "name": "event_timer",
+      "size": 1
+    },
+    "1170": {
+      "name": "event_star_mode",
+      "size": 1
+    },
+    "1124": {
+      "name": "bonus_step_p1",
+      "size": 1
+    },
+    "1125": {
+      "name": "bonus_step_p2",
+      "size": 1
+    },
+    "1023": {
+      "name": "ready_timer_p1",
+      "size": 1
+    },
+    "1024": {
+      "name": "ready_timer_p2",
+      "size": 1
+    },
+    "10AB": {
+      "name": "ready_timer",
+      "size": 1
+    },
+    "112A": {
+      "name": "ready_active",
+      "size": 1
+    },
+    "1175": {
+      "name": "bonus_ship_out",
+      "size": 1
+    },
+    "09FF": {
+      "name": "stats_blank_count",
+      "size": 1
+    },
+    "1108": {
+      "name": "effect_request",
+      "size": 1
+    },
+    "110F": {
+      "name": "player_exploding",
+      "size": 1
+    },
+    "1110": {
+      "name": "explosion_step",
+      "size": 1
+    },
+    "117B": {
+      "name": "next_bonus_p1",
+      "size": 2
+    },
+    "117D": {
+      "name": "next_bonus_p2",
+      "size": 2
+    },
+    "1109": {
+      "name": "effect_pos",
+      "size": 2
+    },
+    "110C": {
+      "name": "effect_step",
+      "size": 3
+    },
+    "10C6": {
+      "name": "hit_box",
+      "size": 4
+    },
+    "1036": {
+      "name": "stage_params",
+      "size": 36
+    }
+  }
+}

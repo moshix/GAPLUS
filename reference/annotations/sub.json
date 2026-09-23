@@ -90,7 +90,8 @@
    "name": "task_stage_setup",
    "doc": [
     "Mode 2 task: build the stage's enemy sprites and formation state",
-    "from the stage tables (index $106E), then game_mode + 1."
+    "from the stage tables (index $106E), then game_mode + 1.",
+    "QUIRK: stage tables indexed with a signed A,X offset from $106E * 2: values above 2 read further into the ROM."
    ]
   },
   "BF58": {
@@ -107,20 +108,26 @@
     "(sprites $0EE2, $0EEC, $0EF6, $0F00) through object_states."
    ]
   },
-  "B930": "object_state_call",
+  "B930": {
+   "name": "object_state_call",
+   "doc": [
+    "Jump to object_states[A]: ASLA / LDX #object_states / JMP [A,X] (8-bit shift, signed offset). In: A state, U sprite entry, Y state byte."
+   ]
+  },
   "BB1A": "object_sprites",
   "BB22": "object_states",
   "B936": {
    "name": "object_spawn_random",
    "doc": [
-    "State 1: place the object at a pseudo-random position. The sub has",
-    "no random number generator: Y is the byte of its own reset code",
-    "at $E000 + frame_counter (the ROM used as a noise table, clamped",
-    "to $20-$CF: below $20 -> $90, $D0 and up -> $60), and X is",
-    "frame_counter | $B0."
+    "Object state 1: place the object at a pseudo-random position. The sub has no RNG: Y is the byte at $E000 + (signed) frame_counter, i.e. its own reset code for $00-$7F and $DF80-$DFFF (fill, checksum) for $80-$FF, clamped to $20-$CF (below $20 -> $90, $D0 and up -> $60); X = frame_counter | $B0."
    ]
   },
-  "E51C": "scan_formation",
+  "E51C": {
+   "name": "scan_formation",
+   "doc": [
+    "For each formation entry with bit 4: copy its slot position ($1B00+2n) to $1630+2n and step its sprite code $18F0+n through dat_E591; reaching 0 clears the entry and its sprite."
+   ]
+  },
   "BFEF": {
    "name": "checksum_A000",
    "doc": [
@@ -142,7 +149,1044 @@
     "boot or in the service mode)."
    ]
   },
-  "BF8B": "str_copyright"
+  "BF8B": "str_copyright",
+  "B014": {
+   "name": "task_formation_move",
+   "doc": [
+    "Formation mover task: for every slot with b1 in formation_flags,",
+    "point the slot pointers $1084-$10CB at its data, set its sprite",
+    "up on the first visit (b7), then step its path ($B0D4) or home in",
+    "on its formation position ($B242). Rewinds formation_ptr at $188D.",
+    "QUIRK: unbounded scan: from a formation_ptr past the table it wraps through the address space (the Round Advance corruption)."
+   ]
+  },
+  "B0D4": {
+   "name": "formation_path_step",
+   "doc": [
+    "Step a slot along its path: counter [$1090] minus speed [$10AD];",
+    "at 0 the path pointer advances: $F0 end, $FF/$FE new heading +",
+    "jump, else a heading."
+   ]
+  },
+  "B163": {
+   "name": "formation_move_sprite",
+   "doc": [
+    "Move by <$98 units along heading A (heading_table + 4*A: dy, dx, bits).",
+    "QUIRK: headings are not range-checked ($B173)."
+   ]
+  },
+  "B20D": {
+   "name": "formation_set_picture",
+   "doc": [
+    "Picture from byte 3 of heading entry X: low nibble into [$1084], whole byte to [$10CB], bits 4-5 = flip bits of [$10A4]."
+   ]
+  },
+  "B242": {
+   "name": "formation_home",
+   "doc": [
+    "Turn towards the formation position (octant tables home_octants_a-d) or arrive within 4 units."
+   ]
+  },
+  "B385": {
+   "name": "task_attack_timer",
+   "doc": [
+    "Mode 5: unless $10D6, every 64th frame step $1129 (max $1F); its range picks a count from stage_params ($1036-$1039); enough moving slots -> $112A = $55 (formation attacks allowed), else 0.",
+    "QUIRK: unbounded scan from formation_ptr, as task_formation_move."
+   ]
+  },
+  "B3D1": {
+   "name": "task_effect",
+   "doc": [
+    "Mode 5: when $10CF is set, $101A = $FF and run power-up effect handler tbl_B3E6[$1070] (A = 2 * effect, signed JMP [A,X])."
+   ]
+  },
+  "B461": {
+   "name": "effect_animate",
+   "doc": [
+    "Animate the six effect sprites $0E92-$0E9D: on even frames six code/colour words from dat_B483, frame (frame_counter & $0C) / 4."
+   ]
+  },
+  "BB50": {
+   "name": "task_launch_objects",
+   "doc": [
+    "Mode 5: while $1122, every $2D frames start the next object of dat_BB8E (state 1) if idle; count $1123 once all are out."
+   ]
+  },
+  "BB96": {
+   "name": "task_challenge_seq",
+   "doc": [
+    "Mode 7 challenging-stage sequencer, stepped by challenge_step: set-up, 22 animation frames of dat_F0C1, pick the wave size (dat_BCB4/BCC0), release one bonus object every 8 frames. CWAIs once.",
+    "QUIRK: step $17 searches dat_BCB4 for the stage with no end marker; a stage not in the list runs on through memory."
+   ]
+  },
+  "BCF3": {
+   "name": "task_bonus_objects",
+   "doc": [
+    "Mode 7: run the handler of every bonus object with a non-zero bonus_state ($1132-$1136) with X = its bonus_free flag and U = its sprite entry ($0E30+2k)."
+   ]
+  },
+  "BD18": {
+   "name": "bonus_state_call",
+   "doc": [
+    "Jump to tbl_BEDD[state - 1] (DECA / ASLA / JMP [A,Y], signed)."
+   ]
+  },
+  "BEE5": {
+   "name": "task_bonus_colours",
+   "doc": [
+    "Mode 7: for each non-zero entry of $114A-$1158 sprite $0E30+2k gets code dat_BF27[$115E] and flags dat_BF40[$115E]; $115E steps and wraps at the 0 terminator."
+   ]
+  },
+  "C000": {
+   "name": "path_C000",
+   "doc": [
+    "Path stream: 230 headings (heading_table indexes),",
+    "then FF = jump to $A44B.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "C0E9": {
+   "name": "path_C0E9",
+   "doc": [
+    "Path stream: 196 headings (heading_table indexes),",
+    "then FE = jump to $C0E9 (loops), axis 2 reset.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "C1B0": {
+   "name": "path_C1B0",
+   "doc": [
+    "Path stream: 248 headings (heading_table indexes),",
+    "then FE = jump to $C3A6, axis 2 reset.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "C2AB": {
+   "name": "path_C2AB",
+   "doc": [
+    "Path stream: 248 headings (heading_table indexes),",
+    "then FE = jump to $C3A6, axis 2 reset.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "C3A6": {
+   "name": "path_C3A6",
+   "doc": [
+    "Path stream: 153 headings (heading_table indexes),",
+    "then FE = jump to $C3A6 (loops), axis 2 reset.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "C442": {
+   "name": "path_C442",
+   "doc": [
+    "Path stream: 150 headings (heading_table indexes),",
+    "then FE = jump to $C442 (loops), axis 2 reset.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "C4DB": {
+   "name": "path_C4DB",
+   "doc": [
+    "Path stream: 211 headings (heading_table indexes),",
+    "then FE = jump to $C4DB (loops), axis 2 reset.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "C5B1": {
+   "name": "path_C5B1",
+   "doc": [
+    "Path stream: 203 headings (heading_table indexes),",
+    "then FE = jump to $C5B1 (loops), axis 2 reset.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "C67F": {
+   "name": "path_C67F",
+   "doc": [
+    "Path stream: 287 headings (heading_table indexes),",
+    "then FE = jump to $C67F (loops), axis 2 reset.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "C7A1": {
+   "name": "path_C7A1",
+   "doc": [
+    "Path stream: 248 headings (heading_table indexes),",
+    "then FE = jump to $CAC1, axis 2 reset.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "C89C": {
+   "name": "path_C89C",
+   "doc": [
+    "Path stream: 222 headings (heading_table indexes),",
+    "then FF = jump to $C442.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "C97D": {
+   "name": "path_C97D",
+   "doc": [
+    "Path stream: 187 headings (heading_table indexes),",
+    "then FE = jump to $C97D (loops), axis 2 reset.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "CA3B": {
+   "name": "path_CA3B",
+   "doc": [
+    "Path stream: 131 headings (heading_table indexes),",
+    "then FE = jump to $CA3B (loops), axis 2 reset.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "CAC1": {
+   "name": "path_CAC1",
+   "doc": [
+    "Path stream: 150 headings (heading_table indexes),",
+    "then FE = jump to $CAC1 (loops), axis 2 reset.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "CB5A": {
+   "name": "path_CB5A",
+   "doc": [
+    "Path stream: 207 headings (heading_table indexes),",
+    "then FE = jump to $CB5A (loops), axis 2 reset.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "CC2C": {
+   "name": "path_CC2C",
+   "doc": [
+    "Path stream: 203 headings (heading_table indexes),",
+    "then FE = jump to $CC2C (loops), axis 2 reset.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "CCFA": {
+   "name": "path_CCFA",
+   "doc": [
+    "Path stream: 277 headings (heading_table indexes),",
+    "then FE = jump to $CCFA (loops), axis 2 reset.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "CE12": {
+   "name": "path_CE12",
+   "doc": [
+    "Path stream: 248 headings (heading_table indexes),",
+    "then FE = jump to $CAC1, axis 2 reset.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "CF0D": {
+   "name": "path_CF0D",
+   "doc": [
+    "Path stream: 222 headings (heading_table indexes),",
+    "then FF = jump to $CAC1.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "CFEE": {
+   "name": "path_CFEE",
+   "doc": [
+    "Path stream: 104 headings (heading_table indexes),",
+    "then FF = jump to $C442.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "D059": {
+   "name": "path_D059",
+   "doc": [
+    "Path stream: 137 headings (heading_table indexes),",
+    "then F0 = end (+ unread back-pointer to this stream).",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "D0E5": {
+   "name": "path_D0E5",
+   "doc": [
+    "Path stream: 95 headings (heading_table indexes),",
+    "then FF = jump to $D0E5 (loops).",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "D147": {
+   "name": "path_D147",
+   "doc": [
+    "Path stream: 122 headings (heading_table indexes),",
+    "then F0 = end (+ unread back-pointer to this stream).",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "D1C4": {
+   "name": "path_D1C4",
+   "doc": [
+    "Path stream: 104 headings (heading_table indexes),",
+    "then FF = jump to $CAC1.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "D22F": {
+   "name": "path_D22F",
+   "doc": [
+    "Path stream: 137 headings (heading_table indexes),",
+    "then F0 = end (+ unread back-pointer to this stream).",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "D2BB": {
+   "name": "path_D2BB",
+   "doc": [
+    "Path stream: 95 headings (heading_table indexes),",
+    "then FF = jump to $D2BB (loops).",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "D31D": {
+   "name": "path_D31D",
+   "doc": [
+    "Path stream: 122 headings (heading_table indexes),",
+    "then F0 = end (+ unread back-pointer to this stream).",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "D39A": {
+   "name": "path_D39A",
+   "doc": [
+    "Path stream: 114 headings (heading_table indexes),",
+    "then FF = jump to $D39A (loops).",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "D40F": {
+   "name": "path_D40F",
+   "doc": [
+    "Path stream: 133 headings (heading_table indexes),",
+    "then F0 = end (+ unread back-pointer to this stream).",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "D497": {
+   "name": "path_D497",
+   "doc": [
+    "Path stream: 60 headings (heading_table indexes),",
+    "then FF = jump to $D497 (loops).",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "D4D6": {
+   "name": "path_D4D6",
+   "doc": [
+    "Path stream: 113 headings (heading_table indexes),",
+    "then F0 = end (+ unread back-pointer to this stream).",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "D54A": {
+   "name": "path_D54A",
+   "doc": [
+    "Path stream: 96 headings (heading_table indexes),",
+    "then FF = jump to $C442.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "D5AD": {
+   "name": "path_D5AD",
+   "doc": [
+    "Path stream: 184 headings (heading_table indexes),",
+    "then FF = jump to $C442.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "D668": {
+   "name": "path_D668",
+   "doc": [
+    "Path stream: 96 headings (heading_table indexes),",
+    "then FF = jump to $C442.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "D6CB": {
+   "name": "path_D6CB",
+   "doc": [
+    "Path stream: 184 headings (heading_table indexes),",
+    "then FF = jump to $C442.",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "D786": {
+   "name": "path_D786",
+   "doc": [
+    "Path stream: 114 headings (heading_table indexes),",
+    "then FF = jump to $D786 (loops).",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "D7FB": {
+   "name": "path_D7FB",
+   "doc": [
+    "Path stream: 133 headings (heading_table indexes),",
+    "then F0 = end (+ unread back-pointer to this stream).",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "D883": {
+   "name": "path_D883",
+   "doc": [
+    "Path stream: 60 headings (heading_table indexes),",
+    "then FF = jump to $D883 (loops).",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "D8C2": {
+   "name": "path_D8C2",
+   "doc": [
+    "Path stream: 113 headings (heading_table indexes),",
+    "then F0 = end (+ unread back-pointer to this stream).",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "D936": {
+   "name": "path_D936",
+   "doc": [
+    "Path stream: 208 headings (heading_table indexes),",
+    "then F0 = end (+ unread back-pointer to this stream).",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "DA09": {
+   "name": "path_DA09",
+   "doc": [
+    "Path stream: 208 headings (heading_table indexes),",
+    "then F0 = end (+ unread back-pointer to this stream).",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "DADC": {
+   "name": "path_DADC",
+   "doc": [
+    "Path stream: 113 headings (heading_table indexes),",
+    "then F0 = end (+ unread back-pointer to this stream).",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "DB50": {
+   "name": "path_DB50",
+   "doc": [
+    "Path stream: 187 headings (heading_table indexes),",
+    "then F0 = end (+ unread back-pointer to this stream).",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "DC0E": {
+   "name": "path_DC0E",
+   "doc": [
+    "Path stream: 307 headings (heading_table indexes),",
+    "then F0 = end (+ unread back-pointer to this stream).",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "DD44": {
+   "name": "path_DD44",
+   "doc": [
+    "Path stream: 193 headings (heading_table indexes),",
+    "then F0 = end (+ unread back-pointer to this stream).",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "DE08": {
+   "name": "path_DE08",
+   "doc": [
+    "Path stream: 240 headings (heading_table indexes),",
+    "then F0 = end (+ unread back-pointer to this stream).",
+    "Stepped by formation_path_step ($B0D4) via [$108C]; see docs/modules/sub-C.md."
+   ]
+  },
+  "DEFB": "str_copyright_2",
+  "E341": {
+   "name": "task_formation_anim",
+   "doc": [
+    "Formation tiles; dispatch on frame_counter & 7 (tbl_E359)."
+   ]
+  },
+  "E369": {
+   "name": "formation_sprite_codes",
+   "doc": [
+    "This frame's formation sprite codes into $0E02-$0E2F.",
+    "QUIRK: stage tables indexed with a signed A,X offset from $106E * 2."
+   ]
+  },
+  "E3DA": {
+   "name": "formation_move",
+   "doc": [
+    "Step the formation along its path ($1082), lay out $1602-$1631."
+   ]
+  },
+  "E4B5": {
+   "name": "formation_scan_next",
+   "doc": [
+    "JSR scan_formation, then the next task."
+   ]
+  },
+  "E4BD": {
+   "name": "formation_slots_1B00",
+   "doc": [
+    "Formation slot positions at $1B00-$1B5F."
+   ]
+  },
+  "E654": {
+   "name": "task_capture_steer",
+   "doc": [
+    "Capture, capture_state 1: animate $0E8A from dat_E6F9 (capture_anim_idx), move the player towards $168A and the beam sprite towards X - 5.",
+    "QUIRK: $E6EF discards the SUBB (LDD / SUBB / STA)."
+   ]
+  },
+  "E7ED": {
+   "name": "task_capture_dispatch",
+   "doc": [
+    "Capture sub-state machine: JMP through tbl_E7F5[capture_substate]."
+   ]
+  },
+  "E8D7": {
+   "name": "capture_collect",
+   "doc": [
+    "Capture sub-state 1: each caught slot (b6) is copied to the next of the six captured-ship sprites $0EC2-$0ECD; capture_substate += 2."
+   ]
+  },
+  "E934": {
+   "name": "capture_home_y",
+   "doc": [
+    "Capture sub-state 3: move each captured sprite one step towards the player's Y + offset; when none moved, next sub-state."
+   ]
+  },
+  "E9E8": {
+   "name": "capture_leave_x",
+   "doc": [
+    "Capture sub-state 4: move the captured sprites in X to the player's X; when none moved clear the capture state, dual_fighter = 1 if one of the first five is in use.",
+    "QUIRK: DECB before the test ($EA3E): 5 of 6 entries tested."
+   ]
+  },
+  "EA4C": {
+   "name": "task_formation_refill",
+   "doc": [
+    "On even frames while a refill is due fly a sprite in (dat_EB2C paths, dat_F0C1 frames); at step $18 put an enemy into the first empty formation slot from frame_counter & $3F mod $27.",
+    "QUIRK: with no free formation slot the search at $EB29 loops forever."
+   ]
+  },
+  "EBEC": {
+   "name": "task_escort_flyin_a",
+   "doc": [
+    "Mode 3: step counter $1116: sprite $0F1E start position, animation from dat_F0C1, then place the wing sprites from the stage tables one every 5 frames; CWAI at $ED16, then game_mode + 1."
+   ]
+  },
+  "F116": {
+   "name": "task_escort_flyin_b",
+   "doc": [
+    "Mode 3: the $0F20-slot twin of task_escort_flyin_a's first steps, reading $1116-$1118 without changing them.",
+    "QUIRK: never advances $1116-$1118 (task_escort_flyin_a does)."
+   ]
+  },
+  "F0ED": {
+   "name": "reset_formation_rows",
+   "doc": [
+    "Fill $18C0-$18EB and $19E0-$1A0B (interleaved) with <$10; path pointers $184C-$1853 = $C0E9, $1854-$1857 = $C000."
+   ]
+  },
+  "F5A5": {
+   "name": "task_stage_entry_seq",
+   "doc": [
+    "Mode 4: step seq_step: two sprites at $0F1E/$0F20 animated through dat_F0C1 until its $0000 word; CWAI at $F5FE, clear frame_counter, game_mode + 1."
+   ]
+  },
+  "F60B": {
+   "name": "task_bonus_sequence",
+   "doc": [
+    "Mode 5: when the score parity changes (score_parity) start the same sprite sequence; later steps go through tbl_F62B (bonus sprite drops into place, extra life).",
+    "QUIRK: 8-bit ASLA ($F621): steps from $1C jump through data past tbl_F62B."
+   ]
+  },
+  "F844": {
+   "name": "task_enemy_shots",
+   "doc": [
+    "Modes 3-5: the first formation member diving at Y $A0 or $C0 fires once (shot_fired_flags): a shot sprite in a free slot of $0ECE..[$1064] with shot_velocity.",
+    "QUIRK: the free-slot search stops only on an exact match with $1064 ($F8A6)."
+   ]
+  },
+  "F8C9": {
+   "name": "shot_velocity",
+   "doc": [
+    "Shot speed word into [$0C92,U]: B = min((Y + $50 - player_y) / 8, 20), table by X (< $A0, < $D0, else) and stage (dat_F932...dat_F9DA)."
+   ]
+  },
+  "FA2E": {
+   "name": "task_move_enemy_shots",
+   "doc": [
+    "Move the seven shots $0ECE-$0EDA: X + 2 or 3 by frame parity until $160 (then freed), Y by the signed 8.8 speed at $1B60+n; while $1114 runs flip their pictures.",
+    "Alias: proposed as task_move_bonus_objects."
+   ]
+  },
+  "FB09": {
+   "name": "task_refresh_formation_sprites",
+   "doc": [
+    "When formation_sprites_dirty: refresh the 21 formation sprites $0E02-$0E2A from the flag pairs $1860-$1889 (size, shown/hidden)."
+   ]
+  },
+  "FB58": {
+   "name": "task_show_188A_pair",
+   "doc": [
+    "Show ($80) or hide the sprites $1E2D/$1E2F from the low bits of formation_flags+42/+43."
+   ]
+  },
+  "FB77": {
+   "name": "task_launch_group1",
+   "doc": [
+    "Unless $112A/$10FE/$1013: count group1_timer; every 64th frame bump group1_count and go on through tbl_FBA8 (threshold word at U + 2B).",
+    "QUIRK: the index from group1_count is overwritten ($FB9F): the thresholds at U+2/U+4 are dead."
+   ]
+  },
+  "FBB3": {
+   "name": "launch_group1_tail",
+   "doc": [
+    "When group1_timer reaches the word at U + 2B: restart it and launch the next free position of dat_FC09 (flag 2, path from $1052/$1054, or $DD44 with $1020)."
+   ]
+  },
+  "FC6D": {
+   "name": "task_launch_group2",
+   "doc": [
+    "The twin of task_launch_group1 for the second group ($10B5-$10B9, thresholds from $1042, tbl_FC9E).",
+    "QUIRK: the same dead index as task_launch_group1 ($FC95)."
+   ]
+  },
+  "FCA9": {
+   "name": "launch_group2_tail",
+   "doc": [
+    "As launch_group1_tail for the 18 positions of dat_FCFF (index $10B8), pointers $1056/$1058.",
+    "QUIRK: STB $084D ($FCE6) where launch_group1_tail does INC."
+   ]
+  },
+  "FD59": {
+   "name": "task_launch_trio",
+   "doc": [
+    "Unless $112A/$10FE/$1013: count trio_timer and the free slots; at the threshold ($103A + 0-6) launch the 3 positions of the next group of dat_FDE9 (paths dat_FE19).",
+    "QUIRK: reads $188B but exits before testing it."
+   ]
+  },
+  "FE31": {
+   "name": "task_start_188A_object",
+   "doc": [
+    "Every 64th frame count obj188A_count; at set counts (or with $10F8) start the object at formation_flags+42 if idle ($084E = sound trigger)."
+   ]
+  },
+  "FE82": {
+   "name": "task_score_anim",
+   "doc": [
+    "Once score_anim_step is non-zero, or when the scores are \"round\", show the next word of dat_F0C1 as sprite $0F12 moving by $0403; ends for good (score_anim_done) on the carry.",
+    "QUIRK: the first frame indexes dat_F0C1 with the score byte just compared ($FEBE)."
+   ]
+  },
+  "B3F2": {
+   "name": "effect_sequence",
+   "doc": [
+    "Effect 1: a sequence stepped by $10D0 once a frame: six sprites spread along the ship, switched on one by one, then moved; animates them with effect_animate."
+   ]
+  },
+  "B5A1": {
+   "name": "effect_rising",
+   "doc": [
+    "Effect 0: six rising sprites at player_y - 8, picture lists dat_B653[$10D0]; $1069 counts to 480, which ends the effect."
+   ]
+  },
+  "B860": {
+   "name": "effect_setup",
+   "doc": [
+    "Effects 2-5 (A = 2 * effect): one-shot set-ups: A = 6 formation speed $10 (and stage $1E/$2D extras), 8 $1114 = $32, 10 $1177 = 1, else the fighter upgrade (player_step 3, speed 1, shot speed + 1)."
+   ]
+  },
+  "B92B": {
+   "name": "objects_task_end",
+   "doc": [
+    "INC <sub_task / JMP task_dispatch_sub: tail of task_animate_objects, also object state 0 (only for a state byte of $80).",
+    "QUIRK: as object state 0 (state byte $80) it leaves the object loop with PSHS U and the BSR return on the stack."
+   ]
+  },
+  "B96B": {
+   "name": "obj_state2",
+   "doc": [
+    "Object state 2: picture $4C07, next state. In: U sprite entry, Y state byte."
+   ]
+  },
+  "B973": {
+   "name": "obj_state3",
+   "doc": [
+    "Object state 3: picture $4C06, next state."
+   ]
+  },
+  "B97B": {
+   "name": "obj_state4",
+   "doc": [
+    "Object state 4: picture $4807, next state."
+   ]
+  },
+  "B983": {
+   "name": "obj_state5",
+   "doc": [
+    "Object state 5: picture $5406, position + $0808 (one 16-bit add), flags $4080, next state."
+   ]
+  },
+  "B99D": {
+   "name": "obj_state6",
+   "doc": [
+    "Object state 6: picture $5506, next state."
+   ]
+  },
+  "B9A5": {
+   "name": "obj_state7",
+   "doc": [
+    "Object state 7: picture $5606, next state."
+   ]
+  },
+  "B9AD": {
+   "name": "obj_state8",
+   "doc": [
+    "Object state 8: picture $5706, next state."
+   ]
+  },
+  "B9B5": {
+   "name": "obj_state9",
+   "doc": [
+    "Object state 9: picture $500A, next state."
+   ]
+  },
+  "B9BD": {
+   "name": "obj_blink",
+   "doc": [
+    "Object state 10: blink (code at $B9C5, shared with $BA3E); next state every 64th frame."
+   ]
+  },
+  "B9E2": {
+   "name": "obj_pick_side",
+   "doc": [
+    "Object state 11: next state 12 if the object is above the player's row (Y < player_y), else 13."
+   ]
+  },
+  "B9F0": {
+   "name": "obj_move_down",
+   "doc": [
+    "Object state 12: two steps down towards player_y, X + 3; explodes on reaching player_y or past X bit 8."
+   ]
+  },
+  "BA18": {
+   "name": "obj_move_up",
+   "doc": [
+    "Object state 13: as state 12 but moving up, X + 2."
+   ]
+  },
+  "BA8E": {
+   "name": "obj_explode",
+   "doc": [
+    "Object state 14: four fragments fly apart (picture dat_BB48[frame & 3]); cleared ($BB03) when the first leaves X/2 $50-$B7."
+   ]
+  },
+  "BD20": {
+   "name": "bonus_launch",
+   "doc": [
+    "Bonus state 1: launch from $171E with path dat_BEAD[stage & 7], speed $28, state 2."
+   ]
+  },
+  "BD56": {
+   "name": "bonus_fly",
+   "doc": [
+    "Bonus state 2: fly; off screen -> done (state 4); path ended -> back to the start point, count a pass ($1162/$1164), state 3, next path dat_BEBD/dat_BECD."
+   ]
+  },
+  "BE4F": {
+   "name": "bonus_hold",
+   "doc": [
+    "Bonus state 3: hold at the start point $1109/$110B for U+$31B frames, then state 2."
+   ]
+  },
+  "BE6C": {
+   "name": "bonus_done",
+   "doc": [
+    "Bonus state 4: bonus_free flag = 1."
+   ]
+  },
+  "E5AA": {
+   "name": "copy_slot42_flag",
+   "doc": [
+    "If formation slot 42 ($188A) has bit 0 set, copy it into slot 43 ($188B); next task."
+   ]
+  },
+  "E5B8": {
+   "name": "task_slot42_timer",
+   "doc": [
+    "Count $112C down; at 0 step the slot pair 42/43 ($188A/$188B) through its states, set up the sprite at $0E84-$0E8B / $0F2C, or flag capture_state / $1018."
+   ]
+  },
+  "E729": {
+   "name": "capture_window",
+   "doc": [
+    "When $10D6: every formation slot with b1 within the X window (<$D7..<$D8) and Y +-5 of the player is caught (b6, Y pinned to the player's).",
+    "QUIRK: the borrow of SUBB #$10 is lost at $E737."
+   ]
+  },
+  "E7FF": {
+   "name": "capture_state2",
+   "doc": [
+    "Capture sub-state 2: window from $1693/$1E93, <$D8 three down (min $70); catch slots within Y +8/-7 of the player."
+   ]
+  },
+  "E8B0": {
+   "name": "capture_state0",
+   "doc": [
+    "Capture sub-state 0: <$D8 = $1E93:$1693 >> 1 (see the BUG), next task.",
+    "BUG: stores A, not the halved B ($E8B8): always 0 when $1E93 is 0 or 1."
+   ]
+  },
+  "F6C7": {
+   "name": "bonus_seq_pick",
+   "doc": [
+    "tbl_F62B[0]: sprite $0E86 = dat_F635[bonus_slots_used], bonus_anim_idx = 0."
+   ]
+  },
+  "F6D9": {
+   "name": "bonus_seq_fall",
+   "doc": [
+    "tbl_F62B[1]: animate $0F2C through dat_F7AE (24 frames), move it down a pixel; at Y $158/$159 end the step."
+   ]
+  },
+  "F72C": {
+   "name": "bonus_seq_place",
+   "doc": [
+    "tbl_F62B[2]: step $172C to dat_F7A5[n], then copy sprite $0F2C to slot dat_F7A8[n] and clear $1F2D."
+   ]
+  },
+  "F75D": {
+   "name": "bonus_seq_extend",
+   "doc": [
+    "tbl_F62B[3]: all three of $1F27/$1F29/$1F2B set -> flag an extra reserve ship ($1F17..), sound $0855, a life; re-latch score_parity.",
+    "QUIRK: never tests slot $1F1F (the last one is taken unchecked)."
+   ]
+  },
+  "F79D": {
+   "name": "bonus_seq_next",
+   "doc": [
+    "tbl_F62B[4]: JMP $F6D4, only the next task."
+   ]
+  },
+  "FBB0": {
+   "name": "launch_group1_b3",
+   "doc": [
+    "INCB, falls into launch_group1_b2."
+   ]
+  },
+  "FBB1": {
+   "name": "launch_group1_b2",
+   "doc": [
+    "INCB, falls into launch_group1_b1."
+   ]
+  },
+  "FBB2": {
+   "name": "launch_group1_b1",
+   "doc": [
+    "INCB, falls into launch_group1_tail."
+   ]
+  },
+  "FCA6": {
+   "name": "launch_group2_b3",
+   "doc": [
+    "INCB, falls into launch_group2_b2."
+   ]
+  },
+  "FCA7": {
+   "name": "launch_group2_b2",
+   "doc": [
+    "INCB, falls into launch_group2_b1."
+   ]
+  },
+  "FCA8": {
+   "name": "launch_group2_b1",
+   "doc": [
+    "INCB, falls into launch_group2_tail."
+   ]
+  },
+  "A44B": {
+   "name": "path_A44B",
+   "doc": [
+    "Path stream (gp2-8): shares its first 151 headings with path_C000; ends F0 A4 4B."
+   ]
+  },
+  "A573": {
+   "name": "path_A573",
+   "doc": [
+    "Path streams of gp2-8 from here on; they jump back to path_C442 and path_CAC1."
+   ]
+  },
+  "A96A": {
+   "name": "home_octants_a",
+   "doc": [
+    "formation_home octant table (heading towards the target)."
+   ]
+  },
+  "A9D6": {
+   "name": "home_octants_b",
+   "doc": [
+    "formation_home octant table."
+   ]
+  },
+  "AA39": {
+   "name": "home_octants_c",
+   "doc": [
+    "formation_home octant table."
+   ]
+  },
+  "AA9C": {
+   "name": "home_octants_d",
+   "doc": [
+    "formation_home octant table."
+   ]
+  },
+  "AAFF": {
+   "name": "heading_table",
+   "doc": [
+    "Heading table: 180 entries x 4 bytes, indexed by a path heading byte: 0 sign bits (b7 subtract on axis 1, b3 on axis 2), 1-2 speed on axis 1/2 (MUL by [$1098]/8), 3 picture (low nibble frame, b4-5 flip)."
+   ]
+  },
+  "ADCF": {
+   "name": "formation_path",
+   "doc": [
+    "Formation block path: 4-byte steps (hi|lo nibbles, dy, dx, direction bits), $FF restarts (formation_move)."
+   ]
+  },
+  "B483": {
+   "name": "effect_pictures",
+   "doc": [
+    "effect_animate: code/colour words, 4 frames of 6."
+   ]
+  },
+  "B653": {
+   "name": "effect0_pictures",
+   "doc": [
+    "effect_rising: pointers to (code, colour, X, flags) lists ended by $FF."
+   ]
+  },
+  "BB48": {
+   "name": "fragment_pictures",
+   "doc": [
+    "obj_explode fragment pictures by frame & 3."
+   ]
+  },
+  "BB8E": {
+   "name": "object_launch_order",
+   "doc": [
+    "task_launch_objects: state byte addresses in launch order."
+   ]
+  },
+  "BCA4": {
+   "name": "challenge_start_pos",
+   "doc": [
+    "task_challenge_seq: start position by stage & 7."
+   ]
+  },
+  "BCB4": {
+   "name": "challenge_wave_stages",
+   "doc": [
+    "task_challenge_seq: stage list (no end marker)."
+   ]
+  },
+  "BCC0": {
+   "name": "challenge_wave_sizes",
+   "doc": [
+    "task_challenge_seq: wave sizes."
+   ]
+  },
+  "BEAD": {
+   "name": "bonus_paths",
+   "doc": [
+    "bonus_launch: path pointer by stage & 7 (path_XXXX or $FEEC)."
+   ]
+  },
+  "BEBD": {
+   "name": "bonus_return_paths_a",
+   "doc": [
+    "bonus_fly: next path pointer by stage & 7."
+   ]
+  },
+  "BECD": {
+   "name": "bonus_return_paths_b",
+   "doc": [
+    "bonus_fly: next path pointer (other side) by stage & 7."
+   ]
+  },
+  "BF27": {
+   "name": "bonus_colour_codes",
+   "doc": [
+    "task_bonus_colours: sprite codes, 0 ends."
+   ]
+  },
+  "BF40": {
+   "name": "bonus_colour_flags",
+   "doc": [
+    "task_bonus_colours: sprite flags."
+   ]
+  },
+  "E591": {
+   "name": "formation_code_seq",
+   "doc": [
+    "scan_formation: sprite code sequence $21..$2B, $10, $0B..$00."
+   ]
+  },
+  "E6F9": {
+   "name": "capture_anim",
+   "doc": [
+    "task_capture_steer: beam animation words (index step 2, wraps at $30)."
+   ]
+  },
+  "F0C1": {
+   "name": "flyin_frames",
+   "doc": [
+    "Sprite code/colour words of the fly-in / bonus animations, $0000 ends."
+   ]
+  },
+  "F932": {
+   "name": "shot_speeds_a",
+   "doc": [
+    "shot_velocity: speed words, 21 per table (dat_F932..dat_F9DA)."
+   ]
+  },
+  "FC09": {
+   "name": "group1_positions",
+   "doc": [
+    "task_launch_group1: 20 formation positions."
+   ]
+  },
+  "FCFF": {
+   "name": "group2_positions",
+   "doc": [
+    "task_launch_group2: 18 formation positions."
+   ]
+  },
+  "FDE9": {
+   "name": "trio_groups",
+   "doc": [
+    "task_launch_trio: 4 groups of 3 positions."
+   ]
+  },
+  "FE01": {
+   "name": "trio_paths",
+   "doc": [
+    "task_launch_trio: path pointers (12 at $FE19)."
+   ]
+  },
+  "FEEC": {
+   "name": "path_FEEC",
+   "doc": [
+    "Path stream in gp2-6 (186 headings, F0 FE EC), used by bonus_paths."
+   ]
+  }
  },
  "comments": {
   "E000": "mask IRQ",
@@ -164,14 +1208,321 @@
   "E0F7": "run the task",
   "E17F": "wait for the next frame",
   "B936": "ROM bytes as noise",
-  "B939": "index = frame counter",
-  "B94F": "X from the frame counter"
+  "B939": "index = frame counter (signed, see $B93B)",
+  "B94F": "X from the frame counter",
+  "B93B": "QUIRK: signed offset: frame_counter $80-$FF reads $DF80-$DFFF, not $E080-$E0FF",
+  "C0E6": "FF: jump to $A44B",
+  "C1AD": "FE: jump + clear axis 2 to $C0E9",
+  "C2A8": "FE: jump + clear axis 2 to $C3A6",
+  "C3A3": "FE: jump + clear axis 2 to $C3A6",
+  "C43F": "FE: jump + clear axis 2 to $C3A6",
+  "C4D8": "FE: jump + clear axis 2 to $C442",
+  "C5AE": "FE: jump + clear axis 2 to $C4DB",
+  "C67C": "FE: jump + clear axis 2 to $C5B1",
+  "C79E": "FE: jump + clear axis 2 to $C67F",
+  "C899": "FE: jump + clear axis 2 to $CAC1",
+  "C97A": "FF: jump to $C442",
+  "CA38": "FE: jump + clear axis 2 to $C97D",
+  "CABE": "FE: jump + clear axis 2 to $CA3B",
+  "CB57": "FE: jump + clear axis 2 to $CAC1",
+  "CC29": "FE: jump + clear axis 2 to $CB5A",
+  "CCF7": "FE: jump + clear axis 2 to $CC2C",
+  "CE0F": "FE: jump + clear axis 2 to $CCFA",
+  "CF0A": "FE: jump + clear axis 2 to $CAC1",
+  "CFEB": "FF: jump to $CAC1",
+  "D056": "FF: jump to $C442",
+  "D0E2": "F0: end of path. QUIRK: back-pointer $D059 (own start), never read",
+  "D144": "FF: jump to $D0E5",
+  "D1C1": "F0: end of path. QUIRK: back-pointer $D147 (own start), never read",
+  "D22C": "FF: jump to $CAC1",
+  "D2B8": "F0: end of path. QUIRK: back-pointer $D22F (own start), never read",
+  "D31A": "FF: jump to $D2BB",
+  "D397": "F0: end of path. QUIRK: back-pointer $D31D (own start), never read",
+  "D40C": "FF: jump to $D39A",
+  "D494": "F0: end of path. QUIRK: back-pointer $D40F (own start), never read",
+  "D4D3": "FF: jump to $D497",
+  "D547": "F0: end of path. QUIRK: back-pointer $D4D6 (own start), never read",
+  "D5AA": "FF: jump to $C442",
+  "D665": "FF: jump to $C442",
+  "D6C8": "FF: jump to $C442",
+  "D783": "FF: jump to $C442",
+  "D7F8": "FF: jump to $D786",
+  "D880": "F0: end of path. QUIRK: back-pointer $D7FB (own start), never read",
+  "D8BF": "FF: jump to $D883",
+  "D933": "F0: end of path. QUIRK: back-pointer $D8C2 (own start), never read",
+  "DA06": "F0: end of path. QUIRK: back-pointer $D936 (own start), never read",
+  "DAD9": "F0: end of path. QUIRK: back-pointer $DA09 (own start), never read",
+  "DB4D": "F0: end of path. QUIRK: back-pointer $DADC (own start), never read",
+  "DC0B": "F0: end of path. QUIRK: back-pointer $DB50 (own start), never read",
+  "DD41": "F0: end of path. QUIRK: back-pointer $DC0E (own start), never read",
+  "DE05": "F0: end of path. QUIRK: back-pointer $DD44 (own start), never read",
+  "DEF8": "F0: end of path. QUIRK: back-pointer $DE08 (own start), never read",
+  "B09B": "QUIRK: from a stale formation_ptr (Round Advance into mode 7) this adds $80 to game RAM",
+  "B173": "QUIRK: no range check: a heading >= $B4 would read past heading_table",
+  "B98C": "QUIRK: one 16-bit add: X's carry goes into Y",
+  "E8B8": "BUG: stores A (bit 8 shifted out) where the siblings store the halved B",
+  "EB29": "QUIRK: no free slot: the search loops forever (only the main CPU can end it)",
+  "E6F2": "QUIRK: dead SUBB: A (from $1600) is what gets stored",
+  "E737": "QUIRK: the borrow of SUBB #$10 is lost (LSRA overwrites C)",
+  "EA3E": "QUIRK: DECB before the test: only 5 of the 6 entries are tested",
+  "FB9F": "QUIRK: overwrites the index from $10B0: the table takes entry 0 or 3",
+  "FC95": "QUIRK: overwrites the index from $10B5: the table takes entry 0 or 3",
+  "FCE6": "QUIRK: STB where launch_group1_tail does INC $084D",
+  "FEBE": "QUIRK: first frame: A is the score byte just compared, not $101E",
+  "F621": "QUIRK: 8-bit ASLA: steps $80-$9B act as $00-$1B; $1C+ jump through data",
+  "F8A6": "QUIRK: the free-slot search stops only on an exact match with $1064",
+  "E1F2": "QUIRK: only mode 2 sets formation_ptr: Round Advance straight to a challenging stage leaves it stale",
+  "E070": "slot not in use: next",
+  "E5CD": "B keeps $188B",
+  "E60F": "A is still 1 from the anda",
+  "E6EF": "the SUBB is dead: A (player_y) is what gets stored. The LDD also reads $1601",
+  "EA4C": "odd frames: nothing",
+  "EC6B": "only on frame_counter & 15 = 0, 5, 10",
+  "EC8D": "the formation flag byte",
+  "ED16": "wait for vblank",
+  "F626": "a is a signed offset",
+  "F6FB": "carry into $1F2D",
+  "F8B8": "the byte before the member's Y, then its Y",
+  "FA39": "slot unused",
+  "FAAD": "only while 1..$32",
+  "FB84": "a 16-bit count, big-endian",
+  "FB92": "B counts down to 0; the shifted A is then lost to `lda <$B4`",
+  "FBA3": "A is 0 here",
+  "FC99": "A is 0 here",
+  "FCD9": "B keeps $1020 for the stb",
+  "FD6E": "the byte at $188B is read but the loop ends before testing it",
+  "FDBB": "this one busy",
+  "E3E0": "the high part of the Y step",
+  "E413": "the high part of the X step",
+  "E53A": "x is one past the entry, so $18F0 + n",
+  "B143": "big-endian word right after the command byte",
+  "BC22": "the state byte's address from dat_BCE7",
+  "BC8D": "wait for vblank",
+  "BD7F": "9-bit X / 2",
+  "B3DF": "tbl_B3E6 is ROM data",
+  "BF84": "wait for vblank",
+  "BB6C": "the state byte's address from dat_BB8E"
  },
  "ram": {
+  "1017": {
+   "name": "score_parity",
+   "size": 1,
+   "comment": "(score_p1+1 ^ score_p2+1) & 1, latched by task_bonus_sequence"
+  },
+  "1018": {
+   "name": "seq_step",
+   "size": 1,
+   "comment": "sprite sequence step of $F5A5/$F60B"
+  },
+  "1071": {
+   "name": "refill_left",
+   "size": 1,
+   "comment": "refills left this stage (load_stage_params)"
+  },
+  "1074": {
+   "name": "bonus_slots_used",
+   "size": 1,
+   "comment": "in-use sprites at $1F27/$1F29 (0-2)"
+  },
+  "1081": {
+   "name": "stage_setup_pass",
+   "size": 1,
+   "comment": "task_stage_setup: 0 = template pass, else layout pass"
+  },
+  "1082": {
+   "name": "formation_path_ptr",
+   "size": 2,
+   "comment": "formation path, 4-byte steps, restarts at formation_path on $FF"
+  },
   "1086": {
    "name": "formation_ptr",
    "size": 2,
    "comment": "sub: current formation slot"
+  },
+  "1096": {
+   "name": "formation_slot",
+   "size": 1,
+   "comment": "sub: index of the slot task_formation_move works on ($FF = none)"
+  },
+  "1114": {
+   "name": "bonus_obj_count",
+   "size": 1,
+   "comment": "countdown ($32) during which shots flip pictures"
+  },
+  "1115": {
+   "name": "bonus_obj_div5",
+   "size": 1,
+   "comment": "divides task_move_enemy_shots calls by 5"
+  },
+  "1116": {
+   "name": "escort_step",
+   "size": 1,
+   "comment": "escort fly-in step"
+  },
+  "1117": {
+   "name": "wing_sprite_idx",
+   "size": 1,
+   "comment": "escort fly-in: wing sprites placed"
+  },
+  "1118": {
+   "name": "wing_group",
+   "size": 1,
+   "comment": "escort fly-in: wing group"
+  },
+  "1132": {
+   "name": "bonus_state",
+   "size": 5,
+   "comment": "sub: challenging-stage bonus object states (tbl_BEDD)"
+  },
+  "1176": {
+   "name": "score_anim_done",
+   "size": 1,
+   "comment": "task_score_anim has finished for good"
+  },
+  "1688": {
+   "name": "formation_y",
+   "size": 1,
+   "comment": "formation block Y, integer part (fraction $0E88)"
+  },
+  "1689": {
+   "name": "formation_x",
+   "size": 1,
+   "comment": "formation block X, integer part (fraction $0E89)"
+  },
+  "111D": {
+   "name": "object_state",
+   "size": 4,
+   "comment": "sub: state of the 4 objects ($0EE2 + 10k), object_states"
+  },
+  "113A": {
+   "name": "bonus_free",
+   "size": 5,
+   "comment": "sub: 1 = bonus object k done/free"
+  },
+  "115A": {
+   "name": "challenge_step",
+   "size": 1,
+   "comment": "sub: challenging-stage sequencer step ($BB96)"
+  },
+  "10AC": {
+   "name": "formation_started",
+   "size": 1,
+   "comment": "0 until formation_move first runs ($55)"
+  },
+  "101D": {
+   "name": "bonus_anim_idx",
+   "size": 1,
+   "comment": "index 0-23 into dat_F7AE"
+  },
+  "101E": {
+   "name": "score_anim_step",
+   "size": 1,
+   "comment": "task_score_anim frame index (dat_F0C1)"
+  },
+  "10B0": {
+   "name": "group1_count",
+   "size": 1,
+   "comment": "launch group 1: 64-frame counter"
+  },
+  "10B1": {
+   "name": "group1_timer",
+   "size": 2,
+   "comment": "launch group 1: frame timer"
+  },
+  "10B3": {
+   "name": "group1_index",
+   "size": 1,
+   "comment": "launch group 1: next position of dat_FC09 (0-$13)"
+  },
+  "10B4": {
+   "name": "group1_mode",
+   "size": 1,
+   "comment": "launch group 1: non-zero -> threshold entry 3"
+  },
+  "10B5": {
+   "name": "group2_count",
+   "size": 1,
+   "comment": "launch group 2: counters $10B5-$10B9 as group 1"
+  },
+  "10BA": {
+   "name": "trio_timer",
+   "size": 2,
+   "comment": "trio launches: frame timer"
+  },
+  "10BC": {
+   "name": "trio_free_count",
+   "size": 1,
+   "comment": "trio launches: free formation slots counted"
+  },
+  "10BD": {
+   "name": "trio_group",
+   "size": 1,
+   "comment": "trio launches: group 0-3 of dat_FDE9"
+  },
+  "10BF": {
+   "name": "formation_sprites_dirty",
+   "size": 1,
+   "comment": "set: task_refresh_formation_sprites redraws"
+  },
+  "10C0": {
+   "name": "obj188A_count",
+   "size": 1,
+   "comment": "slot-42 object: 64-frame counter"
+  },
+  "10C1": {
+   "name": "obj188A_done",
+   "size": 1,
+   "comment": "slot-42 object: no more starts"
+  },
+  "10CD": {
+   "name": "capture_anim_idx",
+   "size": 1,
+   "comment": "index into dat_E6F9, step 2, wraps at $30"
+  },
+  "10CE": {
+   "name": "capture_state",
+   "size": 1,
+   "comment": "0 idle, 1 steer, 2/3 latch target Y"
+  },
+  "10D7": {
+   "name": "capture_x_hi",
+   "size": 1,
+   "comment": "capture window X bound (<$D7)"
+  },
+  "10D8": {
+   "name": "capture_x_lo",
+   "size": 1,
+   "comment": "capture window X bound (<$D8)"
+  },
+  "10DA": {
+   "name": "capture_substate",
+   "size": 1,
+   "comment": "index into tbl_E7F5"
+  },
+  "10F8": {
+   "name": "refill_request",
+   "size": 1,
+   "comment": "formation refill due"
+  },
+  "10FC": {
+   "name": "refill_step",
+   "size": 1,
+   "comment": "refill fly-in step"
+  },
+  "10FD": {
+   "name": "refill_count",
+   "size": 1,
+   "comment": "placements left in this refill"
+  },
+  "10FF": {
+   "name": "refill_delay",
+   "size": 1,
+   "comment": "refill: calls between placements"
+  },
+  "1A10": {
+   "name": "shot_fired_flags",
+   "size": 66,
+   "comment": "one per formation member ($1A10-$1A51): shot already fired"
   }
  },
  "blocks": {},
@@ -180,6 +1531,477 @@
    "addr": "BF8B",
    "len": 30,
    "type": "text"
+  },
+  {
+   "addr": "C000",
+   "len": 230,
+   "type": "bytes"
+  },
+  {
+   "addr": "C0E6",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "C0E9",
+   "len": 196,
+   "type": "bytes"
+  },
+  {
+   "addr": "C1AD",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "C1B0",
+   "len": 248,
+   "type": "bytes"
+  },
+  {
+   "addr": "C2A8",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "C2AB",
+   "len": 248,
+   "type": "bytes"
+  },
+  {
+   "addr": "C3A3",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "C3A6",
+   "len": 153,
+   "type": "bytes"
+  },
+  {
+   "addr": "C43F",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "C442",
+   "len": 150,
+   "type": "bytes"
+  },
+  {
+   "addr": "C4D8",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "C4DB",
+   "len": 211,
+   "type": "bytes"
+  },
+  {
+   "addr": "C5AE",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "C5B1",
+   "len": 203,
+   "type": "bytes"
+  },
+  {
+   "addr": "C67C",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "C67F",
+   "len": 287,
+   "type": "bytes"
+  },
+  {
+   "addr": "C79E",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "C7A1",
+   "len": 248,
+   "type": "bytes"
+  },
+  {
+   "addr": "C899",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "C89C",
+   "len": 222,
+   "type": "bytes"
+  },
+  {
+   "addr": "C97A",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "C97D",
+   "len": 187,
+   "type": "bytes"
+  },
+  {
+   "addr": "CA38",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "CA3B",
+   "len": 131,
+   "type": "bytes"
+  },
+  {
+   "addr": "CABE",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "CAC1",
+   "len": 150,
+   "type": "bytes"
+  },
+  {
+   "addr": "CB57",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "CB5A",
+   "len": 207,
+   "type": "bytes"
+  },
+  {
+   "addr": "CC29",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "CC2C",
+   "len": 203,
+   "type": "bytes"
+  },
+  {
+   "addr": "CCF7",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "CCFA",
+   "len": 277,
+   "type": "bytes"
+  },
+  {
+   "addr": "CE0F",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "CE12",
+   "len": 248,
+   "type": "bytes"
+  },
+  {
+   "addr": "CF0A",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "CF0D",
+   "len": 222,
+   "type": "bytes"
+  },
+  {
+   "addr": "CFEB",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "CFEE",
+   "len": 104,
+   "type": "bytes"
+  },
+  {
+   "addr": "D056",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "D059",
+   "len": 137,
+   "type": "bytes"
+  },
+  {
+   "addr": "D0E2",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "D0E5",
+   "len": 95,
+   "type": "bytes"
+  },
+  {
+   "addr": "D144",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "D147",
+   "len": 122,
+   "type": "bytes"
+  },
+  {
+   "addr": "D1C1",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "D1C4",
+   "len": 104,
+   "type": "bytes"
+  },
+  {
+   "addr": "D22C",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "D22F",
+   "len": 137,
+   "type": "bytes"
+  },
+  {
+   "addr": "D2B8",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "D2BB",
+   "len": 95,
+   "type": "bytes"
+  },
+  {
+   "addr": "D31A",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "D31D",
+   "len": 122,
+   "type": "bytes"
+  },
+  {
+   "addr": "D397",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "D39A",
+   "len": 114,
+   "type": "bytes"
+  },
+  {
+   "addr": "D40C",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "D40F",
+   "len": 133,
+   "type": "bytes"
+  },
+  {
+   "addr": "D494",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "D497",
+   "len": 60,
+   "type": "bytes"
+  },
+  {
+   "addr": "D4D3",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "D4D6",
+   "len": 113,
+   "type": "bytes"
+  },
+  {
+   "addr": "D547",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "D54A",
+   "len": 96,
+   "type": "bytes"
+  },
+  {
+   "addr": "D5AA",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "D5AD",
+   "len": 184,
+   "type": "bytes"
+  },
+  {
+   "addr": "D665",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "D668",
+   "len": 96,
+   "type": "bytes"
+  },
+  {
+   "addr": "D6C8",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "D6CB",
+   "len": 184,
+   "type": "bytes"
+  },
+  {
+   "addr": "D783",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "D786",
+   "len": 114,
+   "type": "bytes"
+  },
+  {
+   "addr": "D7F8",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "D7FB",
+   "len": 133,
+   "type": "bytes"
+  },
+  {
+   "addr": "D880",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "D883",
+   "len": 60,
+   "type": "bytes"
+  },
+  {
+   "addr": "D8BF",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "D8C2",
+   "len": 113,
+   "type": "bytes"
+  },
+  {
+   "addr": "D933",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "D936",
+   "len": 208,
+   "type": "bytes"
+  },
+  {
+   "addr": "DA06",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "DA09",
+   "len": 208,
+   "type": "bytes"
+  },
+  {
+   "addr": "DAD9",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "DADC",
+   "len": 113,
+   "type": "bytes"
+  },
+  {
+   "addr": "DB4D",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "DB50",
+   "len": 187,
+   "type": "bytes"
+  },
+  {
+   "addr": "DC0B",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "DC0E",
+   "len": 307,
+   "type": "bytes"
+  },
+  {
+   "addr": "DD41",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "DD44",
+   "len": 193,
+   "type": "bytes"
+  },
+  {
+   "addr": "DE05",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "DE08",
+   "len": 240,
+   "type": "bytes"
+  },
+  {
+   "addr": "DEF8",
+   "len": 3,
+   "type": "bytes"
+  },
+  {
+   "addr": "DEFB",
+   "len": 30,
+   "type": "text"
+  },
+  {
+   "addr": "AAFF",
+   "len": 720,
+   "type": "bytes",
+   "per": 4
   }
  ]
 }

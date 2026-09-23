@@ -1,0 +1,889 @@
+{
+  "cpu": "sub",
+  "labels": {
+    "C000": {
+      "name": "path_C000",
+      "doc": [
+        "Path stream: 230 headings (dat_AAFF indexes),",
+        "then FF = jump to $A44B.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "C0E9": {
+      "name": "path_C0E9",
+      "doc": [
+        "Path stream: 196 headings (dat_AAFF indexes),",
+        "then FE = jump to $C0E9 (loops), axis 2 reset.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "C1B0": {
+      "name": "path_C1B0",
+      "doc": [
+        "Path stream: 248 headings (dat_AAFF indexes),",
+        "then FE = jump to $C3A6, axis 2 reset.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "C2AB": {
+      "name": "path_C2AB",
+      "doc": [
+        "Path stream: 248 headings (dat_AAFF indexes),",
+        "then FE = jump to $C3A6, axis 2 reset.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "C3A6": {
+      "name": "path_C3A6",
+      "doc": [
+        "Path stream: 153 headings (dat_AAFF indexes),",
+        "then FE = jump to $C3A6 (loops), axis 2 reset.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "C442": {
+      "name": "path_C442",
+      "doc": [
+        "Path stream: 150 headings (dat_AAFF indexes),",
+        "then FE = jump to $C442 (loops), axis 2 reset.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "C4DB": {
+      "name": "path_C4DB",
+      "doc": [
+        "Path stream: 211 headings (dat_AAFF indexes),",
+        "then FE = jump to $C4DB (loops), axis 2 reset.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "C5B1": {
+      "name": "path_C5B1",
+      "doc": [
+        "Path stream: 203 headings (dat_AAFF indexes),",
+        "then FE = jump to $C5B1 (loops), axis 2 reset.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "C67F": {
+      "name": "path_C67F",
+      "doc": [
+        "Path stream: 287 headings (dat_AAFF indexes),",
+        "then FE = jump to $C67F (loops), axis 2 reset.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "C7A1": {
+      "name": "path_C7A1",
+      "doc": [
+        "Path stream: 248 headings (dat_AAFF indexes),",
+        "then FE = jump to $CAC1, axis 2 reset.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "C89C": {
+      "name": "path_C89C",
+      "doc": [
+        "Path stream: 222 headings (dat_AAFF indexes),",
+        "then FF = jump to $C442.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "C97D": {
+      "name": "path_C97D",
+      "doc": [
+        "Path stream: 187 headings (dat_AAFF indexes),",
+        "then FE = jump to $C97D (loops), axis 2 reset.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "CA3B": {
+      "name": "path_CA3B",
+      "doc": [
+        "Path stream: 131 headings (dat_AAFF indexes),",
+        "then FE = jump to $CA3B (loops), axis 2 reset.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "CAC1": {
+      "name": "path_CAC1",
+      "doc": [
+        "Path stream: 150 headings (dat_AAFF indexes),",
+        "then FE = jump to $CAC1 (loops), axis 2 reset.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "CB5A": {
+      "name": "path_CB5A",
+      "doc": [
+        "Path stream: 207 headings (dat_AAFF indexes),",
+        "then FE = jump to $CB5A (loops), axis 2 reset.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "CC2C": {
+      "name": "path_CC2C",
+      "doc": [
+        "Path stream: 203 headings (dat_AAFF indexes),",
+        "then FE = jump to $CC2C (loops), axis 2 reset.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "CCFA": {
+      "name": "path_CCFA",
+      "doc": [
+        "Path stream: 277 headings (dat_AAFF indexes),",
+        "then FE = jump to $CCFA (loops), axis 2 reset.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "CE12": {
+      "name": "path_CE12",
+      "doc": [
+        "Path stream: 248 headings (dat_AAFF indexes),",
+        "then FE = jump to $CAC1, axis 2 reset.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "CF0D": {
+      "name": "path_CF0D",
+      "doc": [
+        "Path stream: 222 headings (dat_AAFF indexes),",
+        "then FF = jump to $CAC1.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "CFEE": {
+      "name": "path_CFEE",
+      "doc": [
+        "Path stream: 104 headings (dat_AAFF indexes),",
+        "then FF = jump to $C442.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "D059": {
+      "name": "path_D059",
+      "doc": [
+        "Path stream: 137 headings (dat_AAFF indexes),",
+        "then F0 = end (+ unread back-pointer to this stream).",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "D0E5": {
+      "name": "path_D0E5",
+      "doc": [
+        "Path stream: 95 headings (dat_AAFF indexes),",
+        "then FF = jump to $D0E5 (loops).",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "D147": {
+      "name": "path_D147",
+      "doc": [
+        "Path stream: 122 headings (dat_AAFF indexes),",
+        "then F0 = end (+ unread back-pointer to this stream).",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "D1C4": {
+      "name": "path_D1C4",
+      "doc": [
+        "Path stream: 104 headings (dat_AAFF indexes),",
+        "then FF = jump to $CAC1.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "D22F": {
+      "name": "path_D22F",
+      "doc": [
+        "Path stream: 137 headings (dat_AAFF indexes),",
+        "then F0 = end (+ unread back-pointer to this stream).",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "D2BB": {
+      "name": "path_D2BB",
+      "doc": [
+        "Path stream: 95 headings (dat_AAFF indexes),",
+        "then FF = jump to $D2BB (loops).",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "D31D": {
+      "name": "path_D31D",
+      "doc": [
+        "Path stream: 122 headings (dat_AAFF indexes),",
+        "then F0 = end (+ unread back-pointer to this stream).",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "D39A": {
+      "name": "path_D39A",
+      "doc": [
+        "Path stream: 114 headings (dat_AAFF indexes),",
+        "then FF = jump to $D39A (loops).",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "D40F": {
+      "name": "path_D40F",
+      "doc": [
+        "Path stream: 133 headings (dat_AAFF indexes),",
+        "then F0 = end (+ unread back-pointer to this stream).",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "D497": {
+      "name": "path_D497",
+      "doc": [
+        "Path stream: 60 headings (dat_AAFF indexes),",
+        "then FF = jump to $D497 (loops).",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "D4D6": {
+      "name": "path_D4D6",
+      "doc": [
+        "Path stream: 113 headings (dat_AAFF indexes),",
+        "then F0 = end (+ unread back-pointer to this stream).",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "D54A": {
+      "name": "path_D54A",
+      "doc": [
+        "Path stream: 96 headings (dat_AAFF indexes),",
+        "then FF = jump to $C442.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "D5AD": {
+      "name": "path_D5AD",
+      "doc": [
+        "Path stream: 184 headings (dat_AAFF indexes),",
+        "then FF = jump to $C442.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "D668": {
+      "name": "path_D668",
+      "doc": [
+        "Path stream: 96 headings (dat_AAFF indexes),",
+        "then FF = jump to $C442.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "D6CB": {
+      "name": "path_D6CB",
+      "doc": [
+        "Path stream: 184 headings (dat_AAFF indexes),",
+        "then FF = jump to $C442.",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "D786": {
+      "name": "path_D786",
+      "doc": [
+        "Path stream: 114 headings (dat_AAFF indexes),",
+        "then FF = jump to $D786 (loops).",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "D7FB": {
+      "name": "path_D7FB",
+      "doc": [
+        "Path stream: 133 headings (dat_AAFF indexes),",
+        "then F0 = end (+ unread back-pointer to this stream).",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "D883": {
+      "name": "path_D883",
+      "doc": [
+        "Path stream: 60 headings (dat_AAFF indexes),",
+        "then FF = jump to $D883 (loops).",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "D8C2": {
+      "name": "path_D8C2",
+      "doc": [
+        "Path stream: 113 headings (dat_AAFF indexes),",
+        "then F0 = end (+ unread back-pointer to this stream).",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "D936": {
+      "name": "path_D936",
+      "doc": [
+        "Path stream: 208 headings (dat_AAFF indexes),",
+        "then F0 = end (+ unread back-pointer to this stream).",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "DA09": {
+      "name": "path_DA09",
+      "doc": [
+        "Path stream: 208 headings (dat_AAFF indexes),",
+        "then F0 = end (+ unread back-pointer to this stream).",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "DADC": {
+      "name": "path_DADC",
+      "doc": [
+        "Path stream: 113 headings (dat_AAFF indexes),",
+        "then F0 = end (+ unread back-pointer to this stream).",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "DB50": {
+      "name": "path_DB50",
+      "doc": [
+        "Path stream: 187 headings (dat_AAFF indexes),",
+        "then F0 = end (+ unread back-pointer to this stream).",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "DC0E": {
+      "name": "path_DC0E",
+      "doc": [
+        "Path stream: 307 headings (dat_AAFF indexes),",
+        "then F0 = end (+ unread back-pointer to this stream).",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "DD44": {
+      "name": "path_DD44",
+      "doc": [
+        "Path stream: 193 headings (dat_AAFF indexes),",
+        "then F0 = end (+ unread back-pointer to this stream).",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "DE08": {
+      "name": "path_DE08",
+      "doc": [
+        "Path stream: 240 headings (dat_AAFF indexes),",
+        "then F0 = end (+ unread back-pointer to this stream).",
+        "Stepped by sub_B0D4 via [$108C]; see docs/modules/sub-C.md."
+      ]
+    },
+    "DEFB": "str_copyright_2"
+  },
+  "comments": {
+    "C0E6": "FF: jump to $A44B",
+    "C1AD": "FE: jump + clear axis 2 to $C0E9",
+    "C2A8": "FE: jump + clear axis 2 to $C3A6",
+    "C3A3": "FE: jump + clear axis 2 to $C3A6",
+    "C43F": "FE: jump + clear axis 2 to $C3A6",
+    "C4D8": "FE: jump + clear axis 2 to $C442",
+    "C5AE": "FE: jump + clear axis 2 to $C4DB",
+    "C67C": "FE: jump + clear axis 2 to $C5B1",
+    "C79E": "FE: jump + clear axis 2 to $C67F",
+    "C899": "FE: jump + clear axis 2 to $CAC1",
+    "C97A": "FF: jump to $C442",
+    "CA38": "FE: jump + clear axis 2 to $C97D",
+    "CABE": "FE: jump + clear axis 2 to $CA3B",
+    "CB57": "FE: jump + clear axis 2 to $CAC1",
+    "CC29": "FE: jump + clear axis 2 to $CB5A",
+    "CCF7": "FE: jump + clear axis 2 to $CC2C",
+    "CE0F": "FE: jump + clear axis 2 to $CCFA",
+    "CF0A": "FE: jump + clear axis 2 to $CAC1",
+    "CFEB": "FF: jump to $CAC1",
+    "D056": "FF: jump to $C442",
+    "D0E2": "F0: end of path; $D059 = own start, never read",
+    "D144": "FF: jump to $D0E5",
+    "D1C1": "F0: end of path; $D147 = own start, never read",
+    "D22C": "FF: jump to $CAC1",
+    "D2B8": "F0: end of path; $D22F = own start, never read",
+    "D31A": "FF: jump to $D2BB",
+    "D397": "F0: end of path; $D31D = own start, never read",
+    "D40C": "FF: jump to $D39A",
+    "D494": "F0: end of path; $D40F = own start, never read",
+    "D4D3": "FF: jump to $D497",
+    "D547": "F0: end of path; $D4D6 = own start, never read",
+    "D5AA": "FF: jump to $C442",
+    "D665": "FF: jump to $C442",
+    "D6C8": "FF: jump to $C442",
+    "D783": "FF: jump to $C442",
+    "D7F8": "FF: jump to $D786",
+    "D880": "F0: end of path; $D7FB = own start, never read",
+    "D8BF": "FF: jump to $D883",
+    "D933": "F0: end of path; $D8C2 = own start, never read",
+    "DA06": "F0: end of path; $D936 = own start, never read",
+    "DAD9": "F0: end of path; $DA09 = own start, never read",
+    "DB4D": "F0: end of path; $DADC = own start, never read",
+    "DC0B": "F0: end of path; $DB50 = own start, never read",
+    "DD41": "F0: end of path; $DC0E = own start, never read",
+    "DE05": "F0: end of path; $DD44 = own start, never read",
+    "DEF8": "F0: end of path; $DE08 = own start, never read"
+  },
+  "data": [
+    {
+      "addr": "C000",
+      "len": 230,
+      "type": "bytes"
+    },
+    {
+      "addr": "C0E6",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "C0E9",
+      "len": 196,
+      "type": "bytes"
+    },
+    {
+      "addr": "C1AD",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "C1B0",
+      "len": 248,
+      "type": "bytes"
+    },
+    {
+      "addr": "C2A8",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "C2AB",
+      "len": 248,
+      "type": "bytes"
+    },
+    {
+      "addr": "C3A3",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "C3A6",
+      "len": 153,
+      "type": "bytes"
+    },
+    {
+      "addr": "C43F",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "C442",
+      "len": 150,
+      "type": "bytes"
+    },
+    {
+      "addr": "C4D8",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "C4DB",
+      "len": 211,
+      "type": "bytes"
+    },
+    {
+      "addr": "C5AE",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "C5B1",
+      "len": 203,
+      "type": "bytes"
+    },
+    {
+      "addr": "C67C",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "C67F",
+      "len": 287,
+      "type": "bytes"
+    },
+    {
+      "addr": "C79E",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "C7A1",
+      "len": 248,
+      "type": "bytes"
+    },
+    {
+      "addr": "C899",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "C89C",
+      "len": 222,
+      "type": "bytes"
+    },
+    {
+      "addr": "C97A",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "C97D",
+      "len": 187,
+      "type": "bytes"
+    },
+    {
+      "addr": "CA38",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "CA3B",
+      "len": 131,
+      "type": "bytes"
+    },
+    {
+      "addr": "CABE",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "CAC1",
+      "len": 150,
+      "type": "bytes"
+    },
+    {
+      "addr": "CB57",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "CB5A",
+      "len": 207,
+      "type": "bytes"
+    },
+    {
+      "addr": "CC29",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "CC2C",
+      "len": 203,
+      "type": "bytes"
+    },
+    {
+      "addr": "CCF7",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "CCFA",
+      "len": 277,
+      "type": "bytes"
+    },
+    {
+      "addr": "CE0F",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "CE12",
+      "len": 248,
+      "type": "bytes"
+    },
+    {
+      "addr": "CF0A",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "CF0D",
+      "len": 222,
+      "type": "bytes"
+    },
+    {
+      "addr": "CFEB",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "CFEE",
+      "len": 104,
+      "type": "bytes"
+    },
+    {
+      "addr": "D056",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "D059",
+      "len": 137,
+      "type": "bytes"
+    },
+    {
+      "addr": "D0E2",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "D0E5",
+      "len": 95,
+      "type": "bytes"
+    },
+    {
+      "addr": "D144",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "D147",
+      "len": 122,
+      "type": "bytes"
+    },
+    {
+      "addr": "D1C1",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "D1C4",
+      "len": 104,
+      "type": "bytes"
+    },
+    {
+      "addr": "D22C",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "D22F",
+      "len": 137,
+      "type": "bytes"
+    },
+    {
+      "addr": "D2B8",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "D2BB",
+      "len": 95,
+      "type": "bytes"
+    },
+    {
+      "addr": "D31A",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "D31D",
+      "len": 122,
+      "type": "bytes"
+    },
+    {
+      "addr": "D397",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "D39A",
+      "len": 114,
+      "type": "bytes"
+    },
+    {
+      "addr": "D40C",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "D40F",
+      "len": 133,
+      "type": "bytes"
+    },
+    {
+      "addr": "D494",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "D497",
+      "len": 60,
+      "type": "bytes"
+    },
+    {
+      "addr": "D4D3",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "D4D6",
+      "len": 113,
+      "type": "bytes"
+    },
+    {
+      "addr": "D547",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "D54A",
+      "len": 96,
+      "type": "bytes"
+    },
+    {
+      "addr": "D5AA",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "D5AD",
+      "len": 184,
+      "type": "bytes"
+    },
+    {
+      "addr": "D665",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "D668",
+      "len": 96,
+      "type": "bytes"
+    },
+    {
+      "addr": "D6C8",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "D6CB",
+      "len": 184,
+      "type": "bytes"
+    },
+    {
+      "addr": "D783",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "D786",
+      "len": 114,
+      "type": "bytes"
+    },
+    {
+      "addr": "D7F8",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "D7FB",
+      "len": 133,
+      "type": "bytes"
+    },
+    {
+      "addr": "D880",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "D883",
+      "len": 60,
+      "type": "bytes"
+    },
+    {
+      "addr": "D8BF",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "D8C2",
+      "len": 113,
+      "type": "bytes"
+    },
+    {
+      "addr": "D933",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "D936",
+      "len": 208,
+      "type": "bytes"
+    },
+    {
+      "addr": "DA06",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "DA09",
+      "len": 208,
+      "type": "bytes"
+    },
+    {
+      "addr": "DAD9",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "DADC",
+      "len": 113,
+      "type": "bytes"
+    },
+    {
+      "addr": "DB4D",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "DB50",
+      "len": 187,
+      "type": "bytes"
+    },
+    {
+      "addr": "DC0B",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "DC0E",
+      "len": 307,
+      "type": "bytes"
+    },
+    {
+      "addr": "DD41",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "DD44",
+      "len": 193,
+      "type": "bytes"
+    },
+    {
+      "addr": "DE05",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "DE08",
+      "len": 240,
+      "type": "bytes"
+    },
+    {
+      "addr": "DEF8",
+      "len": 3,
+      "type": "bytes"
+    },
+    {
+      "addr": "DEFB",
+      "len": 30,
+      "type": "text"
+    }
+  ]
+}

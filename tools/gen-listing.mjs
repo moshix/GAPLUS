@@ -15,6 +15,11 @@
  *   reference/coverage/<cpu>.json      (optional) addresses the oracle saw
  *                                      execute; each one becomes a trace root
  *
+ * and, for the main and sub CPUs, the JavaScript port (src/game/{main,sub},
+ * read by tools/js-routines.mjs): every routine the port registers in
+ * MAIN_AT/SUB_AT gets a header naming its JS file, and its JS name when the
+ * listing label differs (labels get renamed, JS functions never are).
+ *
  * Code is found by recursive descent from the CPU vectors and the seeds:
  * fall-through, branches and calls are followed, the direct-page register is
  * tracked (LDA #n / TFR A,DP) so `<$nn` operands resolve, and computed
@@ -33,6 +38,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadGaplus, ROOT } from './romset.mjs';
 import { disasm, hex } from './m6809dis.mjs';
+import { loadJsRoutines } from './js-routines.mjs';
 
 export const REF = join(ROOT, 'reference');
 export const ANN_DIR = join(REF, 'annotations');
@@ -975,8 +981,10 @@ function block(out, lines, prefix = '; ') {
  * @param {Map<number, {name: string, size: number, comment: string}>} ram
  *   all RAM names (canonical addresses), from every CPU's annotations
  * @param {{addrs: number[], dp: Map<number, number>}} cov
+ * @param {Map<number, import('./js-routines.mjs').JsRoutine>} [js] the JS
+ *   routine implementing each address (main and sub CPUs)
  */
-export function generate(cpu, mem, ann, ram, cov) {
+export function generate(cpu, mem, ann, ram, cov, js = new Map()) {
   const lo = ROM_LO[cpu];
   const read = (/** @type {number} */ a) => mem[a & 0xffff];
   const t = trace(cpu, mem, ann, cov);
@@ -1014,6 +1022,13 @@ export function generate(cpu, mem, ann, ram, cov) {
     if (!labels.has(a)) labels.set(a, `sub_${hex(a, 4).slice(1)}`);
   }
   for (const [a, l] of ann.labels) if (l.doc.length && t.ins.has(a)) routines.add(a);
+  // Every address the port implements starts a routine (some are branch
+  // targets inside ROM routines, e.g. the death / game-over web).
+  for (const a of js.keys()) {
+    if (!t.ins.has(a)) continue;
+    routines.add(a);
+    if (!labels.has(a)) labels.set(a, `sub_${hex(a, 4).slice(1)}`);
+  }
   for (const [to, list] of t.xref) {
     if (to < lo || labels.has(to)) continue;
     if (list.some((x) => x.kind !== 'vector')) {
@@ -1195,7 +1210,14 @@ export function generate(cpu, mem, ann, ram, cov) {
     const l = ann.labels.get(a);
     body.push('');
     body.push(bar);
-    body.push(`; ${name}  (${hex(a, 4)})`);
+    // "; label  ($XXXX)", plus " ; JS: name" when the port's function is
+    // called differently (on its own line if the pair would pass column 79).
+    const title = `; ${name}  (${hex(a, 4)})`;
+    const impl = js.get(a);
+    const jsNote = impl && impl.jsName !== name ? ` ; JS: ${impl.jsName}` : '';
+    if (title.length + jsNote.length <= MAX_COL) body.push(title + jsNote);
+    else { body.push(title); body.push(`;${jsNote}`); }
+    if (impl && impl.file) body.push(`; -> ${impl.file}`);
     if (l && l.doc.length) block(body, l.doc);
     const refs = (t.xref.get(a) ?? []).slice().sort((x, y) => x.from - y.from);
     const calls = refs.filter((x) => x.kind === 'call').map((x) => `${hex(x.from, 4)} ${within(x.from)}`.trim());
@@ -1301,17 +1323,30 @@ export function generate(cpu, mem, ann, ram, cov) {
 
   /** @type {Record<string, number>} */
   const syms = {};
-  for (const [addr, name] of [...labels].sort((x, y) => x[0] - y[0])) syms[name] = addr;
+  /** @type {string[]} names given to more than one address */
+  const duplicates = [];
+  for (const [addr, name] of [...labels].sort((x, y) => x[0] - y[0])) {
+    if (syms[name] !== undefined) duplicates.push(name);
+    syms[name] = addr;
+  }
+  /** @type {Record<string, {label: string, jsName: string, file: string}>} */
+  const jsMap = {};
+  for (const [addr, r] of [...js].sort((x, y) => x[0] - y[0])) {
+    jsMap[hex(addr, 4).slice(1)] = { label: labels.get(addr) ?? '', jsName: r.jsName, file: r.file };
+  }
   const dataBytes = (0x10000 - lo) - codeBytes;
   return {
     text: out.join('\n') + '\n',
     syms,
+    jsMap,
+    duplicates,
     trace: t,
     stats: {
       code: codeBytes, data: dataBytes, routines: routineList.length,
       tables: t.tables.size,
       unreached: unreached.count,
       conflicts: t.conflicts.length,
+      duplicates: duplicates.length,
     },
   };
 }
@@ -1525,8 +1560,20 @@ function renderRegion(r, out, ctx) {
 // Driver
 
 /**
+ * The port's routines, loaded once (the listings depend on them only
+ * through names and file paths, see tools/js-routines.mjs).
+ * @type {Record<string, Map<number, import('./js-routines.mjs').JsRoutine>>}
+ */
+export const JS_ROUTINES = {
+  main: await loadJsRoutines('main'),
+  sub: await loadJsRoutines('sub'),
+};
+
+/**
  * Build everything in memory.
- * @param {{annDir?: string, covDir?: string}} [opts]
+ * @param {{annDir?: string, covDir?: string,
+ *   js?: Record<string, Map<number, import('./js-routines.mjs').JsRoutine>>}} [opts]
+ *   js: the JS cross-references (default JS_ROUTINES; {} for none)
  * @returns {{files: Map<string, string>, stats: Record<string, Record<string, number>>, results: Record<string, ReturnType<typeof generate>>}}
  */
 export function buildAll(opts = {}) {
@@ -1553,11 +1600,15 @@ export function buildAll(opts = {}) {
   const results = {};
   /** @type {Record<string, Record<string, number>>} */
   const symbols = { main: {}, sub: {}, sound: {}, ram: {}, io: {} };
+  /** @type {Record<string, Record<string, {label: string, jsName: string, file: string}>>} */
+  const jsSyms = {};
   for (const cpu of CPUS) {
-    const r = generate(cpu, roms[cpu], anns[cpu], ram, loadCoverage(cpu, opts.covDir));
+    const js = (opts.js ?? JS_ROUTINES)[cpu] ?? new Map();
+    const r = generate(cpu, roms[cpu], anns[cpu], ram, loadCoverage(cpu, opts.covDir), js);
     results[cpu] = r;
     files.set(join(REF, `gaplus-${cpu}.asm`), r.text);
     symbols[cpu] = r.syms;
+    if (Object.keys(r.jsMap).length) jsSyms[cpu] = r.jsMap;
     stats[cpu] = r.stats;
   }
   const ramSorted = [...ram].sort((x, y) => x[0] - y[0]);
@@ -1578,6 +1629,9 @@ export function buildAll(opts = {}) {
       'prefixed "sub:" / "sound:" are in that CPU\'s space.',
     ...symbols,
     ram_comments: ramNotes,
+    // Per CPU, "ADDR": { label, jsName, file }: the port's function for
+    // each listed routine (JS names are the labels at porting time).
+    js: jsSyms,
   };
   files.set(join(REF, 'symbols.json'), JSON.stringify(json, null, 1) + '\n');
   return { files, stats, results };

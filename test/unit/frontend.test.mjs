@@ -144,16 +144,42 @@ test('copyInputs copies every switch and DIP in place', () => {
   assert.deepEqual(inputPorts(to), inputPorts(from));
 });
 
-test('port engine: not ready yet, takes the AI, says so', async () => {
+test('port engine: runs the port to attract mode, takes the AI', async () => {
+  const { portStatus } = await import('../../src/game/port.js');
   const engine = await createEngine('port');
   assert.ok(engine instanceof PortEngine);
-  assert.equal(engine.ready, false);
-  assert.match(engine.why, /port not ready yet/);
-  assert.match(engine.why, /ROM version/);
   assert.equal(engine.supportsAi, true);
   assert.equal(engine.mem.length, 0x10000);
   assert.equal(engine.soundRegs().length, 0x40);
+  if (!portStatus().ready) {
+    assert.equal(engine.ready, false);
+    assert.match(engine.why, /port not ready yet/);
+    assert.match(engine.why, /ROM version/);
+    engine.runFrame(createInputState());
+    return;
+  }
+  assert.equal(engine.ready, true, engine.why);
+  for (let f = 0; f < 245; f += 1) engine.runFrame(createInputState());
+  assert.equal(engine.ready, true, engine.why);
+  assert.equal(engine.mem[0x09f4], 1, 'attract_flag: attract mode');
+  assert.equal(engine.soundEnable(), true);
+});
+
+test('port engine: a port that throws stops and says why', () => {
+  const port = {
+    mem: new Uint8Array(0x10000), starCtrl: new Uint8Array(4),
+    wsgRegs: new Uint8Array(0x40), soundEnable: true,
+    inputs: createInputState(), onBang: null,
+    runFrame() { throw new Error('boom'); },
+    powerOn() {},
+  };
+  const engine = new PortEngine(port);
+  assert.equal(engine.ready, true);
   engine.runFrame(createInputState());
+  assert.equal(engine.ready, false);
+  assert.match(engine.why, /port stopped: boom/);
+  engine.reset();
+  assert.equal(engine.ready, true);
 });
 
 test('ROM engine without ROMs: not ready, with directions', async () => {

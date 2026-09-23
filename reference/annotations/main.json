@@ -39,13 +39,23 @@
     "Custom I/O chip check failed: hang (watchdog resets the board)."
    ]
   },
-  "E0C7": "boot_handshake",
+  "E0C7": {
+   "name": "boot_handshake",
+   "doc": [
+    "Release the sub and sound CPUs (SRESET off), write $11 to $6040 and $0800 and wait for both to answer $22; then read the switches and DIPs and decode them."
+   ]
+  },
   "E176": "dsw_coin_a_ptrs",
   "E186": "dsw_coin_b_ptrs",
   "E196": "dsw_lives_table",
   "E19A": "dsw_difficulty_table",
   "E1A2": "dsw_bonus_ptrs",
-  "E1CA": "boot_check_service",
+  "E1CA": {
+   "name": "boot_check_service",
+   "doc": [
+    "Service switch on -> service_mode; otherwise program the coinage, wait and go to game_init. Never returns."
+   ]
+  },
   "E1DE": {
    "name": "program_coinage",
    "doc": [
@@ -132,7 +142,8 @@
    "name": "update_hiscore",
    "doc": [
     "If the score at X beats the high score $09B6-$09B8 (most significant",
-    "byte first), copy it and redraw it at the top of the screen."
+    "byte first), copy it and redraw it at the top of the screen.",
+    "QUIRK: copies the score only from the first byte that differs."
    ]
   },
   "C287": {
@@ -198,7 +209,8 @@
    "name": "push_start_1p",
    "doc": [
     "One credit: leave attract, show the push-start screen, allow",
-    "1P start only and wait for a start (56XX nibble 3 = credits used)."
+    "1P start only and wait for a start (56XX nibble 3 = credits used).",
+    "BUG: with $04C2 != 0 the blanking at $C5D8 runs past the tilemap; CLR ,U hits work RAM $0840-$0868."
    ]
   },
   "C639": {
@@ -214,8 +226,18 @@
     "Two or more credits: push-start screen for 1 or 2 players."
    ]
   },
-  "C811": "clear_game_vars",
-  "C854": "clear_playfield",
+  "C811": {
+   "name": "clear_game_vars",
+   "doc": [
+    "Clear 22 game variables ($115A, $1132-$1136, $113A-$113E, $1142-$1146, $115B-$115D, $1108, $115F, stage_p1)."
+   ]
+  },
+  "C854": {
+   "name": "clear_playfield",
+   "doc": [
+    "Blank the playfield: tiles $0040-$03BF = $20 with attribute 0."
+   ]
+  },
   "C866": {
    "name": "attract_phase0",
    "doc": [
@@ -225,7 +247,8 @@
   "CAA9": {
    "name": "attract_phase2",
    "doc": [
-    "Attract phase 2."
+    "Attract phase 2.",
+    "BUG: the 10-tile blank loop at $CB00 runs with X = $0000 (the table end marker): writes $0000 downwards and attribute 2 into $0400."
    ]
   },
   "CCD0": {
@@ -235,7 +258,8 @@
     "lives, clears scores and the playfield, places the player and the",
     "reserve ships, plays the start tune (sound 0) and waits for it to",
     "end, loads the demo input script when in attract mode, then enters",
-    "the game-mode scheduler (task_dispatch_sync)."
+    "the game-mode scheduler (task_dispatch_sync).",
+    "QUIRK: the fly-in RORB/ROLA ($CE6A) use carries left by earlier compares; lives_setting 0 writes 255 markers from $1F17 ($CD78)."
    ]
   },
   "CDFF": {
@@ -244,7 +268,12 @@
     "Two-player start: both players get the lives setting."
    ]
   },
-  "CF14": "task_count_fighters",
+  "CF14": {
+   "name": "task_count_fighters",
+   "doc": [
+    "Count the in-use dual-fighter sprites ($1EC3-$1ECD) into fighter_count and set player_xmin/xmax from dat_CF41 by that count (xmin 4 lower in the demo)."
+   ]
+  },
   "CF4F": {
    "name": "task_move_player",
    "doc": [
@@ -258,7 +287,8 @@
    "name": "demo_input",
    "doc": [
     "Demo: step the recorded input script; at its end ($F0) stop the",
-    "demo and return to attract_loop."
+    "demo and return to attract_loop.",
+    "QUIRK: bit 7 of demo_stick is the carry of CMPA #$F0 ($D01A)."
    ]
   },
   "D07A": {
@@ -274,7 +304,12 @@
     "$09FB hours (0-23). Shown by the operator stats display."
    ]
   },
-  "D107": "update_p1_time",
+  "D107": {
+   "name": "update_p1_time",
+   "doc": [
+    "While player 1 plays, count p1_time: frames (wrap 60), seconds (60), minutes (no limit), binary."
+   ]
+  },
   "D150": {
    "name": "task_end_frame",
    "doc": [
@@ -296,14 +331,20 @@
     "sound."
    ]
   },
-  "D1D0": "task_move_shots",
+  "D1D0": {
+   "name": "task_move_shots",
+   "doc": [
+    "Move every active shot ($16A3-$16C1, flag bit 7) up by shot_speed; a shot leaving the top is flagged $80; clear the spent ones. With $1177 set the two shots follow the player's Y."
+   ]
+  },
   "D71B": {
    "name": "task_stage_start",
    "doc": [
     "Mode 0: starfield, clear per-stage state, stage number",
     "$1035 = player stage, reduced below 60 (60+ repeat 30-59); print",
     "'PARSEC nn' (and GAME OVER in attract mode). Challenging stages",
-    "(challenging_stages) print CHALLENGING STAGE and switch to mode 7."
+    "(challenging_stages) print CHALLENGING STAGE and switch to mode 7.",
+    "QUIRK: erasing the PARSEC digits stores to $FFF0 (ROM, ignored)."
    ]
   },
   "D82B": "str_parsec",
@@ -326,11 +367,22 @@
    "name": "sound_demo_gate",
    "doc": [
     "Silence the attract sounds unless the demo-sounds DIP is on (keeps",
-    "the coin sound $6056)."
+    "the coin sound $6056).",
+    "QUIRK: with the demo-sounds DIP clear sounds $11, $16, $17 and $19-$1F keep playing (LEAX skips), not just $16."
    ]
   },
-  "DF5D": "clear_sprite_shadows",
-  "DF65": "clear_sprite_shadows_all",
+  "DF5D": {
+   "name": "clear_sprite_shadows",
+   "doc": [
+    "Take every sprite shadow entry but the player's out of use (flags from $1E03, positions from $1602)."
+   ]
+  },
+  "DF65": {
+   "name": "clear_sprite_shadows_all",
+   "doc": [
+    "The same as clear_sprite_shadows, including the player (from $1E01 / $1600)."
+   ]
+  },
   "DFAE": "str_copyright_c",
   "E21A": {
    "name": "task_results",
@@ -353,11 +405,23 @@
     "Load the stage's parameters. $1035 = stage (reduced to < 60 by",
     "subtracting 30); tables indexed by difficulty $1004 and stage give",
     "the enemy groups, speeds and the formation layout copied to",
-    "$1036-$1059 and $1052-$1059."
+    "$1036-$1059 and $1052-$1059.",
+    "QUIRK: the third lookup uses the old $1011; table indexes are signed (A,X)."
    ]
   },
-  "F5C4": "task_spawn_effect",
-  "F5FA": "task_animate_effects",
+  "F5C4": {
+   "name": "task_spawn_effect",
+   "doc": [
+    "Take one request (effect_request > 0) and start an effect in the first free slot of effect_step ($110C-$110E) at effect_pos with flags $40 / $110B.",
+    "QUIRK: a request is lost when all three slots are busy (the DEC has already happened)."
+   ]
+  },
+  "F5FA": {
+   "name": "task_animate_effects",
+   "doc": [
+    "For each busy effect slot (shadow $0E8C/$0E8E/$0E90) increment its step and run effect_steps[old step] with U = the entry (8-bit ASLA, signed offset)."
+   ]
+  },
   "F62F": "effect_steps",
   "FCDF": {
    "name": "operator_stats",
@@ -437,27 +501,39 @@
    ]
   },
   "AFC7": "hiscore_steps",
-  "AFCD": "hiscore_draw_screen",
-  "B304": "hiscore_enter_name",
+  "AFCD": {
+   "name": "hiscore_draw_screen",
+   "doc": [
+    "Mode 9 step 1: draw the TOP 5 screen (dat_B070 titles, table, the placeholder row at the new rank), entry_timer = 5, hiscore_step 2."
+   ]
+  },
+  "B304": {
+   "name": "hiscore_enter_name",
+   "doc": [
+    "Mode 9 step 2, once a frame: the stick cycles the character under entry_cursor through its field's alphabet (8-frame repeat, entry_repeat), fire accepts, entry_timer runs; finishing stores the table and returns to mode 5 via after_name_entry_p1/_p2.",
+    "QUIRK: the alphabet wrap reads the byte 2 before each alphabet ($B416, $B435, $B443): the index of its terminator."
+   ]
+  },
   "B49F": {
    "name": "hiscore_check",
    "doc": [
     "Compare the player's score (tile digits) with the five table",
     "entries at $0900 (16 bytes each), shift the lower entries down and",
-    "insert; pick the rank music (sound 3 for 1st, 4 otherwise)."
+    "insert; pick the rank music (sound 3 for 1st, 4 otherwise).",
+    "QUIRK: rank 5 leaves entry_rank untouched; main_task += 2 skips task_game_over_check."
    ]
   },
-  "B656": "load_formation_sprites",
+  "B656": {
+   "name": "load_formation_sprites",
+   "doc": [
+    "Copy the formation's sprite codes: dat_B6BA[$106E] points at 9 words, the first 8 fill runs of shadow words at $0E02-$0E83, the 9th goes to $0E84."
+   ]
+  },
   "B6F6": {
    "name": "service_mode",
    "doc": [
-    "Service / test mode (DSW service switch, checked at boot and in",
-    "every IRQ). Re-initialises like reset, then: RAM test $0000-$1FFF",
-    "and $6040-$63FF with rotating patterns, custom-chip check, ROM",
-    "checksums of $A000/$C000/$E000 (error digit 1-3 at tile $0306),",
-    "sub/sound handshake and their checksum results, then shows the DIP",
-    "settings and runs the sound test (stick selects, fire plays).",
-    "Leaving the switch resets through reset_main."
+    "Service / test mode (DSW service switch, checked at boot and in every IRQ). Re-initialises like reset, then: RAM test $0000-$1FFF and $6040-$63FF with rotating patterns (15 passes, see svc_ram_test), custom-chip check, ROM checksums of $A000/$C000/$E000 (error digit 1-3 at tile $0306), sub/sound handshake and their checksum results, then the DIP settings and the sound test. Leaving the switch resets through reset_main.",
+    "BUG: the sound-RAM and custom-chip error codes are loaded into B but A = $20 is stored: they show as blanks and pass the \"OK\" check at $B926."
    ]
   },
   "B77C": {
@@ -476,19 +552,24 @@
   "BD7B": {
    "name": "service_loop",
    "doc": [
-    "Service mode loop: service coin held -> crosshatch test grid until",
-    "released; service switch off -> reset_main; otherwise any change of",
-    "the stick/button nibbles steps or plays the sound test ($100A)."
+    "Service mode loop: the service coin starts the cross hatch, which stays until the service coin is pressed AGAIN ($BD8A waits for bit 3 of $6800 to come back); service switch off -> reset_main; a change of switch nibbles 0-2 steps the sound test ($100A) and plays it, nibble 3 only plays it.",
+    "QUIRK: the cross hatch needs a second press of the service coin to end."
    ]
   },
-  "BE01": "draw_test_grid",
+  "BE01": {
+   "name": "draw_test_grid",
+   "doc": [
+    "Draw the cross-hatch test pattern over the tilemap $0000-$03FF (codes only)."
+   ]
+  },
   "BE37": {
    "name": "easter_egg",
    "doc": [
     "Hidden screen in the service mode: shown when the sound test is on",
     "$09 with the stick up-left, or on $19 with the stick left, while",
     "start 1 + P1 fire are held (56XX mode 1: $6801 stick, $6803 = 5).",
-    "Draws the bitmap at $BE78 as '0' tiles and hangs."
+    "Draws the bitmap at $BE78 as '0' tiles and hangs.",
+    "QUIRK: hangs for good (watchdog kicked)."
    ]
   },
   "BE78": "easter_egg_bitmap",
@@ -541,7 +622,738 @@
    "name": "task_player_hit_check",
    "doc": [
     "Build a box around the player ($10C6-$10C9) and test the sprite",
-    "shadow entries $0ECE-$0F13 against it (enemy shots and enemies)."
+    "shadow entries $0ECE-$0F13 against it (enemy shots and enemies).",
+    "QUIRK: game over waits exactly 256 frames; a player with 0 lives gets $FF reserve markers capped to 4."
+   ]
+  },
+  "B212": "hiscore_finish",
+  "B241": "hiscore_staff_loop",
+  "B25F": "hiscore_store",
+  "B2AE": "hiscore_leave",
+  "B331": "entry_step_char",
+  "B44B": "entry_fire",
+  "B73C": {
+   "name": "svc_ram_test",
+   "doc": [
+    "15 passes, not 16: D enters as $000B (left by the 62XX init",
+    "INCBs), so the offsets are $000B, $111C, ... $EEF9."
+   ]
+  },
+  "B7A5": "svc_sndram_test",
+  "B7F4": "svc_chip_test",
+  "B85F": "svc_rom_checksums",
+  "B8B5": "svc_release_subs",
+  "B970": "svc_dip_screen",
+  "C909": {
+   "name": "logo_anim_start",
+   "doc": [
+    "Title logo step 0: sprite entry 10 ($1614) at $7420, flags $4080; logo_anim_step + 1; then logo_anim_colours."
+   ]
+  },
+  "C91B": {
+   "name": "logo_anim_rise",
+   "doc": [
+    "Title logo step 1: move entry 10 up; at $FF place entries 10-14 at $74FF and step logo_anim_step. Then logo_anim_colours."
+   ]
+  },
+  "C952": {
+   "name": "logo_anim_spread",
+   "doc": [
+    "Title logo step 2: spread entries 10-14 apart until $161C reaches $A8, then set up entries 15/16 and step logo_anim_step. Then logo_anim_colours."
+   ]
+  },
+  "C9AE": {
+   "name": "logo_anim_colours",
+   "doc": [
+    "Every title pass: colours of entries 10-14 from dat_CA36[frame_counter & $1E]; jumps back to attract_loop."
+   ]
+  },
+  "CDA1": {
+   "name": "start_turn",
+   "doc": [
+    "Start of a turn (second half of start_game_1p, also from $DB8E): starfield, player speeds, shot slots end, start tune while the reserve ships fly in (CWAI per frame), then task_dispatch_sync."
+   ]
+  },
+  "D029": {
+   "name": "demo_end",
+   "doc": [
+    "End of the demo (also from $E3F8): attract timer = $E0/$FF, clear sprites, sounds, schedulers and game_mode, jump to attract_loop (the stack is abandoned)."
+   ]
+  },
+  "D223": {
+   "name": "task_dual_shots",
+   "doc": [
+    "With the dual fighter: copy each active shot of slots $0EA2/$0EA4 fighter_count times from $0EAA up, the n-th Y offset by dat_D283[n] (signed)."
+   ]
+  },
+  "D8B0": {
+   "name": "task_sound_queue",
+   "doc": [
+    "Unless player_dying: pass the sound requests queued in $0840-$087F to snd_request (1 each, queue cleared); while dying clear every request except sounds $14 and $16."
+   ]
+  },
+  "D8F8": {
+   "name": "task_formation_offset",
+   "doc": [
+    "fighter_offsets ($10DD/$10DE) = the word dat_D907[fighter_count] (formation offsets for the number of fighters; LDD A,X signed)."
+   ]
+  },
+  "D28A": {
+   "name": "task_shot_hits",
+   "doc": [
+    "The player's shots against enemies and objects: build a hitbox per active shot ($10C6-$10CA) and test the formation, the diving enemies and the objects $0EE2-$0F12; hits go to enemy_hit.",
+    "QUIRK: shots_to_clear is stored, not OR-ed; boss_bonus_idx runs past boss_bonus_sprites into code; the formation scan ends only at X = formation_end."
+   ]
+  },
+  "D431": {
+   "name": "enemy_hit",
+   "doc": [
+    "Enemy at U hit: count it (effect_request), note its position (effect_pos) and type ($110B); with $1102 & $1075 put a score sprite ($4F) in a free slot of $0ECE-$0EDA with a speed from dat_D4B6/D4E0/D50A. In: U = the enemy's position entry."
+   ]
+  },
+  "D588": {
+   "name": "task_formation_count",
+   "doc": [
+    "Mode 5 formation bookkeeping: count free/moving slots ($1860-$188B) into several flags ($1020, $10F8, $1122, $1075); when the stage is empty count clear_delay and move to the next mode."
+   ]
+  },
+  "D9CF": {
+   "name": "fighter_reset_lose_life",
+   "doc": [
+    "From $F8D2 (end of the explosion): reset the fighter (speeds, no dual fighter, shots $0EA2-$0EA9, $1100/$1101), then lose_life."
+   ]
+  },
+  "DA01": "player_dies",
+  "DA87": {
+   "name": "game_over_to_attract",
+   "doc": [
+    "End of a game (from $FC7D/$FC9F): clear the game RAM and sprites, wait a frame, back to attract_loop.",
+    "QUIRK: clears $102A-$11FF (frame_sync, main_task included) but only the low two bytes of each score."
+   ]
+  },
+  "DAEA": "lose_life",
+  "DB04": "switch_to_p2",
+  "DB9D": "switch_to_p1",
+  "DC38": "new_ship",
+  "DBE2": {
+   "name": "after_name_entry_p1",
+   "doc": [
+    "After player 1's high-score entry (from $B301): continue the game-over flow for player 1."
+   ]
+  },
+  "DC0B": {
+   "name": "after_name_entry_p2",
+   "doc": [
+    "After player 2's high-score entry (from $B2F6): continue the game-over flow for player 2."
+   ]
+  },
+  "DC1C": {
+   "name": "print_string_attr_r",
+   "doc": [
+    "Print the zero-terminated string at U from tile X going right (X -= $20 per char), attribute B for each. Out: X, U past the end."
+   ]
+  },
+  "DEC1": {
+   "name": "count_game_time",
+   "doc": [
+    "If player 1 played at least a second, add one (BCD) to the stats counter $09D6+i for his play time in minutes (i = 0-10: 0..6, 7-9, 10-14, 15-24, 25+ min); then clear p1_time.",
+    "QUIRK: 25+ minutes count into $09E0, past stats_counters."
+   ]
+  },
+  "E22F": {
+   "name": "results_draw",
+   "doc": [
+    "Results step 0: reset the counters, results_hits_left = results_count, print EARNINGS / 100 X / 200 X / TOTAL; when results_delay wraps go to step 1 with the player's bonus kind in results_bonus_kind."
+   ]
+  },
+  "E29A": {
+   "name": "results_count_hits",
+   "doc": [
+    "Results step 1: every other frame count one hit (results_count down; sound $17, results_count_one draws it); last hit sound $0A; below 0 -> step 2."
+   ]
+  },
+  "E2D0": {
+   "name": "results_markers",
+   "doc": [
+    "Results step 2: draw the remaining hit markers (tile $60) of the bonus kind's pattern, print the bonus line (results_bonus_line), step 3; no bonus line -> results_no_bonus."
+   ]
+  },
+  "E346": {
+   "name": "results_show_bonus",
+   "doc": [
+    "Results step 3: show the bonus line until results_timer wraps (then step 4); kinds 1 and 4 wait for fire (sound 8) and cycle a digit at $017A; the line blinks every 4th frame."
+   ]
+  },
+  "E3AD": {
+   "name": "results_payout",
+   "doc": [
+    "Results step 4: with results_timer = 0 pay out the bonus by kind (tbl_E65F), else count results_timer up."
+   ]
+  },
+  "E332": {
+   "name": "results_no_bonus",
+   "doc": [
+    "Results step 5: wait until results_delay wraps, then results_timer = $FF and pay out the total."
+   ]
+  },
+  "E3FF": {
+   "name": "results_count_one",
+   "doc": [
+    "Count one hit: blank its marker; below tile $1000 a 100-point hit (results_hits100, earnings + 1), else a 200-point hit (earnings + 2, results_hits200); BCD, redraws the digits."
+   ]
+  },
+  "E4DA": {
+   "name": "results_bonus_line",
+   "doc": [
+    "Print the bonus line of kind results_bonus_kind & 7 through tbl_E4E5 (JMP [A,X]; the entry's RTS returns to the caller)."
+   ]
+  },
+  "E6C8": {
+   "name": "add_score_times",
+   "doc": [
+    "add_score(1) (10 points) results_count times."
+   ]
+  },
+  "E7A6": {
+   "name": "payout_lucky",
+   "doc": [
+    "Kind 5 pay-out: move the component sprite up a step a frame (sound 6) to its place, copy it to entry $0F28 (or $0F26) and park it."
+   ]
+  },
+  "E811": {
+   "name": "payout_byebye",
+   "doc": [
+    "Kind 6 pay-out: count the dropped component's timer down (sound 6), then clear its flag."
+   ]
+  },
+  "E83B": {
+   "name": "payout_extend",
+   "doc": [
+    "Kind 7 pay-out: one more life for the current player (flag_extra_ship redraws the reserve; sound $15)."
+   ]
+  },
+  "EA21": {
+   "name": "task_challenge_marks",
+   "doc": [
+    "Mode 7 task: the player's challenging pattern (bonus_kind_p1/p2) into results_bonus_kind; draw results_count (max $A5) marks of that pattern (mark_patterns)."
+   ]
+  },
+  "EA89": {
+   "name": "task_clear_parked_flags",
+   "doc": [
+    "Modes 0-6 task: for the 37 shadow entries $16CE-$1716 parked at Y >= $E0 clear the flag byte at +$0801."
+   ]
+  },
+  "EB01": {
+   "name": "task_next",
+   "doc": [
+    "INC <main_task / JMP task_dispatch: common end of the event steps (and tbl_EB82 step 8)."
+   ]
+  },
+  "EB5B": {
+   "name": "stage_events_reset",
+   "doc": [
+    "Clear event_step, event_timer and $107A... ($107C) and jump to task_dispatch without advancing the task (also tbl_EABA steps 3-8, never reached)."
+   ]
+  },
+  "EB66": {
+   "name": "task_stage_events_play",
+   "doc": [
+    "Mode 5 task: when $1010 is $10 set the starfield for it (star_dir_flags = 1); otherwise on the stages listed at dat_EB94 run event step event_step (tbl_EB82)."
+   ]
+  },
+  "EAD5": {
+   "name": "stage_event1_step0",
+   "doc": [
+    "Mode-1 event step 0: sound 24 every frame; at frame $3C star_dir_flags = 2 (0 flipped), starfield $87/$87, next step."
+   ]
+  },
+  "EB06": {
+   "name": "stage_event1_step1",
+   "doc": [
+    "Mode-1 event step 1: at frame $78 starfield $80/$80 ($86/$86 flipped), next step."
+   ]
+  },
+  "EB2B": {
+   "name": "stage_event1_step2",
+   "doc": [
+    "Mode-1 event step 2: at frame $B4 starfield $81/$82 ($86/$85 flipped), frame_counter = 7, wait a frame, next game mode."
+   ]
+  },
+  "F6DD": {
+   "name": "task_player_explosion",
+   "doc": [
+    "While player_exploding: $80 to $112A and $101A, and every 8th frame one step of tbl_F6FC (explosion_step); the last step ends in fighter_reset_lose_life."
+   ]
+  },
+  "F70C": {
+   "name": "explosion_start",
+   "doc": [
+    "Explosion step 0: explosion sprite at $0F32 centred on the player; the player's sprite and state cleared, the six dual-fighter flags $1EC3-$1ECD cleared."
+   ]
+  },
+  "F824": {
+   "name": "explosion_end",
+   "doc": [
+    "Explosion step 7: count $0F30 up to 0; then (not in mode 4) reset the player's sprite and captured ships, ready timers = $FF in mode 5, and jump to fighter_reset_lose_life."
+   ]
+  },
+  "F8DA": {
+   "name": "task_cycle_colours",
+   "doc": [
+    "Every 4th frame move the 16 shadow codes $0EA2-$0EC0 one code down/up (decided by the first); the seven shots $0ECE-$0EDA with code >= $4F get the blink code dat_F91D."
+   ]
+  },
+  "F921": {
+   "name": "task_shot_collisions",
+   "doc": [
+    "JMP $F9D5: unless $101A, test the six captured ships $0EC2-$0ECC against the seven enemy shots $0ECE-$0EDA; the first hit spawns an effect, frees the shot, sound $0B, and removes the ship.",
+    "QUIRK: only one hit a frame. $F924-$F9CF is skipped (dead code)."
+   ]
+  },
+  "F6C5": {
+   "name": "effect_free_slot",
+   "doc": [
+    "Effect step 33: free the slot that owns U ($0E8C -> $110C, $0E8E -> $110D, else $110E)."
+   ]
+  },
+  "FA94": {
+   "name": "bonus_first_p1",
+   "doc": [
+    "Bonus life step 0 of P1: score_p1+1 (BCD x 10,000) >= bonus_first."
+   ]
+  },
+  "FAAB": {
+   "name": "bonus_second_p1",
+   "doc": [
+    "Bonus life step 1 of P1: the second threshold."
+   ]
+  },
+  "FADB": {
+   "name": "bonus_every_p1",
+   "doc": [
+    "Bonus life step 2 of P1: every bonus_every after that (next_bonus_p1)."
+   ]
+  },
+  "FB25": {
+   "name": "bonus_first_p2",
+   "doc": [
+    "Bonus life step 0 of P2."
+   ]
+  },
+  "FB3B": {
+   "name": "bonus_second_p2",
+   "doc": [
+    "Bonus life step 1 of P2 (see the BUG at $FB65)."
+   ]
+  },
+  "FB6A": {
+   "name": "bonus_every_p2",
+   "doc": [
+    "Bonus life step 2 of P2."
+   ]
+  },
+  "FB0F": {
+   "name": "bonus_task_end",
+   "doc": [
+    "INC <main_task / JMP task_dispatch: end of every task in $FA7D-$FB9D; also step 3 of both tables (no more bonuses)."
+   ]
+  },
+  "FB9E": {
+   "name": "flag_extra_ship",
+   "doc": [
+    "Flag an extra reserve ship: the first of $1F17/$1F19/$1F1B with bit 7 clear gets $81."
+   ]
+  },
+  "FBB1": {
+   "name": "task_ready_timer",
+   "doc": [
+    "Modes 3, 5, 7: on frames with frame_counter & 7 != 0 count the player's ready timer down (ready_timer_p1/p2 via ready_timer); at $60 blank the message line, at $D0 print READY; ready_active while counting."
+   ]
+  },
+  "FC1F": {
+   "name": "print_msg_line",
+   "doc": [
+    "Print 12 characters from X at tile $02B2 going right, attribute 0."
+   ]
+  },
+  "FC33": {
+   "name": "task_game_over_check",
+   "doc": [
+    "Modes 5 and 9: when no player has lives and no credit/start is pending, wait for the sub CPU (sub_task 0 or $1B), in mode 9 copy the TOP 5 from the screen to hiscore_table/names, then game_over_to_attract."
+   ]
+  },
+  "FE18": {
+   "name": "task_bonus_ship",
+   "doc": [
+    "Mode 5: with one formation slot left and the slot (stage + score_p1) & $1F occupied, put the bonus ship in shadow $0F14 (sound $19); a player touching it wins a ship (sound $15)."
+   ]
+  },
+  "BE15": {
+   "name": "grid_row_pair",
+   "doc": [
+    "One row pair of the cross hatch: 16 x $6564 then 16 x $6766 from U up (tiles $64-$67)."
+   ]
+  },
+  "BE1D": {
+   "name": "store_x_16",
+   "doc": [
+    "Store the word X 16 times from U up (STX ,U++); U returned past the run."
+   ]
+  },
+  "E20A": {
+   "name": "fill_32_blank",
+   "doc": [
+    "Store $2020 at U++ 32 times (two fill_16_words)."
+   ]
+  },
+  "E4F5": {
+   "name": "line_bonus",
+   "doc": [
+    "Bonus kind 0: \"BONUS\" COMPLETED / BONUS POINTS 10000."
+   ]
+  },
+  "E50C": {
+   "name": "line_gaplus",
+   "doc": [
+    "Kinds 1 and 4: \"GAPLUS\" (kind 4 \" GOOD \") COMPLETED / BONUS POINTS 00000 / PUSH FIRING BUTTON."
+   ]
+  },
+  "E53A": {
+   "name": "line_double",
+   "doc": [
+    "Kind 2: \"DOUBLE\" COMPLETED; the bonus is the earnings again (digits copied to $013A-$017A)."
+   ]
+  },
+  "E563": {
+   "name": "line_triple",
+   "doc": [
+    "Kind 3: \"TRIPLE\" COMPLETED; the bonus is twice the earnings, doubled digit by digit in BCD."
+   ]
+  },
+  "E5F3": {
+   "name": "line_lucky",
+   "doc": [
+    "Kind 5: \"LUCKY\" COMPLETED / ONE COMPONENT ADDED, and a component sprite in shadow entry $0F2C."
+   ]
+  },
+  "E626": {
+   "name": "line_byebye",
+   "doc": [
+    "Kind 6: \"BYEBYE\" COMPLETED / ONE COMPONENT DROPPED."
+   ]
+  },
+  "E63D": {
+   "name": "line_extend",
+   "doc": [
+    "Kind 7: \"EXTEND\" COMPLETED / YOU GET A SHIP."
+   ]
+  },
+  "E66F": {
+   "name": "payout_bonus",
+   "doc": [
+    "Kind 0 pay-out: grand total = earnings + 10000, then the common pay-out ($E68E)."
+   ]
+  },
+  "E6D6": {
+   "name": "payout_gaplus",
+   "doc": [
+    "Kinds 1 and 4 pay-out: grand total = earnings with the button digit ($017A & 7) added to the hundreds."
+   ]
+  },
+  "E6FC": {
+   "name": "payout_double",
+   "doc": [
+    "Kind 2 pay-out: grand total = earnings + bonus."
+   ]
+  },
+  "E77A": {
+   "name": "payout_triple",
+   "doc": [
+    "Kind 3 pay-out, the same as payout_double."
+   ]
+  },
+  "EB9B": {
+   "name": "stage_event5_step0",
+   "doc": [
+    "Mode-5 event step 0: star_dir_flags = 1, sound 24, next step."
+   ]
+  },
+  "EBA9": {
+   "name": "stage_event5_step1",
+   "doc": [
+    "Mode-5 event step 1: at frame $32 starfield $87/$86 ($87/$80 flipped)."
+   ]
+  },
+  "EBD5": {
+   "name": "stage_event5_step2",
+   "doc": [
+    "Mode-5 event step 2: at frame $64 starfield register 2 = $87."
+   ]
+  },
+  "EBEC": {
+   "name": "stage_event5_step3",
+   "doc": [
+    "Mode-5 event step 3: at frame $96 starfield register 2 = $80 ($86 flipped)."
+   ]
+  },
+  "EC0E": {
+   "name": "stage_event5_step4",
+   "doc": [
+    "Mode-5 event step 4: at frame $C8 starfield $80/$81 ($86/$85 flipped)."
+   ]
+  },
+  "EC3A": {
+   "name": "stage_event5_step5",
+   "doc": [
+    "Mode-5 event step 5: at frame $FA star_dir_flags = 2 and starfield $81/$82 (flipped: 0, $85/$84), event_timer = 0."
+   ]
+  },
+  "EC71": {
+   "name": "stage_event5_step6",
+   "doc": [
+    "Mode-5 event step 6: wait until event_timer wraps (256 frames), next step."
+   ]
+  },
+  "EC7E": {
+   "name": "stage_event5_step7",
+   "doc": [
+    "Mode-5 event step 7: the same 256-frame wait."
+   ]
+  },
+  "F673": {
+   "name": "effect_exit",
+   "doc": [
+    "effect_steps[0] (step $80 only): BRA $F5F5 -- does the calling task's INC <main_task / JMP task_dispatch from inside the JSR.",
+    "QUIRK: leaves the task from inside a JSR; the return address stays on the stack until the next LDS."
+   ]
+  },
+  "F675": {
+   "name": "effect_start",
+   "doc": [
+    "Effect step 1: sprite code/colour $68,$32 at ,U."
+   ]
+  },
+  "F67B": {
+   "name": "effect_colour",
+   "doc": [
+    "Most effect steps: INC 1,U (the colour byte)."
+   ]
+  },
+  "F67E": {
+   "name": "effect_step9",
+   "doc": [
+    "Effect step 9: code/colour $69,$32 at ,U."
+   ]
+  },
+  "F684": {
+   "name": "effect_grow",
+   "doc": [
+    "Effect step 17: code $60,$32, then double size: Y -= 8, X -= 8 (+8 flipped) with the carry into the X high bit, flags $68."
+   ]
+  },
+  "F6BA": {
+   "name": "effect_step24",
+   "doc": [
+    "Effect step 24: code/colour $64,$32 at ,U."
+   ]
+  },
+  "F6C0": {
+   "name": "effect_hide",
+   "doc": [
+    "Effect step 32: CLR $1001,U -- the sprite is no longer in use."
+   ]
+  },
+  "F76D": {
+   "name": "explosion_grow",
+   "doc": [
+    "Explosion step 1: (special case in mode 5 for a captured ship) then the explosion grows to two sprites ($0F30/$0F32, 16 pixels apart)."
+   ]
+  },
+  "F7DA": {
+   "name": "explosion_step2",
+   "doc": [
+    "Explosion step 2: codes $CE/$DE."
+   ]
+  },
+  "F7EA": {
+   "name": "explosion_step3",
+   "doc": [
+    "Explosion step 3: codes $EE/$FE."
+   ]
+  },
+  "F7FA": {
+   "name": "explosion_step4",
+   "doc": [
+    "Explosion step 4: back to one sprite, code $58,$27 at $0F32, flags $68."
+   ]
+  },
+  "F80E": {
+   "name": "explosion_step5",
+   "doc": [
+    "Explosion step 5: code $5C at $0F32."
+   ]
+  },
+  "F819": {
+   "name": "explosion_step6",
+   "doc": [
+    "Explosion step 6: $F8 at $0F30 (a countdown to 0)."
+   ]
+  },
+  "A000": {
+   "name": "mark_patterns",
+   "doc": [
+    "Challenging-stage mark patterns: 8 pointers to lists of tile addresses (>= $1000: other bank); also the start of the ROM checksum."
+   ]
+  },
+  "AADA": {
+   "name": "demo_script_1",
+   "doc": [
+    "Demo input script (stage 1 demo): bytes = stick << 1 | fire, each held for the duration byte $100 further on; $F0 ends the demo."
+   ]
+  },
+  "ACBC": {
+   "name": "demo_script_2",
+   "doc": [
+    "Demo input script of the stage-2 (challenging) demo, same format as demo_script_1."
+   ]
+  },
+  "B070": {
+   "name": "hiscore_screen_text",
+   "doc": [
+    "TOP 5 screen: (tile address, string pointer) pairs, 0 ends."
+   ]
+  },
+  "B164": {
+   "name": "hiscore_staff_text",
+   "doc": [
+    "Staff screen of the JNIWAR name: (tile address, string pointer) pairs, 0 ends."
+   ]
+  },
+  "B155": {
+   "name": "str_jniwar",
+   "doc": [
+    "The secret name \"JNIWAR  28  OO\" compared by hiscore_enter_name."
+   ]
+  },
+  "B418": {
+   "name": "alphabet_letters",
+   "doc": [
+    "Name-entry alphabet of the name field; the byte 2 before it is its terminator index."
+   ]
+  },
+  "B437": {
+   "name": "alphabet_digits",
+   "doc": [
+    "Name-entry alphabet of the age field."
+   ]
+  },
+  "B445": {
+   "name": "alphabet_blood",
+   "doc": [
+    "Name-entry alphabet of the blood-type field (\"ABO ?\")."
+   ]
+  },
+  "B6BA": {
+   "name": "formation_sprite_ptrs",
+   "doc": [
+    "load_formation_sprites: pointers by $106E to 9 sprite-code words."
+   ]
+  },
+  "CA36": {
+   "name": "logo_colours",
+   "doc": [
+    "Title logo code/colour words by frame_counter & $1E."
+   ]
+  },
+  "CF41": {
+   "name": "player_limits",
+   "doc": [
+    "player_xmin / player_xmax pairs by fighter_count."
+   ]
+  },
+  "D283": {
+   "name": "dual_shot_offsets",
+   "doc": [
+    "Y offsets of the dual-fighter shot copies (signed)."
+   ]
+  },
+  "D3A1": {
+   "name": "boss_bonus_sprites",
+   "doc": [
+    "Code/colour words of the boss bonus sprite by boss_bonus_idx (no end marker)."
+   ]
+  },
+  "D907": {
+   "name": "fighter_offset_table",
+   "doc": [
+    "fighter_offsets words by fighter_count."
+   ]
+  },
+  "EA11": {
+   "name": "button_digits_good",
+   "doc": [
+    "Digit cycle of the \" GOOD \" bonus (kind 4)."
+   ]
+  },
+  "EA19": {
+   "name": "button_digits_gaplus",
+   "doc": [
+    "Digit cycle of the \"GAPLUS\" bonus (kind 1)."
+   ]
+  },
+  "EB94": {
+   "name": "event_stages",
+   "doc": [
+    "Stages with mode-5 starfield events."
+   ]
+  },
+  "EE84": {
+   "name": "stage_attack_counts",
+   "doc": [
+    "load_stage_params: 4 bytes per record to $1036-$1039 (moving-slot counts for task_attack_timer)."
+   ]
+  },
+  "EEA4": {
+   "name": "stage_trio_thresholds",
+   "doc": [
+    "load_stage_params: 8 bytes per record to $103A-$1041 (trio launch timer thresholds)."
+   ]
+  },
+  "EEC4": {
+   "name": "stage_group_thresholds",
+   "doc": [
+    "load_stage_params: 8 bytes per record to $1042-$1049 and $104A-$1051 (group launch thresholds)."
+   ]
+  },
+  "EFC4": {
+   "name": "stage_shot_limit",
+   "doc": [
+    "load_stage_params: words to $1064 (end of the enemy shot slots)."
+   ]
+  },
+  "F266": {
+   "name": "stage_dive_paths",
+   "doc": [
+    "load_stage_params: 8 records of 4 path pointers to $1052-$1059 (the dive paths, sub path_XXXX streams)."
+   ]
+  },
+  "F486": {
+   "name": "stage_tables_by_difficulty",
+   "doc": [
+    "load_stage_params: table pointers by difficulty ($1004), signed index."
+   ]
+  },
+  "F496": {
+   "name": "stage_speeds",
+   "doc": [
+    "load_stage_params: bytes for $100F-$1011 (+1 at difficulty >= 5)."
+   ]
+  },
+  "F91D": {
+   "name": "shot_blink_codes",
+   "doc": [
+    "Blink codes of the enemy shots by (frame_counter & $0F) >> 2."
    ]
   }
  },
@@ -585,9 +1397,9 @@
   "C003": "clear and mask this IRQ",
   "C006": "operator stats (SW1:6)",
   "C011": "DSW service switch",
-  "C01A": "credits tens nibble >= 10?",
+  "C01A": "coin jam test. QUIRK: 16-bit SUBD #$0A0A: jams on tens >= $B, or tens $A with units >= $A",
   "C028": "round advance DIP",
-  "C031": "IRQ latch on again",
+  "C031": "IRQ latch on again; QUIRK: A goes to the IRQ latch: 0 normally, $20 after round_select",
   "C037": "flip flag -> hardware",
   "C055": "credit added this frame?",
   "C05C": "coin sound",
@@ -613,7 +1425,54 @@
   "D150": "wait for the next frame",
   "D152": "reset the stack",
   "FEB8": "A = game mode, B = task",
-  "FEBE": "run the task"
+  "FEBE": "run the task",
+  "B71B": "QUIRK: D = $000B after the INCBs: the RAM test's first offset (15 passes)",
+  "B7E2": "BUG: the code is in B but $B7F4 stores A = $20 (a blank)",
+  "B823": "BUG: error digit in B, but A = $20 is stored at $02E6",
+  "B835": "BUG: error digit in B, but A = $20 is stored at $02E6",
+  "B855": "BUG: error digit in B, but A = $20 is stored at $02E6",
+  "B22B": "QUIRK: the name \"JNIWAR\" shows the staff text and hangs for good",
+  "C045": "BUG: tested after LDA ,X+: the last slot $188C is read but never tested",
+  "D423": "QUIRK: re-test the same shot: a formation hit does not use it up",
+  "DE9A": "QUIRK: dead load (A is overwritten before use)",
+  "DC36": "QUIRK: CWAI skipped by the BRA at $DC34: unreached",
+  "E375": "BUG: compares the whole $1166 with 4 where $E36x used $1166 & 7",
+  "EC9F": "QUIRK: BRN never branches: a disabled jump to the step",
+  "FB65": "BUG: STA, not STB: with bonus_every 0 P2 stores bonus_second as the step, and the next pass jumps through code",
+  "DF3B": "QUIRK: skips $6051; with demo sounds off $11, $16, $17, $19-$1F keep playing",
+  "FC71": "the sub CPU moves its task index; wait until it is 0 or $1B",
+  "FC81": "(tile address, RAM address) pairs, 8 bytes each; a 0 tile address ends the list",
+  "E016": "56XX command 1 (switches), arg 9 = F",
+  "E022": "tilemap = $00,$20 pairs. 15 cycles per word; each store lands in the frame it starts in",
+  "E02C": "clear $0400-$1FFF. LDY reads $7C00 and $7C01: two watchdog kicks per word. 22 cycles per word; the store starts 7 cycles into the iteration",
+  "E076": "args 9-15 = F on both chips, interleaved. 20 cycles per pass",
+  "E0CC": "the sound and sub CPUs, running now, poll these: timing points",
+  "E0EE": "15 cycles a pass; every byte written is an IRQ-off latch write",
+  "E111": "the switch nibbles to boot_switches $1006-$1009 (22 cycles a pass; the store starts 8 cycles in)",
+  "E1E4": "FRESET off",
+  "E1E9": "coinage to 56XX args 9-12",
+  "F5DC": "the slot starts at step 1",
+  "F6A1": "the borrow of the SUBB",
+  "F73D": "player_y",
+  "E362": "either fire button",
+  "E3EA": "wait for vblank",
+  "E40A": "16-bit 2 * $1164",
+  "EA4B": "done after entry 0",
+  "EA50": "D = B * 2 (9 bits); the rorb after ldx d,x restores B (C is 1 after coma, as after aslb)",
+  "EB53": "wait for vblank",
+  "F4B1": "signed offset",
+  "F4C5": "4 bytes to $1036",
+  "F4DC": "8 bytes to $103A",
+  "FEB0": "the sub CPU polls $0800",
+  "C4F6": "then each string going right, its attribute copied from the tile one row down: lda ,u+ / beq / sta ,x / lda $0420,x / sta $0400,x / leax -$20,x / bra",
+  "D92F": "player X / 2 (bit 8 in $1E01 bit 0); box X/2 + 3 .. -3, Y + 6 .. -6 (8-bit)",
+  "D2AF": "the shot's Y/X in the $1600 bank",
+  "D2F9": "no clamp",
+  "D7C0": "then adda #$0A",
+  "CE76": "ROLA takes the carry of CMPA #$A3 (A < $A3), not the bit RORA shifted out: INCA leaves C alone",
+  "B526": "not in the TOP 5",
+  "B34F": "the OLD value indexes",
+  "BDA8": "a non-local jump: the foreground driver starts reset_main (which reloads S) in our place"
  },
  "blocks": {
   "E013": [
@@ -793,6 +1652,259 @@
   }
  ],
  "ram": {
+  "1000": {
+   "name": "lives_setting",
+   "comment": "from DSW"
+  },
+  "1001": {
+   "name": "bonus_first",
+   "comment": "BCD x 10000"
+  },
+  "1002": {
+   "name": "bonus_second",
+   "comment": "bonus life: second threshold, BCD x 10000"
+  },
+  "1003": {
+   "name": "bonus_every",
+   "comment": "bonus life: every further one, BCD x 10000 (0 = none)"
+  },
+  "1004": {
+   "name": "difficulty",
+   "comment": "0-7 from DSW"
+  },
+  "1005": {
+   "name": "cabinet",
+   "comment": "62XX bit 2: upright"
+  },
+  "1006": {
+   "name": "boot_switches",
+   "size": 4,
+   "comment": "56XX mode 1 nibbles at boot"
+  },
+  "1015": {
+   "name": "frame_hi",
+   "comment": "saturates at $FF"
+  },
+  "1016": {
+   "name": "frame_counter",
+   "comment": "+1 per main IRQ; also the game's randomness"
+  },
+  "1019": {
+   "name": "fire_held",
+   "comment": "fire button held (edge detection for task_player_fire)"
+  },
+  "1023": {
+   "name": "ready_timer_p1",
+   "size": 1,
+   "comment": "READY message timer of P1"
+  },
+  "1024": {
+   "name": "ready_timer_p2",
+   "size": 1,
+   "comment": "READY message timer of P2"
+  },
+  "1025": {
+   "name": "coinage_a",
+   "size": 2,
+   "comment": "coins, credits"
+  },
+  "1027": {
+   "name": "coinage_b",
+   "size": 2,
+   "comment": "coins, credits"
+  },
+  "1029": {
+   "name": "attract_timer",
+   "comment": "+$20 per attract pass"
+  },
+  "1030": {
+   "name": "main_task",
+   "comment": "main scheduler task index"
+  },
+  "1032": {
+   "name": "player_speed",
+   "comment": "fighter movement speed"
+  },
+  "1035": {
+   "name": "stage",
+   "comment": "effective stage (< 60)"
+  },
+  "1036": {
+   "name": "stage_params",
+   "size": 36,
+   "comment": "load_stage_params: $1036 attack counts, $103A trio thresholds, $1042/$104A group thresholds, $1052 dive paths"
+  },
+  "1066": {
+   "name": "boss_bonus_idx",
+   "size": 1,
+   "comment": "index into boss_bonus_sprites, +1 per boss hit"
+  },
+  "1076": {
+   "name": "shots_to_clear",
+   "size": 1,
+   "comment": "shots that hit this pass: b0 slot 1, b1 slot 2 (stored, not OR-ed)"
+  },
+  "1078": {
+   "name": "player_xmin",
+   "comment": "leftmost fighter X (player_limits)"
+  },
+  "1079": {
+   "name": "player_xmax",
+   "comment": "rightmost fighter X (player_limits)"
+  },
+  "1104": {
+   "name": "lives_p1",
+   "comment": "player 1 reserve lives"
+  },
+  "1105": {
+   "name": "lives_p2",
+   "comment": "player 2 reserve lives"
+  },
+  "1106": {
+   "name": "stage_p1",
+   "comment": "0-based"
+  },
+  "1107": {
+   "name": "stage_p2",
+   "comment": "player 2 stage, 0-based"
+  },
+  "1108": {
+   "name": "effect_request",
+   "size": 1,
+   "comment": "effect spawn requests pending (task_spawn_effect)"
+  },
+  "1109": {
+   "name": "effect_pos",
+   "size": 2,
+   "comment": "position (Y, X) of the requested effect"
+  },
+  "1110": {
+   "name": "explosion_step",
+   "size": 1,
+   "comment": "player explosion step (tbl_F6FC)"
+  },
+  "1112": {
+   "name": "boss_chain",
+   "size": 1,
+   "comment": "boss hit chain: 1, doubled per boss hit up to $40"
+  },
+  "1113": {
+   "name": "hit_points",
+   "size": 1,
+   "comment": "score multiplier of the last hit (boss_chain, or 1-4 by row)"
+  },
+  "1124": {
+   "name": "bonus_step_p1",
+   "size": 1,
+   "comment": "bonus life step of P1 (bonus_steps_p1)"
+  },
+  "1125": {
+   "name": "bonus_step_p2",
+   "size": 1,
+   "comment": "bonus life step of P2 (bonus_steps_p2)"
+  },
+  "1130": {
+   "name": "p2_saved_mode",
+   "size": 1,
+   "comment": "player 2's game_mode saved at a turn switch"
+  },
+  "1131": {
+   "name": "boss_chain_timer",
+   "size": 1,
+   "comment": "$20 after a boss hit, counts down; at 0 the chain restarts"
+  },
+  "1160": {
+   "name": "results_step",
+   "comment": "results screen step (results_steps)"
+  },
+  "1161": {
+   "name": "results_blink",
+   "size": 1,
+   "comment": "results screen: blink counter"
+  },
+  "1162": {
+   "name": "results_hits_left",
+   "size": 1,
+   "comment": "results screen: hit markers still to draw"
+  },
+  "1163": {
+   "name": "results_hits100",
+   "size": 1,
+   "comment": "results screen: 100-point hits (BCD)"
+  },
+  "1164": {
+   "name": "results_count",
+   "size": 1,
+   "comment": "hits counted in the challenging stage / results"
+  },
+  "1165": {
+   "name": "clear_delay",
+   "size": 1,
+   "comment": "frames before the next mode once the stage is empty"
+  },
+  "1166": {
+   "name": "results_bonus_kind",
+   "size": 1,
+   "comment": "bonus kind 0-7 (BONUS, GAPLUS, DOUBLE, ...)"
+  },
+  "1167": {
+   "name": "results_bcd_tmp",
+   "size": 1,
+   "comment": "results screen: BCD scratch"
+  },
+  "1169": {
+   "name": "results_earnings",
+   "size": 1,
+   "comment": "results screen: earnings (BCD hundreds)"
+  },
+  "1170": {
+   "name": "star_dir_flags",
+   "size": 1,
+   "comment": "starfield direction mode for irq_starfield (0-2); alias event_star_mode"
+  },
+  "1171": {
+   "name": "bonus_kind_p1",
+   "size": 1,
+   "comment": "player 1's challenging pattern / bonus kind"
+  },
+  "1172": {
+   "name": "bonus_kind_p2",
+   "size": 1,
+   "comment": "player 2's challenging pattern / bonus kind"
+  },
+  "1175": {
+   "name": "bonus_ship_out",
+   "size": 1,
+   "comment": "the bonus ship has appeared this stage"
+  },
+  "1180": {
+   "name": "p2_out_flag",
+   "size": 1,
+   "comment": "player 2 is out of lives"
+  },
+  "1600": {
+   "name": "player_y",
+   "comment": "sprite shadow bank 2, slot 0"
+  },
+  "1601": {
+   "name": "player_x",
+   "comment": "fighter X, low 8 bits (bit 8 in $1E01)"
+  },
+  "1860": {
+   "name": "formation_flags",
+   "size": 45,
+   "comment": "b0: slot occupied"
+  },
+  "6040": {
+   "name": "snd_request",
+   "size": 32,
+   "comment": "sound n: main writes 1 (sound: boot handshake at +0)"
+  },
+  "6060": {
+   "name": "snd_active",
+   "size": 32,
+   "comment": "sound n started"
+  },
   "0800": {
    "name": "sub_handshake",
    "comment": "boot: $11 main->sub, $22 sub done; $33 at game start"
@@ -817,13 +1929,16 @@
    "comment": "name entry: tile address"
   },
   "09A4": {
-   "name": "entry_fire_latch"
+   "name": "entry_fire_latch",
+   "comment": "name entry: fire edge latch"
   },
   "09A5": {
-   "name": "entry_timer"
+   "name": "entry_timer",
+   "comment": "name entry: time left"
   },
   "09A6": {
-   "name": "entry_rank"
+   "name": "entry_rank",
+   "comment": "name entry: rank of the new entry, counted down while shifting"
   },
   "09A7": {
    "name": "entry_music_ptr",
@@ -868,7 +1983,8 @@
    "comment": "1 = attract mode / demo game"
   },
   "09F5": {
-   "name": "demo_fire"
+   "name": "demo_fire",
+   "comment": "demo fire button state"
   },
   "09F8": {
    "name": "clock_frames",
@@ -893,71 +2009,22 @@
   },
   "0C00": {
    "name": "var_0C00",
-   "size": 2
+   "size": 2,
+   "comment": "$0C00-$0C03: written only by the dead code at $D04C"
   },
   "0E00": {
    "name": "sprite_shadow_1",
    "size": 308,
    "comment": "code/colour, 154 sprites; +$0800 Y/X, +$1000 flags"
   },
-  "1000": {
-   "name": "lives_setting",
-   "comment": "from DSW"
-  },
-  "1001": {
-   "name": "bonus_first",
-   "comment": "BCD x 10000"
-  },
-  "1002": {
-   "name": "bonus_second"
-  },
-  "1003": {
-   "name": "bonus_every"
-  },
-  "1004": {
-   "name": "difficulty",
-   "comment": "0-7 from DSW"
-  },
-  "1005": {
-   "name": "cabinet",
-   "comment": "62XX bit 2: upright"
-  },
-  "1006": {
-   "name": "boot_switches",
-   "size": 4,
-   "comment": "56XX mode 1 nibbles at boot"
-  },
   "100A": {
-   "name": "var_100A",
-   "comment": "service: sound number; stage start: temp"
-  },
-  "1015": {
-   "name": "frame_hi",
-   "comment": "saturates at $FF"
-  },
-  "1016": {
-   "name": "frame_counter",
-   "comment": "+1 per main IRQ; also the game's randomness"
-  },
-  "1019": {
-   "name": "fire_held"
-  },
-  "1025": {
-   "name": "coinage_a",
-   "size": 2,
-   "comment": "coins, credits"
-  },
-  "1027": {
-   "name": "coinage_b",
-   "size": 2,
-   "comment": "coins, credits"
-  },
-  "1029": {
-   "name": "attract_timer",
-   "comment": "+$20 per attract pass"
+   "name": "stage_text_timer",
+   "size": 1,
+   "comment": "stage start text timer; service mode: the sound-test number (was var_100A)"
   },
   "102A": {
-   "name": "attract_step"
+   "name": "attract_step",
+   "comment": "attract timer high byte"
   },
   "102B": {
    "name": "attract_phase",
@@ -972,28 +2039,12 @@
    "comment": "0 = P1, 1 = P2"
   },
   "102E": {
-   "name": "two_players"
+   "name": "two_players",
+   "comment": "1 = two-player game"
   },
   "102F": {
    "name": "game_mode",
    "comment": "scheduler mode 0-9 (both CPUs)"
-  },
-  "1030": {
-   "name": "main_task",
-   "comment": "main scheduler task index"
-  },
-  "1032": {
-   "name": "player_speed"
-  },
-  "1035": {
-   "name": "stage",
-   "comment": "effective stage (< 60)"
-  },
-  "1078": {
-   "name": "player_xmin"
-  },
-  "1079": {
-   "name": "player_xmax"
   },
   "107A": {
    "name": "sub_task",
@@ -1004,58 +2055,180 @@
    "comment": "$11 = sub done, $22 = main done"
   },
   "10D1": {
-   "name": "player_step"
+   "name": "player_step",
+   "comment": "fighter step per frame"
   },
   "10D2": {
-   "name": "shot_speed"
+   "name": "shot_speed",
+   "comment": "shot Y step per frame"
   },
   "10D3": {
    "name": "shot_slots_end",
-   "size": 2
+   "size": 2,
+   "comment": "end of the player shot slots ($0EA6, or $0EA8)"
   },
   "10DB": {
-   "name": "dual_fighter"
-  },
-  "1104": {
-   "name": "lives_p1"
-  },
-  "1105": {
-   "name": "lives_p2"
-  },
-  "1106": {
-   "name": "stage_p1",
-   "comment": "0-based"
-  },
-  "1107": {
-   "name": "stage_p2"
-  },
-  "1160": {
-   "name": "results_step"
+   "name": "dual_fighter",
+   "comment": "dual fighter active"
   },
   "11FF": {
-   "name": "hiscore_step"
+   "name": "hiscore_step",
+   "comment": "mode 9 step (hiscore_steps)"
   },
-  "1600": {
-   "name": "player_y",
-   "comment": "sprite shadow bank 2, slot 0"
+  "09A0": {
+   "name": "entry_blank_ptr",
+   "size": 2,
+   "comment": "name entry: 3 cells blanked a frame once the cursor passes the last field"
   },
-  "1601": {
-   "name": "player_x"
+  "116C": {
+   "name": "entry_char_index",
+   "size": 1,
+   "comment": "name entry: index into the current field's alphabet"
   },
-  "1860": {
-   "name": "formation_flags",
-   "size": 45,
-   "comment": "b0: slot occupied"
+  "116D": {
+   "name": "entry_repeat",
+   "size": 1,
+   "comment": "name entry: stick auto-repeat delay (8 frames)"
   },
-  "6040": {
-   "name": "snd_request",
-   "size": 32,
-   "comment": "sound n: main writes 1 (sound: boot handshake at +0)"
+  "117A": {
+   "name": "logo_anim_step",
+   "size": 1,
+   "comment": "title logo animation step 0-3 (tbl_C9C9)"
   },
-  "6060": {
-   "name": "snd_active",
-   "size": 32,
-   "comment": "sound n started"
+  "10D9": {
+   "name": "player_frozen",
+   "size": 1,
+   "comment": "non-zero: the player cannot move (capture, effects)"
+  },
+  "10DC": {
+   "name": "fighter_count",
+   "size": 1,
+   "comment": "dual-fighter sprites in use ($1EC3-$1ECD), 0-5"
+  },
+  "10DD": {
+   "name": "fighter_offsets",
+   "size": 2,
+   "comment": "formation hitbox offsets for fighter_count (dat_D907)"
+  },
+  "10C2": {
+   "name": "shot_ptr",
+   "size": 2,
+   "comment": "task_shot_hits: pointer to the shot flag being tested"
+  },
+  "10C4": {
+   "name": "slot_index",
+   "size": 1,
+   "comment": "task_shot_hits: formation slot counter"
+  },
+  "10C5": {
+   "name": "hit_diving",
+   "size": 1,
+   "comment": "task_shot_hits: the hit enemy was diving (type for $110B)"
+  },
+  "10C6": {
+   "name": "hitbox",
+   "size": 4,
+   "comment": "task_shot_hits: shot box y max, y min, x max, x min; alias hit_box"
+  },
+  "10CA": {
+   "name": "hit_xhi",
+   "size": 1,
+   "comment": "task_shot_hits: the shot's X bit 8 (screen half)"
+  },
+  "112D": {
+   "name": "formation_end",
+   "size": 2,
+   "comment": "end of the formation scan ($188D after stage start)"
+  },
+  "10FE": {
+   "name": "player_dying",
+   "size": 1,
+   "comment": "non-zero while the player dies (sounds gated)"
+  },
+  "110F": {
+   "name": "player_exploding",
+   "size": 1,
+   "comment": "the player explosion is running; alias player_hit"
+  },
+  "1C30": {
+   "name": "p1_saved_formation",
+   "size": 47,
+   "comment": "player 1's formation flags saved at a turn switch"
+  },
+  "1C60": {
+   "name": "p2_saved_formation",
+   "size": 47,
+   "comment": "player 2's formation flags saved at a turn switch"
+  },
+  "112F": {
+   "name": "p1_saved_mode",
+   "size": 1,
+   "comment": "player 1's game_mode saved at a turn switch"
+  },
+  "117F": {
+   "name": "p1_out_flag",
+   "size": 1,
+   "comment": "player 1 is out of lives"
+  },
+  "116A": {
+   "name": "results_timer",
+   "size": 1,
+   "comment": "results screen: step timer"
+  },
+  "116B": {
+   "name": "results_hits200",
+   "size": 1,
+   "comment": "results screen: 200-point hits (BCD)"
+  },
+  "115B": {
+   "name": "results_delay",
+   "size": 1,
+   "comment": "results screen: frames before the next step"
+  },
+  "116E": {
+   "name": "event_step",
+   "size": 1,
+   "comment": "stage event step (tbl_EABA / tbl_EB82)"
+  },
+  "116F": {
+   "name": "event_timer",
+   "size": 1,
+   "comment": "frames within the event step"
+  },
+  "10AB": {
+   "name": "ready_timer",
+   "size": 1,
+   "comment": "the current player's ready timer (copy of $1023/$1024)"
+  },
+  "112A": {
+   "name": "ready_active",
+   "size": 1,
+   "comment": "1 while READY counts; also $55 = formation attacks allowed (sub $B385)"
+  },
+  "09FF": {
+   "name": "stats_blank_count",
+   "size": 1,
+   "comment": "operator stats: frame counter, blanks the text every 8th"
+  },
+  "117B": {
+   "name": "next_bonus_p1",
+   "size": 2,
+   "comment": "P1's next bonus-life score (BCD)"
+  },
+  "117D": {
+   "name": "next_bonus_p2",
+   "size": 2,
+   "comment": "P2's next bonus-life score (BCD)"
+  },
+  "110C": {
+   "name": "effect_step",
+   "size": 3,
+   "comment": "step of effect slots 0-2 (0 = free)"
+  },
+  "110B": {
+   "name": "effect_flags",
+   "size": 1,
+   "comment": "flags ($80 | type) of the requested effect"
   }
  }
 }

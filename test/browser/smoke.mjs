@@ -16,9 +16,9 @@
  *      Sound: after coin + start the page must have sent the worklet
  *      register images with a voice at non-zero volume, and the worklet
  *      must report non-silent output samples.
- *   3. `?engine=port`: "port not ready yet" with a button to the ROM
- *      version (screenshots/browser-port.png); the AI control is enabled
- *      there; the button switches to the ROM and frames run.
+ *   3. `?engine=port`: the port runs into attract mode with no status
+ *      message (screenshots/browser-port.png); the AI control is enabled
+ *      there.
  *   4. Layout at 480 px and 1280 px wide (screenshots/browser-480.png,
  *      browser-1280.png): the key legend is one line, nothing scrolls
  *      sideways, and "?" opens the full key list.
@@ -279,27 +279,19 @@ async function main() {
       await cdp.send('Target.closeTarget', { targetId: page.targetId });
     }
 
-    // --------------------------------- 3. the port: not ready yet, for now
+    // ------------------------ 3. the port: runs, into attract mode
     {
       const { page, errors } = await openPage(cdp, `${server.url}index.html?engine=port`);
       const STATUS = `(() => { const s = document.getElementById('status');
-        const b = document.getElementById('statusaction');
-        return { shown: !s.hidden, text: s.textContent.trim(),
-          button: b.hidden ? '' : b.textContent }; })()`;
-      const status = await waitFor(page, STATUS,
-        (v) => v.shown && /not ready/.test(v.text), 10000, 'port status');
-      if (status.button === '') fail('port: no button to the ROM version');
+        return { shown: !s.hidden, text: s.textContent.trim() }; })()`;
+      await waitFor(page, FRAME, (v) => v >= 260, 30000, 'port frames');
+      const status = await page.eval(STATUS);
+      if (status.shown) fail(`port: status shown: ${status.text.slice(0, 60)}`);
       await press(page, 'ai', 50);
       const ai = await page.eval(AI_STATE);
       if (ai.disabled || !ai.on) fail(`port mode: AI control ${JSON.stringify(ai)}`);
       await screenshot(page, 'browser-port.png');
-      console.log(`port: "${status.text.split('\n')[0].slice(0, 40)}",`
-        + ` AI toggles on`);
-      await page.eval(`document.getElementById('statusaction').click()`);
-      await waitFor(page, FRAME, (v) => v >= 60, 30000, 'ROM frames after switch');
-      const after = await page.eval(AI_STATE);
-      if (!after.disabled || after.on) fail('switched to ROM: AI still enabled');
-      console.log('port -> "play the ROM version": ROM running, AI off');
+      console.log('port: runs past frame 260 (attract), AI toggles on');
       assertNoErrors('port run', errors);
       await cdp.send('Target.closeTarget', { targetId: page.targetId });
     }

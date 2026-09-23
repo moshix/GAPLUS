@@ -12,11 +12,13 @@ are generated from the ROM bytes plus hand-written annotation files.
 | file | what |
 |------|------|
 | `tools/gen-listing.mjs` | the generator (no dependencies) |
+| `tools/js-routines.mjs` | finds the JS function (name, file) of every main/sub routine the port registers |
 | `reference/gaplus-main.asm` | main CPU, $A000-$FFFF (generated) |
 | `reference/gaplus-sub.asm` | sub CPU, $A000-$FFFF (generated) |
 | `reference/gaplus-sound.asm` | sound CPU, $E000-$FFFF (generated) |
 | `reference/symbols.json` | labels, RAM and I/O names (generated) |
 | `reference/annotations/{main,sub,sound}.json` | the human knowledge: names, comments, seeds, data formats, RAM names |
+| `reference/annotations/proposed/*.json` | names proposed by the porters (merged into main/sub.json on 2026-09-23; kept for reference) |
 | `reference/coverage/<cpu>.json` | optional: addresses the oracle saw execute |
 | `test/unit/listing.test.mjs` | checks the listings against the ROMs |
 
@@ -123,13 +125,44 @@ C3C3: 20 20 20 35 30 30 30 30  FCB    $20,$20,$20,$35,$30,$30,$30,$30
   jump the tool could not resolve, `[undocumented]`, `[unreached]`,
   `[fill ...]`, `[DP differs on another path]`.
 * Routine headers (a bar, name, doc, cross-references) precede vectors,
-  call targets, table entries, seeds and documented labels. They list
+  call targets, table entries, seeds, documented labels and every
+  address the JS port implements. They list
   `Vector:`, `Called from:` (address and containing routine),
   `Jumped to from:` and `Table entry at:`. Data labels list
   `Referenced from:`.
+* **JS cross-reference.** A routine the port registers in `MAIN_AT` /
+  `SUB_AT` has, right under its name, the file that implements it, and
+  its JS name when that differs from the label:
+
+  ```
+  ; formation_path_step  ($B0D4) ; JS: sub_B0D4
+  ; -> src/game/sub/gp2_8_formation.js
+  ```
+
+  The porters exported every routine under the listing label it had
+  when they ported it (`sub_B0D4`, `lD9CF`, ...), and other modules and
+  the tests call it by that name, so **labels may be renamed but JS
+  functions are not**: search the JS for the name after `JS:`.
+  `tools/js-routines.mjs` finds them by importing `src/game/{main,sub}/
+  index.js` (else each `gp2_*.js`) and walking `MAIN_AT`/`SUB_AT`: the
+  name is the function's key in `MAIN`/`SUB`, the file the one whose
+  source defines a function (or `const`) of that name. The listings
+  therefore change when the port adds or drops a routine (`--check`
+  reports them stale). The sound CPU has no cross-references yet.
+* **Quirks.** ROM bugs and odd behaviour the port reproduces on purpose
+  are marked `BUG:` (a mistake in the ROM: wrong register stored,
+  overrun, lost result) or `QUIRK:` (surprising but harmless or
+  deliberate) in a line comment at the instruction, or in the routine
+  header when it spans several places. Section 12 indexes them.
 * Labels: annotation names; otherwise `sub_XXXX` (routine), `lXXXX`
   (branch target), `tbl_XXXX` (dispatch table), `dat_XXXX` (referenced
-  data), `<vector>_<cpu>` for vector targets. The top of each listing has
+  data), `<vector>_<cpu>` for vector targets. Every label is unique within
+  its listing (tested). Named data tables document their format in the
+  label's doc: `path_XXXX` (sub flight-path streams, format in
+  docs/modules/sub-C.md), `heading_table` (sub $AAFF), `formation_path`
+  (sub $ADCF), `demo_script_1/2` (main $AADA/$ACBC), the stage parameter
+  tables `stage_*` (main $EE84-$F496), the string tables
+  (`hiscore_screen_text`, `str_*`, `alphabet_*`). The top of each listing has
   `EQU` lines for every hardware and RAM symbol it uses.
 
 ## 4. Annotation files (`reference/annotations/<cpu>.json`)
@@ -216,13 +249,21 @@ as a conflict (`--tables` prints them): that means an annotation is wrong.
   "sub":   {...}, "sound": {...},
   "ram":   {"game_mode": 4143, ...},
   "io":    {"IO56XX": 26624, "sub:IRQ_ON_SUB": 24577, ...},
-  "ram_comments": {"game_mode": "..."}
+  "ram_comments": {"game_mode": "..."},
+  "js": {"sub": {"B0D4": {"label": "formation_path_step",
+                          "jsName": "sub_B0D4",
+                          "file": "src/game/sub/gp2_8_formation.js"}},
+         "main": {...}}
 }
 ```
 
 Numbers are addresses. `ram` and `io` are main-CPU addresses; `io` keys
 prefixed `sub:` / `sound:` are in that CPU's space. Every label in a
 listing (including `sub_`, `l`, `tbl_`, `dat_`) is in its CPU's table.
+`js` maps each main/sub routine address the port implements (hex) to
+its listing label, the JS function name and file; tests that look a
+routine up by its JS name can use it (the main-E harness adds the JS
+names to its label table this way).
 
 ## 7. Game text encoding
 
@@ -247,7 +288,7 @@ appears, never printed, at main $DFAE and $FFD0 and sub $BF8B.
 ## 8. ROM maps
 
 Code/data split from the static trace (code bytes / data bytes):
-main 13945 / 10631 (742 unreached), sub 7723 / 16853 (353 unreached),
+main 13945 / 10631 (742 unreached), sub 7723 / 16853 (308 unreached),
 sound 957 / 7235.
 
 ### Main CPU ($A000-$FFFF)
@@ -276,9 +317,10 @@ sound 957 / 7235.
 
 | range | contents |
 |-------|----------|
-| $A000-$B013 | data: enemy flight paths and movement tables |
+| $A000-$B013 | data: flight-path streams (`path_A44B`, `path_A573`...), homing octant tables `home_octants_*`, `heading_table` ($AAFF, 180 x 4 bytes), `formation_path` ($ADCF) |
 | $B014-$BF8A | enemy movement, object state machines (`task_animate_objects`) and other tasks |
-| $BF8B-$DFFF | copyright text, then about 8 KB of path/formation data |
+| $BF8B-$BFFF | copyright text, $FF fill, checksum byte |
+| $C000-$DFFF | no code: 46 flight-path streams `path_C000`...`path_DE08` (format: docs/modules/sub-C.md), a second copyright string, checksum byte $DFEF |
 | $E000-$E17E | `reset_sub`, `irq_sub`, `task_dispatch_sub`, mode task lists |
 | $E17F-$FEEB | tasks and their tables (stage setup, formation, attacks) |
 | $FEEC-$FFFF | data, checksum byte $FFEF, vectors |
@@ -348,7 +390,9 @@ the list next frame. Tasks switch modes by writing $102F (both CPUs do).
 Modes (tentative names except where noted): 0 stage start ("PARSEC nn",
 `task_stage_start`), 1-4 stage entry phases, 5 normal play (longest
 lists; a new ship after death returns here), 6 stage clear
-(`task_stage_clear`: next stage, back to mode 0), 7 challenging stage (set by `task_stage_start` for stages 3, 8, 13, ...),
+(`task_stage_clear`: next stage, back to mode 0), 7 challenging stage
+(set by `task_stage_start` for the 0-based stage indexes 2, 7, 12, ...
+in `challenging_stages`, i.e. PARSEC 3, 8, 13, ...),
 8 challenging-stage results, 9 game over / high score entry.
 
 Outside the scheduler the main CPU runs `attract_loop` ($C417): credit
@@ -379,7 +423,8 @@ cleared at stage starts (`task_next_mode` $D15B, sub $F600): tasks use
 `frame_counter & mask` directly (sub $B9BD, $BA8E, $E34E, $EAC0, ...),
 the sub CPU indexes **its own code** at $E000 + frame_counter as a noise
 table (`object_spawn_random` $B936, like Galaga's RNG reading its task
-manager), and the main CPU mixes the stage number and a score digit
+manager; `LDA A,X` is a **signed** offset, so frame_counter $80-$FF reads
+$DF80-$DFFF, gp2-7's $FF fill and its checksum byte, not $E080-$E0FF), and the main CPU mixes the stage number and a score digit
 (`LDA <stage / ADDA score_p1` at $FE41). Everything is deterministic
 given the frame sequence, so the port needs no replay hook - but see the
 open question on when the sub reads $1016 relative to the main IRQ's
@@ -473,6 +518,41 @@ Main-CPU addresses. Main and sub share $0000-$1FFF.
 | $6380 | snd_rom_error | sound $0380 |
 | $0400 (down) | sound stack (sound S = $0400 = main $6400) | |
 
+Named from the port (docs/modules/*.md; each name has a one-line
+meaning in the annotation files, the listings' `EQU` lines and
+`symbols.json` `ram_comments`):
+
+| address | names | what |
+|---------|-------|------|
+| $09A0, $116C-$116D | entry_blank_ptr, entry_char_index, entry_repeat | name entry |
+| $09FF | stats_blank_count | operator stats |
+| $100A | stage_text_timer | also the service-mode sound-test number |
+| $1017-$101E | score_parity, seq_step, bonus_anim_idx, score_anim_step | sub bonus / score sequences |
+| $1023-$1024, $10AB, $112A | ready_timer_p1/p2, ready_timer, ready_active | READY message ($112A = $55 also allows formation attacks) |
+| $1036-$1059 | stage_params | load_stage_params: attack counts, launch thresholds, dive paths |
+| $1066, $1112-$1113, $1131 | boss_bonus_idx, boss_chain, hit_points, boss_chain_timer | boss hit chain |
+| $1071, $10F8-$10FF | refill_left, refill_* | formation refill |
+| $1074, $1114-$1118, $1176 | bonus_slots_used, bonus_obj_*, escort_step, wing_*, score_anim_done | sub sequences |
+| $1076, $10C2-$10CA | shots_to_clear, shot_ptr, slot_index, hit_diving, hitbox, hit_xhi | task_shot_hits |
+| $1081-$1082, $10AC, $10BF, $1688-$1689 | stage_setup_pass, formation_path_ptr, formation_started, formation_sprites_dirty, formation_y/x | the formation block |
+| $1096, $111D-$1120, $1132-$113E, $115A | formation_slot, object_state, bonus_state, bonus_free, challenge_step | sub objects and challenging stage |
+| $10B0-$10BD, $10C0-$10C1 | group1_*, group2_count, trio_*, obj188A_* | sub launch timers |
+| $10CD-$10DA | capture_* | capture beam |
+| $10D9-$10DE | player_frozen, fighter_count, fighter_offsets | fighter |
+| $10FE, $110F-$1110 | player_dying, player_exploding, explosion_step | death |
+| $1108-$110E | effect_request, effect_pos, effect_flags, effect_step | effects |
+| $112D, $1165 | formation_end, clear_delay | stage end |
+| $112F-$1130, $117F-$1180, $1C30, $1C60 | p1/p2_saved_mode, p1/p2_out_flag, p1/p2_saved_formation | two-player turns |
+| $115B, $1161-$116B, $1171-$1172 | results_*, bonus_kind_p1/p2 | challenging-stage results |
+| $116E-$1170, $117A | event_step, event_timer, star_dir_flags, logo_anim_step | starfield events, title logo |
+| $1124-$1125, $1175, $117B-$117E | bonus_step_p1/p2, bonus_ship_out, next_bonus_p1/p2 | bonus lives, bonus ship |
+| $1A10-$1A51 | shot_fired_flags | enemy shots |
+
+Aliases (names proposed twice): $1170 star_dir_flags = event_star_mode,
+$110F player_exploding = player_hit, $10C6 hitbox = hit_box, $100A
+stage_text_timer = var_100A; sub $FA2E task_move_enemy_shots (proposed
+task_move_bonus_objects: it moves the enemy shots $0ECE-$0EDA).
+
 ## 11. Open questions
 
 * **Modes 1-4**: what exactly distinguishes them (entry waves?). The
@@ -487,9 +567,10 @@ Main-CPU addresses. Main and sub share $0000-$1FFF.
   code, or reached through pointers held in RAM?
   The coverage input will tell.
 * **Sprite slot 0** is never written by either IRQ copy; is it used?
-* **$0C00-$0C03**, **$1E31+2n** cleared in the IRQ, many sub RAM
-  variables ($1080-$10FF), and the enemy path data format in the sub ROM
-  are not yet understood.
+* **$0C00-$0C03** (written only by the dead code at $D04C), **$1E31+2n**
+  cleared in the IRQ, and the game meaning of several sub RAM variables
+  and power-up effects (names in $1080-$11FF are inferred from the code).
+  The path stream format is understood (docs/modules/sub-C.md).
 * **Sound numbers**: which of the 26 sounds is which effect (request
   sites are in the listing as `snd_request+n`); sound 0 is the start
   tune, 3/4 the high-score music, $16 the coin sound, $15 is requested
@@ -497,3 +578,68 @@ Main-CPU addresses. Main and sub share $0000-$1FFF.
 * The sub CPU's 256 writes to **$500F** and the sound CPU's write to
   **$2007** (a watchdog kick with an odd address) at boot.
 * SW1:6 is not "unused": it enables the operator stats display.
+
+## 12. Quirk index
+
+ROM bugs and quirks the port reproduces on purpose (details: the
+routine headers and line comments of the listings, docs/modules/*.md,
+docs/oracle-notes.md section 8). B = `BUG:`, Q = `QUIRK:`.
+
+### Main CPU
+
+| addr | kind | what |
+|------|------|------|
+| $B71B / $B73C | Q | RAM test runs 15 passes, not 16 (D enters as $000B) |
+| $B7E2, $B823, $B835, $B855 | B | error digit loaded in B, A = $20 stored: errors show blank and pass $B926 |
+| $B22B | Q | the name JNIWAR shows the staff text and hangs |
+| $B304 | Q | alphabet wrap reads the byte 2 before each alphabet ($B416, $B435, $B443) |
+| $B49F | Q | rank 5 leaves entry_rank; main_task += 2 skips task_game_over_check |
+| $BD7B | Q | cross hatch ends only on a second service-coin press |
+| $BE37 | Q | easter egg hangs for good |
+| $C01A | Q | 16-bit coin-jam compare (tens >= $B, or $A with units >= $A) |
+| $C031 | Q | A to the IRQ latch: $20 after round_select |
+| $C045 | B | last formation slot $188C read but never tested |
+| $C253 | Q | update_hiscore copies from the first differing byte |
+| $C4DA ($C5D8) | B | blanking runs past the tilemap into $0840-$0868 |
+| $CAA9 ($CB00) | B | blank loop with X = $0000 |
+| $CCD0 ($CE6A, $CD78) | Q | fly-in uses stale carries; 255 markers with lives_setting 0 |
+| $D000 ($D01A) | Q | demo_stick bit 7 = carry of CMPA #$F0 |
+| $D28A, $D423 | Q | a formation hit does not use up the shot; shots_to_clear stored not OR-ed; boss_bonus_idx runs past its table |
+| $D71B | Q | PARSEC digit erase stores to $FFF0 |
+| $D915, $DA87, $DE9A, $DC36 | Q | game over: 256 frames, partial score clear, dead load, unreached CWAI |
+| $DEC1 | Q | 25+ minutes counted into $09E0 |
+| $DF27 ($DF3B) | Q | demo-sounds gate keeps $11, $16, $17, $19-$1F |
+| $E375 | B | whole $1166 compared with 4 |
+| $EC9F | Q | BRN never branches |
+| $F4A5 | Q | third lookup uses the old $1011; signed indexes |
+| $F5C4 | Q | effect request lost when all slots are busy |
+| $F673 | Q | leaves the task from inside a JSR |
+| $F921 | Q | one hit a frame; $F924-$F9CF dead |
+| $FB65 | B | STA for STB: P2 bonus step corrupt with bonus_every 0 (crash) |
+
+### Sub CPU
+
+| addr | kind | what |
+|------|------|------|
+| $B014, $B385, $B09B | Q | unbounded scans from formation_ptr: Round Advance corruption |
+| $B173 | Q | headings not range-checked (none >= $B4 in the data) |
+| $B92B | Q | object state $80 leaves the loop with 4 bytes on the stack |
+| $B93B | Q | noise read is signed: $DF80-$E07F |
+| $B98C | Q | 16-bit add: X carry into Y |
+| $BB96 | Q | dat_BCB4 search without an end marker |
+| $E18A, $E369 | Q | signed stage-table index from $106E * 2 |
+| $E1F2 | Q | formation_ptr set only in mode 2 (Round Advance) |
+| $E6F2 | Q | dead SUBB |
+| $E737 | Q | borrow of SUBB #$10 lost |
+| $E8B8 | B | stores A instead of the halved B |
+| $EA3E | Q | DECB first: 5 of 6 entries tested |
+| $EB29 | Q | endless search with no free slot |
+| $F116 | Q | never advances $1116-$1118 |
+| $F621 | Q | 8-bit ASLA: steps $1C+ jump through data |
+| $F75D | Q | slot $1F1F never tested |
+| $F8A6 | Q | free-slot search stops only on an exact match |
+| $FB9F, $FC95 | Q | launch table index overwritten: entries 0/3 only |
+| $FCE6 | Q | STB where the twin does INC $084D |
+| $FD59 | Q | reads $188B, exits before testing it |
+| $FEBE | Q | first animation frame indexed by a score byte |
+| path $F0 records | Q | back-pointers after $F0 are never read |

@@ -211,7 +211,10 @@ it uses instead:
   sub `$E34E` (`& 7`, dispatch), `$E373`/`$E3B0` (mixed into tables),
   `$EAC0` (mod 39), `$BA91`; main `$C9AE`, `$F908`, `$FE54`.
 * **The sub's ROM as noise**: `object_spawn_random $B936` reads
-  `$E000 + frame_counter` (its own reset code) for a position.
+  `$E000 + frame_counter` for a position. The offset (`LDA A,X`) is
+  signed: frame_counter $00-$7F reads its own reset code at
+  $E000-$E07F, $80-$FF reads $DF80-$DFFF (gp2-7's $FF fill and the
+  checksum byte $B7 at $DFEF).
 * Score parity: sub `$F60B`/`$F6B9` (`score_p1+1 EOR score_p2+1 & 1`).
 * Player timing and position (inputs), which change when things happen
   and therefore the frame counter values seen.

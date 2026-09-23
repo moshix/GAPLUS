@@ -1,0 +1,56 @@
+{
+  "labels": {
+    "B212": "hiscore_finish",
+    "B241": "hiscore_staff_loop",
+    "B25F": "hiscore_store",
+    "B2AE": "hiscore_leave",
+    "B331": "entry_step_char",
+    "B44B": "entry_fire",
+    "B73C": {
+      "name": "svc_ram_test",
+      "doc": [
+        "15 passes, not 16: D enters as $000B (left by the 62XX init",
+        "INCBs), so the offsets are $000B, $111C, ... $EEF9."
+      ]
+    },
+    "B7A5": "svc_sndram_test",
+    "B7F4": "svc_chip_test",
+    "B85F": "svc_rom_checksums",
+    "B8B5": "svc_release_subs",
+    "B970": "svc_dip_screen",
+    "BD7B": {
+      "name": "service_loop",
+      "doc": [
+        "Service mode loop: the service coin starts the cross hatch, which",
+        "stays until the service coin is pressed AGAIN ($BD8A waits for bit",
+        "3 of $6800 to come back); service switch off -> reset_main;",
+        "otherwise a change of switch nibble 0-2 steps the sound test",
+        "($100A) and plays it, nibble 3 only plays it."
+      ]
+    }
+  },
+  "comments": {
+    "B71B": "D = $000B after the INCBs: the RAM test's first offset",
+    "B7E2": "the code is in B but $B7F4 stores A = $20 (a blank)",
+    "B823": "error digit in B, but A = $20 is stored at $02E6",
+    "B835": "error digit in B, but A = $20 is stored at $02E6",
+    "B855": "error digit in B, but A = $20 is stored at $02E6"
+  },
+  "ram": {
+    "09A0": {
+      "name": "entry_blank_ptr",
+      "size": 2,
+      "comment": "3 cells blanked each frame once the cursor is past the last field"
+    },
+    "116C": {
+      "name": "entry_char_index",
+      "size": 1,
+      "comment": "index into the current field's alphabet"
+    },
+    "116D": {
+      "name": "entry_repeat",
+      "size": 1,
+      "comment": "stick auto-repeat delay (8 frames)"
+    }
+  }
+}

@@ -14,8 +14,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   buildAll, CPUS, ROM_LO, MAX_COL, REF, decodeText, wrapText, canonRam,
-  loadAnnotations, loadCoverage, looksLikeStrings,
+  loadAnnotations, loadCoverage, looksLikeStrings, JS_ROUTINES,
 } from '../../tools/gen-listing.mjs';
+import { ROOT } from '../../tools/romset.mjs';
 import { loadGaplus } from '../../tools/romset.mjs';
 import { disasm } from '../../tools/m6809dis.mjs';
 
@@ -27,6 +28,12 @@ const listingOf = (cpu) => /** @type {string} */ (built.files.get(join(REF, `gap
 
 /** @type {Record<string, Record<string, number>>} */
 const symbols = JSON.parse(/** @type {string} */ (built.files.get(join(REF, 'symbols.json'))));
+
+/**
+ * symbols.json `js`: per CPU, "ADDR" -> the port's function for it.
+ * @type {Record<string, Record<string, {label: string, jsName: string, file: string}>>}
+ */
+const jsSyms = JSON.parse(/** @type {string} */ (built.files.get(join(REF, 'symbols.json')))).js;
 
 /**
  * One listing line that carries ROM bytes.
@@ -141,6 +148,40 @@ test('symbols.json: shape and known entries', () => {
   const disk = join(REF, 'symbols.json');
   assert.equal(readFileSync(disk, 'utf8'), built.files.get(disk), 'symbols.json is stale');
 });
+
+for (const cpu of CPUS) {
+  test(`${cpu}: every label is unique`, () => {
+    assert.equal(built.stats[cpu].duplicates, 0, 'a name given to two addresses');
+    // Label lines ("name:") of the listing: each name once.
+    const seen = new Set();
+    for (const m of listingOf(cpu).matchAll(/^([A-Za-z_][A-Za-z0-9_]*):$/gm)) {
+      assert.ok(!seen.has(m[1]), `label ${m[1]} defined twice`);
+      seen.add(m[1]);
+    }
+    assert.equal(seen.size, Object.keys(symbols[cpu]).length);
+  });
+}
+
+for (const cpu of /** @type {const} */ (['main', 'sub'])) {
+  test(`${cpu}: every routine with a JS implementation names its JS file`, () => {
+    const js = JS_ROUTINES[cpu];
+    assert.ok(js.size > 50, 'the port registers its routines');
+    const text = listingOf(cpu);
+    const map = jsSyms[cpu];
+    for (const [addr, r] of js) {
+      const h = addr.toString(16).toUpperCase().padStart(4, '0');
+      const label = map[h]?.label;
+      assert.ok(label, `$${h} missing from symbols.json js`);
+      assert.equal(symbols[cpu][label], addr, `$${h}: label ${label}`);
+      assert.equal(map[h].jsName, r.jsName);
+      assert.ok(existsSync(join(ROOT, r.file)), `$${h}: ${r.file}`);
+      // Header: "; label  ($XXXX)[ ; JS: name]" then "; -> file".
+      const jsNote = r.jsName === label ? '' : ` ; JS: ${r.jsName}`;
+      const title = `; ${label}  ($${h})${jsNote}\n; -> ${r.file}\n`;
+      assert.ok(text.includes(title), `$${h}: header ${JSON.stringify(title)}`);
+    }
+  });
+}
 
 test('the main state machine and sound tables were found', () => {
   const main = listingOf('main');
