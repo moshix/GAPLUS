@@ -1,0 +1,21 @@
+{
+  "name": "gaplus-1984",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Routine-by-routine JavaScript port of Namco's Gaplus (1984, GP2 rev. B)",
+  "type": "module",
+  "scripts": {
+    "test": "node --test \"test/unit/*.test.mjs\" \"test/oracle/*.test.mjs\"",
+    "test:unit": "node --test \"test/unit/*.test.mjs\"",
+    "listing": "node tools/gen-listing.mjs",
+    "test:oracle": "node --test \"test/oracle/*.test.mjs\"",
+    "romdata": "node tools/gen-romdata.mjs",
+    "serve": "python3 -m http.server 8000 --bind 127.0.0.1",
+    "test:browser": "node test/browser/smoke.mjs",
+    "gen:index": "node tools/gen-index.mjs",
+    "gen:favicon": "node tools/gen-favicon.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

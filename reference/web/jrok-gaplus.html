@@ -1,0 +1,85 @@
+<html>
+
+<head>
+<meta NAME="GENERATOR" CONTENT="Microsoft FrontPage 3.0">
+<title>Gaplus Hi-Score Save</title>
+</head>
+
+<body BGCOLOR="#000000" TEXT="#FFFFFF" link="#00FF00" vlink="#00FF00">
+
+<hr ALIGN="LEFT" SIZE="1">
+
+<p align="center"><img src="../buttons/Gapship.gif" width="48" height="46" align="center"><font size="6"> Gaplus Save High-Score </font><img src="../buttons/Gapship.gif" width="48" height="46" align="center"></p>
+
+<hr ALIGN="LEFT" SIZE="1">
+
+<p><big><font face="Arial"><tt>Gaplus !&nbsp; The follow up to Galaga, a lot faster and
+harder. In my very biased opinion it's nice, but it's not Galaga.&nbsp; The boardset is a
+quite a compact multi-layered board so <big><strong>I WOULD NOT ADVISE DESOLDERING THE RAM
+CHIP</strong></big> unless you're really good at desoldering. Just cut the legs off the
+thing, desolder the remaining pins one at a time and solder in a new socket.You wouldnt
+want to damage the boardset !</tt></font></big></p>
+
+<p><big><font face="Arial"><tt>There's also a hack for Galaga 3, which was the Midway
+license of Gaplus, but I dont have a boardset so I've got no idea WHICH RAM is the one to
+replace ? If anyone can shed any light on the subject let me know.</tt></font></big></p>
+
+<p><big><font face="Arial"><tt>All three ROMs need to be changed to save the high-score
+table. </tt></font></big></p>
+
+<p><big><font face="Arial"><tt>Strange fact... if the default high-scores are set to zero,
+then the demo mode actually clocks up points ! I guess this is a 'bug' of sorts in the
+original game, this is why the default score is set to 10,000 points ( which is really
+pretty easy to get ). I've set the default scores at 5000 points.</tt></font></big></p>
+
+<p><font face="Arial"><big><big><tt><u><strong>Game Enhancements</strong></u></tt></big></big></font></p>
+
+<p><font face="Arial"><tt><big>1.&nbsp;&nbsp;&nbsp; Save high-score</big><br>
+</tt></font></p>
+
+<p><font face="Arial"><tt><big><u><strong><big>Known issues</big></strong></u></big><br>
+<br>
+<big>1. None<br>
+2. Scores start at 5,000pts.<br>
+</big></tt></font></p>
+
+<p><big><big><font face="Arial"><tt><u><strong>Upgrading</strong></u> </tt></font></big></big></p>
+
+<table border="1" width="100%" cellspacing="0">
+  <tr>
+    <td width="27%"><p align="center"><font face="Arial"><tt>The image below shows the
+    location of the ROM and RAM to be changed</tt></font></p>
+    <p><font face="Arial"><tt><img src="gapbrd.gif" alt="Gaplus Board" WIDTH="255" HEIGHT="252"></tt></font></td>
+    <td width="73%">&nbsp;<blockquote>
+      <p align="left"><big><strong><font face="Arial"><tt>You will need, 1 x 24pin socket, 3 x
+      2764 EPROMs, 1 x DS1220AB static RAM&nbsp; or M48Z02</tt></font></strong></big></p>
+    </blockquote>
+    <ol>
+      <li><font face="Arial"><tt><big>Remove RAM at location L10, if not socketed then de-solder
+        and put in a socket. <br>
+        Note: if you're not a good desolderer just cut the legs off the RAM and desolder the
+        remaining pins !</big><br>
+        <big></big></tt></font></li>
+      <li><font face="Arial"><tt><big>Replace the RAM at location L10 with the non-volatile SRAM.</big><br>
+        <big></big></tt></font></li>
+      <li><font face="Arial"><tt><big>Burn the new program ROMs onto EPROMs using the three
+        supplied images below and replace the ROMs at 8D, 8C &amp; 8B.</big><br>
+        <big> </big></tt></font></li>
+      <li><big><font face="Arial"><tt>Power up the game and hey presto, high-scores are all zero
+        to start with and will not be lost after powerdown.</tt></font></big></li>
+    </ol>
+    <p align="center"><big><font face="Arial"><tt><b>Download Modified Program ROMs</b></tt></font></big></p>
+    <div align="center"><center><table border="1" width="41%">
+      <tr>
+        <td width="100%"><p align="center"><font face="Arial"><tt>Replacement ROMs <a href="roms/gap-hsav.zip"><img src="../anims/downdisk.gif" width="49" height="40" alt="Click to DOWNLOAD" align="middle"></a></tt></font></td>
+      </tr>
+    </table>
+    </center></div></td>
+  </tr>
+</table>
+
+<hr>
+
+<p align="center"><a href="savehs.html">Go back</a></p>
+</body>
+</html>

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <meta http-equiv="Content-Style-Type" content="text/css">
+    <meta http-equiv="Content-Script-Type" content="text/javascript">
+    <link rel="stylesheet" type="text/css" href="https://arcade.vastheman.com/minimaws/static/style.css">
+    <script type="text/javascript">
+        var appurl="https://arcade.vastheman.com/minimaws/"
+        var assetsurl="https://arcade.vastheman.com/minimaws/static"
+    </script>
+    <script type="text/javascript" src="https://arcade.vastheman.com/minimaws/static/common.js"></script>
+    <script type="text/javascript" src="https://arcade.vastheman.com/minimaws/static/machine.js"></script>
+    <title>Machine: Gaplus (GP2 rev D, alternate hardware) (gaplusd)</title>
+</head>
+<body>
+<h1>Gaplus (GP2 rev D, alternate hardware)</h1>
+<table class="sysinfo">
+    <tr><th>Short name:</th><td>gaplusd</td></tr>
+    <tr><th>Is device:</th><td>No</td></tr>
+    <tr><th>Runnable:</th><td>Yes</td></tr>
+    <tr><th>Source file:</th><td><a href="https://arcade.vastheman.com/minimaws/sourcefile/namco/gaplus.cpp">namco/gaplus.cpp</a></td></tr>
+    <tr><th>Year:</th><td>1984</td></tr>
+    <tr><th>Manufacturer:</th><td>Namco</td></tr>
+    <tr><th>Parent machine:</th><td><a href="https://arcade.vastheman.com/minimaws/machine/gaplus">Gaplus (GP2 rev. B) (gaplus)</a></td></tr>
+    <tr><th>Imperfect Features:</th><td>sound, graphics</td></tr>
+</table>
+<h2 id="heading-softwarelists">Software Lists</h2>
+<table id="tbl-softwarelists">
+    <thead>
+        <tr>
+            <th>Card</th>
+            <th>Short name</th>
+            <th>Description</th>
+            <th>Status</th>
+            <th class="numeric">Total</th>
+            <th class="numeric">Supported</th>
+            <th class="numeric">Partially supported</th>
+            <th class="numeric">Unsupported</th>
+        </tr>
+    </thead>
+    <tbody>
+    </tbody>
+</table>
+<script>
+    make_table_sortable(document.getElementById("tbl-softwarelists"));
+    make_collapsible(document.getElementById("heading-softwarelists"), document.getElementById("tbl-softwarelists"));
+    if (!document.getElementById("tbl-softwarelists").tBodies[0].rows.length)
+    {
+        document.getElementById("heading-softwarelists").style.display = "none";
+        document.getElementById("tbl-softwarelists").style.display = "none";
+    }
+</script>
+<h2 id="heading-dev-refs">Devices Referenced</h2>
+<table id="tbl-dev-refs">
+    <thead>
+        <tr><th>Short name</th><th>Description</th><th>Source file</th></tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><a href="https://arcade.vastheman.com/minimaws/machine/namco62">namco62</a></td>
+            <td><a href="https://arcade.vastheman.com/minimaws/machine/namco62">Namco 62xx</a></td>
+            <td><a href="https://arcade.vastheman.com/minimaws/sourcefile/namco/namco62.cpp">namco/namco62.cpp</a></td>
+        </tr>
+        <tr>
+            <td><a href="https://arcade.vastheman.com/minimaws/machine/namco56">namco56</a></td>
+            <td><a href="https://arcade.vastheman.com/minimaws/machine/namco56">Namco 56xx I/O</a></td>
+            <td><a href="https://arcade.vastheman.com/minimaws/sourcefile/namco/namcoio.cpp">namco/namcoio.cpp</a></td>
+        </tr>
+        <tr>
+            <td><a href="https://arcade.vastheman.com/minimaws/machine/namco58">namco58</a></td>
+            <td><a href="https://arcade.vastheman.com/minimaws/machine/namco58">Namco 58xx I/O</a></td>
+            <td><a href="https://arcade.vastheman.com/minimaws/sourcefile/namco/namcoio.cpp">namco/namcoio.cpp</a></td>
+        </tr>
+        <tr>
+            <td><a href="https://arcade.vastheman.com/minimaws/machine/namco_15xx">namco_15xx</a></td>
+            <td><a href="https://arcade.vastheman.com/minimaws/machine/namco_15xx">Namco 15xx</a></td>
+            <td><a href="https://arcade.vastheman.com/minimaws/sourcefile/devices/sound/namco.cpp">devices/sound/namco.cpp</a></td>
+        </tr>
+        <tr>
+            <td><a href="https://arcade.vastheman.com/minimaws/machine/mb8843">mb8843</a></td>
+            <td><a href="https://arcade.vastheman.com/minimaws/machine/mb8843">Fujitsu MB8843</a></td>
+            <td><a href="https://arcade.vastheman.com/minimaws/sourcefile/devices/cpu/mb88xx/mb88xx.cpp">devices/cpu/mb88xx/mb88xx.cpp</a></td>
+        </tr>
+        <tr>
+            <td><a href="https://arcade.vastheman.com/minimaws/machine/gfxdecode">gfxdecode</a></td>
+            <td><a href="https://arcade.vastheman.com/minimaws/machine/gfxdecode">gfxdecode</a></td>
+            <td><a href="https://arcade.vastheman.com/minimaws/sourcefile/emu/drawgfx.cpp">emu/drawgfx.cpp</a></td>
+        </tr>
+        <tr>
+            <td><a href="https://arcade.vastheman.com/minimaws/machine/watchdog">watchdog</a></td>
+            <td><a href="https://arcade.vastheman.com/minimaws/machine/watchdog">Watchdog Timer</a></td>
+            <td><a href="https://arcade.vastheman.com/minimaws/sourcefile/devices/machine/watchdog.cpp">devices/machine/watchdog.cpp</a></td>
+        </tr>
+        <tr>
+            <td><a href="https://arcade.vastheman.com/minimaws/machine/mc6809e">mc6809e</a></td>
+            <td><a href="https://arcade.vastheman.com/minimaws/machine/mc6809e">Motorola MC6809E</a></td>
+            <td><a href="https://arcade.vastheman.com/minimaws/sourcefile/devices/cpu/m6809/m6809.cpp">devices/cpu/m6809/m6809.cpp</a></td>
+        </tr>
+        <tr>
+            <td><a href="https://arcade.vastheman.com/minimaws/machine/samples">samples</a></td>
+            <td><a href="https://arcade.vastheman.com/minimaws/machine/samples">Samples</a></td>
+            <td><a href="https://arcade.vastheman.com/minimaws/sourcefile/devices/sound/samples.cpp">devices/sound/samples.cpp</a></td>
+        </tr>
+        <tr>
+            <td><a href="https://arcade.vastheman.com/minimaws/machine/palette">palette</a></td>
+            <td><a href="https://arcade.vastheman.com/minimaws/machine/palette">palette</a></td>
+            <td><a href="https://arcade.vastheman.com/minimaws/sourcefile/emu/emupal.cpp">emu/emupal.cpp</a></td>
+        </tr>
+        <tr>
+            <td><a href="https://arcade.vastheman.com/minimaws/machine/screen">screen</a></td>
+            <td><a href="https://arcade.vastheman.com/minimaws/machine/screen">Video Screen</a></td>
+            <td><a href="https://arcade.vastheman.com/minimaws/sourcefile/emu/screen.cpp">emu/screen.cpp</a></td>
+        </tr>
+        <tr>
+            <td><a href="https://arcade.vastheman.com/minimaws/machine/speaker">speaker</a></td>
+            <td><a href="https://arcade.vastheman.com/minimaws/machine/speaker">Speaker</a></td>
+            <td><a href="https://arcade.vastheman.com/minimaws/sourcefile/emu/speaker.cpp">emu/speaker.cpp</a></td>
+        </tr>
+    </tbody>
+</table>
+<script>make_table_sortable(document.getElementById("tbl-dev-refs"));</script>
+<script>make_collapsible(document.getElementById("heading-dev-refs"), document.getElementById("tbl-dev-refs"));</script>
+</html>

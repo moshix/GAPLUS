@@ -1,0 +1,185 @@
+{
+ "cpu": "sub",
+ "default_dp": "10",
+ "header": [
+  "Sub CPU: enemy movement, formation and sprite bookkeeping. It shares",
+  "$0000-$1FFF with the main CPU but has no access to sound or I/O. Its",
+  "foreground runs the same kind of per-mode task lists as the main CPU",
+  "(game_mode $102F, task index $107A); its IRQ copies its sprites into",
+  "sprite RAM and meets the main CPU's IRQ at frame_sync ($10AF)."
+ ],
+ "labels": {
+  "E000": {
+   "name": "reset_sub",
+   "doc": [
+    "Sub CPU reset (released by the main CPU's SRESET_OFF write).",
+    "DP = $10, S = $1D80; wait for $11 in $0800 from the main CPU;",
+    "checksum $A000-$BFFF, $C000-$DFFF, $E000-$FFFF (byte sums must be",
+    "0; failures leave '6', '5', '4' in $0801, shown by the service",
+    "mode); answer $22 in $0800; 256 times write $6001 (IRQ on) and",
+    "$500F (unmapped in MAME; meaning unknown); enable interrupts and",
+    "enter the task scheduler."
+   ]
+  },
+  "E00A": "wait_main_handshake",
+  "E053": "irq_on_loop",
+  "E061": {
+   "name": "irq_sub",
+   "doc": [
+    "Sub CPU vblank IRQ.",
+    "  - acknowledge (even VINTON address = IRQ off);",
+    "  - copy the sub's sprites from the shadow buffers ($0E00-$0EE1 +",
+    "    banks $1600/$1E00; bit 7 of the flag byte = in use) into sprite",
+    "    RAM from slot 1 ($0F82) up to slot 39, mirrored when the screen",
+    "    is flipped; unused slots get Y/flags $F000 (parked off-screen);",
+    "  - frame_sync = $11 and wait for the main CPU's IRQ to answer $22",
+    "    (the two IRQ handlers meet here every frame);",
+    "  - IRQ on (odd VINTON address), RTI."
+   ]
+  },
+  "E0CA": "irq_sub_disable_rest",
+  "E0DE": "irq_sub_sync",
+  "E0EC": {
+   "name": "task_dispatch_sub",
+   "doc": [
+    "The sub CPU's scheduler: jump through",
+    "sub_mode_task_lists[game_mode][sub_task]. Tasks end with",
+    "INC <$7A / JMP task_dispatch_sub; the last one",
+    "(task_end_frame_sub) waits for the IRQ and restarts the list."
+   ]
+  },
+  "E0F9": {
+   "name": "sub_mode_task_lists",
+   "doc": [
+    "One task list per game mode 0-9 (pointers)."
+   ]
+  },
+  "E10D": "sub_tasks_mode0",
+  "E111": "sub_tasks_mode1",
+  "E115": "sub_tasks_mode2",
+  "E11D": "sub_tasks_mode3",
+  "E12F": "sub_tasks_mode4",
+  "E13F": {
+   "name": "sub_tasks_mode5",
+   "doc": [
+    "Mode 5: normal play (the longest list)."
+   ]
+  },
+  "E16B": {
+   "name": "sub_tasks_mode6",
+   "doc": [
+    "Mode 6: stage clear."
+   ]
+  },
+  "E171": {
+   "name": "sub_tasks_mode7",
+   "doc": [
+    "Mode 7: challenging stage."
+   ]
+  },
+  "E17B": "sub_tasks_mode8",
+  "E17D": "sub_tasks_mode9",
+  "E17F": {
+   "name": "task_end_frame_sub",
+   "doc": [
+    "Last task of every list: CWAI for the next IRQ, reset the stack,",
+    "restart the list."
+   ]
+  },
+  "E18A": {
+   "name": "task_stage_setup",
+   "doc": [
+    "Mode 2 task: build the stage's enemy sprites and formation state",
+    "from the stage tables (index $106E), then game_mode + 1."
+   ]
+  },
+  "BF58": {
+   "name": "task_formation_init",
+   "doc": [
+    "Mode 0 task: mark all 44 formation slots occupied and load the",
+    "formation pointers."
+   ]
+  },
+  "B90E": {
+   "name": "task_animate_objects",
+   "doc": [
+    "Run the state machines of the four objects in $111D-$1120",
+    "(sprites $0EE2, $0EEC, $0EF6, $0F00) through object_states."
+   ]
+  },
+  "B930": "object_state_call",
+  "BB1A": "object_sprites",
+  "BB22": "object_states",
+  "B936": {
+   "name": "object_spawn_random",
+   "doc": [
+    "State 1: place the object at a pseudo-random position. The sub has",
+    "no random number generator: Y is the byte of its own reset code",
+    "at $E000 + frame_counter (the ROM used as a noise table, clamped",
+    "to $20-$CF: below $20 -> $90, $D0 and up -> $60), and X is",
+    "frame_counter | $B0."
+   ]
+  },
+  "E51C": "scan_formation",
+  "BFEF": {
+   "name": "checksum_A000",
+   "doc": [
+    "Checksum adjust: the byte sum of $A000-$BFFF is 0 (tested at",
+    "boot or in the service mode)."
+   ]
+  },
+  "DFEF": {
+   "name": "checksum_C000",
+   "doc": [
+    "Checksum adjust: the byte sum of $C000-$DFFF is 0 (tested at",
+    "boot or in the service mode)."
+   ]
+  },
+  "FFEF": {
+   "name": "checksum_E000",
+   "doc": [
+    "Checksum adjust: the byte sum of $E000-$FFFF is 0 (tested at",
+    "boot or in the service mode)."
+   ]
+  },
+  "BF8B": "str_copyright"
+ },
+ "comments": {
+  "E000": "mask IRQ",
+  "E006": "sub stack below $1D80",
+  "E00A": "wait for the main CPU's $11",
+  "E015": "checksum $A000-$BFFF",
+  "E023": "'6': $A000 ROM bad",
+  "E036": "'5': $C000 ROM bad",
+  "E049": "'4': $E000 ROM bad",
+  "E04E": "handshake answer",
+  "E053": "IRQ on (odd address)",
+  "E056": "unmapped write, 256 times",
+  "E05C": "interrupts on",
+  "E061": "acknowledge (even address)",
+  "E0DE": "sub frame done",
+  "E0E2": "wait for the main CPU's IRQ",
+  "E0E8": "IRQ on again",
+  "E0EF": "A = game mode, B = task",
+  "E0F7": "run the task",
+  "E17F": "wait for the next frame",
+  "B936": "ROM bytes as noise",
+  "B939": "index = frame counter",
+  "B94F": "X from the frame counter"
+ },
+ "ram": {
+  "1086": {
+   "name": "formation_ptr",
+   "size": 2,
+   "comment": "sub: current formation slot"
+  }
+ },
+ "blocks": {},
+ "data": [
+  {
+   "addr": "BF8B",
+   "len": 30,
+   "type": "text"
+  }
+ ]
+}

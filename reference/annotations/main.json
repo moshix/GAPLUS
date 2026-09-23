@@ -1,0 +1,1061 @@
+{
+ "cpu": "main",
+ "default_dp": "10",
+ "header": [
+  "Main CPU: boot, custom I/O chips, the per-frame IRQ (sprite copy, coins,",
+  "timers, main/sub frame handshake), attract mode, the game-mode task",
+  "scheduler at $FEB5, scoring and all sound requests (the sub CPU cannot",
+  "reach the sound RAM). DP is $10 everywhere after boot."
+ ],
+ "labels": {
+  "E000": {
+   "name": "reset_main",
+   "doc": [
+    "Power-on / watchdog reset. Boot sequence:",
+    " 1. hold sub + sound CPUs in reset (SRESET), let the I/O chips run,",
+    "    mask the IRQ, DP = $10, S = $1600;",
+    " 2. 56XX command 1 (read switches) with arg F, 58XX command 0;",
+    " 3. fill the tilemap with $00,$20 pairs, clear $0400-$1FFF (kicking",
+    "    the watchdog on every word);",
+    " 4. starfield off, no flip; 62XX bytes 8-15 = 4..$0B;",
+    " 5. custom-chip check: 56XX mode 8 (sum of args 9-15 = 7 x F = $69",
+    "    -> nibbles 6,9), 58XX mode 5 (must give F,F), 62XX bytes 1-3",
+    "    must read F,E,1. A failure hangs at $E0C5 with D = $2031/2/3",
+    "    ('1'/'2'/'3' = which chip; nothing is drawn, only the code in D);",
+    " 6. release SRESET and handshake: write $11 to $6040 (sound) and",
+    "    $0800 (sub), wait until each answers $22 (their ROM checksum is",
+    "    done);",
+    " 7. write $0000 to $7820-$782F (lands on the IRQ-off latch, harmless);",
+    " 8. 56XX/58XX command 0, then 56XX mode 1 (switches) / 58XX mode 4",
+    "    (DIPs); copy switches to $1006-$1009; decode the DIP switches",
+    "    into coinage, lives, difficulty, cabinet and bonus settings;",
+    " 9. service switch on -> service_mode; else pulse FRESET, program",
+    "    the coinage into the 56XX (mode 2) and go to game_init ($C296)."
+   ]
+  },
+  "E0C5": {
+   "name": "boot_chip_error",
+   "doc": [
+    "Custom I/O chip check failed: hang (watchdog resets the board)."
+   ]
+  },
+  "E0C7": "boot_handshake",
+  "E176": "dsw_coin_a_ptrs",
+  "E186": "dsw_coin_b_ptrs",
+  "E196": "dsw_lives_table",
+  "E19A": "dsw_difficulty_table",
+  "E1A2": "dsw_bonus_ptrs",
+  "E1CA": "boot_check_service",
+  "E1DE": {
+   "name": "program_coinage",
+   "doc": [
+    "Pulse FRESET (resets the 56XX coin/credit counters), write the",
+    "coinage from $1025-$1028 to 56XX args 9-12 and run mode 2 once,",
+    "then draw the frame border tiles."
+   ]
+  },
+  "E212": {
+   "name": "fill_16_words",
+   "doc": [
+    "Store X at ,U++ sixteen times."
+   ]
+  },
+  "BE25": {
+   "name": "delay_65536",
+   "doc": [
+    "Busy wait: 65536 passes of a watchdog-kicking loop (about 26 frames).",
+    "D is preserved. Used between custom I/O chip commands at boot."
+   ]
+  },
+  "C000": {
+   "name": "irq_main",
+   "doc": [
+    "Main CPU vblank IRQ (also the SWI/FIRQ/NMI vector, never used).",
+    "  - kick the watchdog and clear/mask the IRQ latch;",
+    "  - operator stats display (DSWA SW1:6), demo-sound gate;",
+    "  - DSW service switch on -> jump to service_mode (never returns);",
+    "  - 56XX credits >= 10 in the tens nibble -> coin_jammed (hang);",
+    "  - round-advance DIP on -> round_select loop (P1 up = next stage);",
+    "  - re-enable the IRQ latch early (the CPU's I flag still masks it",
+    "    until RTI), update the play clock and the 1UP/2UP blink;",
+    "  - copy the flip flag; clear $1E31+2n for each occupied formation slot n;",
+    "  - coin inserted (56XX nibble 2): coin sound; during attract,",
+    "    abort the demo and restart attract at attract_loop (the stack is",
+    "    abandoned; attract_loop never returns);",
+    "  - copy main-owned sprites from the shadow buffers ($0EE2-$0F33 +",
+    "    banks $1600/$1E00) into sprite RAM slots 40-63, mirrored when the",
+    "    screen is flipped; park the unused slots (all 0);",
+    "  - starfield scroll direction; frame counter $1016/$1015;",
+    "  - frame rendezvous with the sub CPU: wait for $10AF = $11 (sub",
+    "    finished its frame), answer $22, RTI."
+   ]
+  },
+  "C031": "irq_main_normal",
+  "C055": "irq_check_coin",
+  "C0AB": {
+   "name": "irq_copy_sprites",
+   "doc": [
+    "Copy the main CPU's sprites (shadow $0EE2-$0F33, bit 7 of the",
+    "flag byte = in use) to sprite RAM from slot 40 ($0FD0) up."
+   ]
+  },
+  "C125": "irq_starfield",
+  "C14C": "irq_frame_count",
+  "C158": "irq_sync_sub",
+  "C163": {
+   "name": "round_select",
+   "doc": [
+    "Round-advance DIP switch: show the start stage (BCD of $1106) and let",
+    "P1 up step it; loops inside the IRQ until the switch is off."
+   ]
+  },
+  "C1B9": {
+   "name": "coin_jammed",
+   "doc": [
+    "56XX reports an impossible credit count: print COIN JAMMED on the top",
+    "row and hang (kicking the watchdog) until reset."
+   ]
+  },
+  "C1CA": "str_coin_jammed",
+  "C1D6": {
+   "name": "add_score",
+   "doc": [
+    "Add A (BCD, units of 10 points) to the current player's score",
+    "($09B0 P1 / $09B3 P2, 3 BCD bytes, least significant first), with",
+    "DAA carries; then update the high score and redraw the score as",
+    "tiles, suppressing leading zeros. Skipped while $115F is set.",
+    "In: A = BCD points."
+   ]
+  },
+  "C24F": "score_tile_ptrs",
+  "C253": {
+   "name": "update_hiscore",
+   "doc": [
+    "If the score at X beats the high score $09B6-$09B8 (most significant",
+    "byte first), copy it and redraw it at the top of the screen."
+   ]
+  },
+  "C287": {
+   "name": "bcd_hi_to_char",
+   "doc": [
+    "A = tile code of the high BCD digit of A (falls into bcd_lo_to_char)."
+   ]
+  },
+  "C28B": {
+   "name": "bcd_lo_to_char",
+   "doc": [
+    "A = tile code of the low nibble of A: '0'-'9', and 'A'-'F' above 9",
+    "(the font is ASCII-ordered)."
+   ]
+  },
+  "C296": {
+   "name": "game_init",
+   "doc": [
+    "After boot: 56XX to coin mode (4), blank the tilemap, print the",
+    "1UP / HIGH SCORE / 2UP header, enable the IRQ, run the 62XX init",
+    "sequence (modes 1, 2, 0, 3, each followed by CWAI to wait a frame),",
+    "fill the high-score table, set the default high score and turn the",
+    "starfield on; then discard pending starts and enter attract_loop."
+   ]
+  },
+  "C2D0": "str_header",
+  "C2E7": "str_header_scores",
+  "C2FC": "init_62xx",
+  "C399": "hiscore_init_table",
+  "C417": {
+   "name": "attract_loop",
+   "doc": [
+    "Attract mode main loop (also re-entered from the IRQ when a coin",
+    "arrives during the demo, and after a game). Prints CREDIT n; with",
+    "credits it goes to the push-start screen; otherwise it advances",
+    "the attract timer $1029/$102A/$102B and dispatches on",
+    "$102B & 3 through attract_phases."
+   ]
+  },
+  "C45F": "attract_phases",
+  "C467": {
+   "name": "draw_credit",
+   "doc": [
+    "Print 'CREDIT nn' on the bottom row from the 56XX BCD credit",
+    "nibbles (tens digit blank when zero)."
+   ]
+  },
+  "C48B": "str_credit",
+  "C492": {
+   "name": "attract_demo",
+   "doc": [
+    "Attract phase 1: start the demo game (attract flag $09F4 = 1)."
+   ]
+  },
+  "C49F": {
+   "name": "attract_demo2",
+   "doc": [
+    "Attract phase 3: demo game at stage index 2 with the dual fighter",
+    "sprites pre-loaded."
+   ]
+  },
+  "C4DA": {
+   "name": "push_start_1p",
+   "doc": [
+    "One credit: leave attract, show the push-start screen, allow",
+    "1P start only and wait for a start (56XX nibble 3 = credits used)."
+   ]
+  },
+  "C639": {
+   "name": "print_string_r",
+   "doc": [
+    "Print the zero-terminated string at U from tile address X going",
+    "right (X -= $20 per character). Attributes untouched."
+   ]
+  },
+  "C670": {
+   "name": "push_start_2p",
+   "doc": [
+    "Two or more credits: push-start screen for 1 or 2 players."
+   ]
+  },
+  "C811": "clear_game_vars",
+  "C854": "clear_playfield",
+  "C866": {
+   "name": "attract_phase0",
+   "doc": [
+    "Attract phase 0."
+   ]
+  },
+  "CAA9": {
+   "name": "attract_phase2",
+   "doc": [
+    "Attract phase 2."
+   ]
+  },
+  "CCD0": {
+   "name": "start_game_1p",
+   "doc": [
+    "One-player start (56XX says 1 credit used; also the demo). Sets",
+    "lives, clears scores and the playfield, places the player and the",
+    "reserve ships, plays the start tune (sound 0) and waits for it to",
+    "end, loads the demo input script when in attract mode, then enters",
+    "the game-mode scheduler (task_dispatch_sync)."
+   ]
+  },
+  "CDFF": {
+   "name": "start_game_2p",
+   "doc": [
+    "Two-player start: both players get the lives setting."
+   ]
+  },
+  "CF14": "task_count_fighters",
+  "CF4F": {
+   "name": "task_move_player",
+   "doc": [
+    "Scheduler task: move the player's ship ($1600 Y / $1601 X in the",
+    "sprite shadow) from the joystick nibble ($6804, or $6806 for player",
+    "2 on a cocktail cabinet). In the demo the stick comes from a",
+    "scripted input table (duration, stick byte) at $09F0-$09F2."
+   ]
+  },
+  "D000": {
+   "name": "demo_input",
+   "doc": [
+    "Demo: step the recorded input script; at its end ($F0) stop the",
+    "demo and return to attract_loop."
+   ]
+  },
+  "D07A": {
+   "name": "irq_timers",
+   "doc": [
+    "Called by the IRQ: play clock, 1UP/2UP blink colours."
+   ]
+  },
+  "D0C6": {
+   "name": "update_play_clock",
+   "doc": [
+    "BCD clock: $09F8 frames (0-59), $09F9 seconds, $09FA minutes,",
+    "$09FB hours (0-23). Shown by the operator stats display."
+   ]
+  },
+  "D107": "update_p1_time",
+  "D150": {
+   "name": "task_end_frame",
+   "doc": [
+    "Last entry of every task list: wait for the next IRQ (CWAI), reset",
+    "the stack, restart the current mode's list at task 0."
+   ]
+  },
+  "D15B": {
+   "name": "task_next_mode",
+   "doc": [
+    "End of mode 0: clear the frame counter, wait a frame, game_mode + 1."
+   ]
+  },
+  "D168": {
+   "name": "task_player_fire",
+   "doc": [
+    "Fire button edge (56XX nibble 5 bit 1, or the demo script): put a",
+    "shot sprite in a free slot of $0EA2..($10D3) and request the shot",
+    "sound."
+   ]
+  },
+  "D1D0": "task_move_shots",
+  "D71B": {
+   "name": "task_stage_start",
+   "doc": [
+    "Mode 0: starfield, clear per-stage state, stage number",
+    "$1035 = player stage, reduced below 60 (60+ repeat 30-59); print",
+    "'PARSEC nn' (and GAME OVER in attract mode). Challenging stages",
+    "(challenging_stages) print CHALLENGING STAGE and switch to mode 7."
+   ]
+  },
+  "D82B": "str_parsec",
+  "D845": "str_challenging",
+  "D857": "str_game_over",
+  "D860": {
+   "name": "challenging_stages",
+   "doc": [
+    "Stage indexes (0-based) of the challenging stages: 2, 7, 12, ...",
+    "(PARSEC 3, 8, 13, ...; verified on the oracle)"
+   ]
+  },
+  "DF19": {
+   "name": "sound_all_off",
+   "doc": [
+    "Clear every sound request $6040-$605F and state $6060-$607F."
+   ]
+  },
+  "DF27": {
+   "name": "sound_demo_gate",
+   "doc": [
+    "Silence the attract sounds unless the demo-sounds DIP is on (keeps",
+    "the coin sound $6056)."
+   ]
+  },
+  "DF5D": "clear_sprite_shadows",
+  "DF65": "clear_sprite_shadows_all",
+  "DFAE": "str_copyright_c",
+  "E21A": {
+   "name": "task_results",
+   "doc": [
+    "Mode 8 task: stage results screen, sub-state $1160 through",
+    "results_steps."
+   ]
+  },
+  "E223": "results_steps",
+  "E85C": {
+   "name": "print_string_attr",
+   "doc": [
+    "Print the zero-terminated string at U from tile address X going",
+    "right (X -= $20 per character), writing attribute B to each cell."
+   ]
+  },
+  "F4A5": {
+   "name": "load_stage_params",
+   "doc": [
+    "Load the stage's parameters. $1035 = stage (reduced to < 60 by",
+    "subtracting 30); tables indexed by difficulty $1004 and stage give",
+    "the enemy groups, speeds and the formation layout copied to",
+    "$1036-$1059 and $1052-$1059."
+   ]
+  },
+  "F5C4": "task_spawn_effect",
+  "F5FA": "task_animate_effects",
+  "F62F": "effect_steps",
+  "FCDF": {
+   "name": "operator_stats",
+   "doc": [
+    "Called every IRQ. With SW1:6 on (58XX $6816 bit 2, 'unused' in MAME)",
+    "and P1 fire held, show the bookkeeping counters on screen: the BCD",
+    "play clock $09FA-$09FB and the counters $09D6-$09DF. Also blanks a",
+    "column every 8 x 256 frames."
+   ]
+  },
+  "FEB0": {
+   "name": "task_dispatch_sync",
+   "doc": [
+    "Entered once per game start: tell the sub CPU ($0800 = $33), then",
+    "fall into task_dispatch."
+   ]
+  },
+  "FEB5": {
+   "name": "task_dispatch",
+   "doc": [
+    "The main CPU's game-mode scheduler. A = game_mode ($102F), B =",
+    "task index ($1030): jump through mode_task_lists[A][B]. Every task",
+    "ends with INC <$30 / JMP task_dispatch, so each frame runs the",
+    "whole list of the current mode in order; the last task",
+    "(task_end_frame) waits for the IRQ and restarts the list. Tasks",
+    "change $102F to switch modes. The sub CPU runs the same scheme on",
+    "its own lists with $102F and $107A."
+   ]
+  },
+  "FEC0": {
+   "name": "mode_task_lists",
+   "doc": [
+    "One task list per game mode 0-9 (pointers)."
+   ]
+  },
+  "FED4": {
+   "name": "tasks_mode0",
+   "doc": [
+    "Mode 0: stage start."
+   ]
+  },
+  "FEEC": "tasks_mode1",
+  "FF0A": "tasks_mode2",
+  "FF26": "tasks_mode3",
+  "FF4A": "tasks_mode4",
+  "FF6A": "tasks_mode5",
+  "FF96": {
+   "name": "tasks_mode6",
+   "doc": [
+    "Mode 6: stage clear."
+   ]
+  },
+  "FFA6": {
+   "name": "tasks_mode7",
+   "doc": [
+    "Mode 7: challenging stage."
+   ]
+  },
+  "FFC0": {
+   "name": "tasks_mode8",
+   "doc": [
+    "Mode 8: challenging stage results."
+   ]
+  },
+  "FFCA": {
+   "name": "tasks_mode9",
+   "doc": [
+    "Mode 9: high score check and name entry."
+   ]
+  },
+  "FFD0": "str_copyright",
+  "AFBE": {
+   "name": "task_hiscore_entry",
+   "doc": [
+    "Mode 9 task: high score entry, sub-state $11FF through",
+    "hiscore_steps (0 check, 1 draw screen, 2 enter name)."
+   ]
+  },
+  "AFC7": "hiscore_steps",
+  "AFCD": "hiscore_draw_screen",
+  "B304": "hiscore_enter_name",
+  "B49F": {
+   "name": "hiscore_check",
+   "doc": [
+    "Compare the player's score (tile digits) with the five table",
+    "entries at $0900 (16 bytes each), shift the lower entries down and",
+    "insert; pick the rank music (sound 3 for 1st, 4 otherwise)."
+   ]
+  },
+  "B656": "load_formation_sprites",
+  "B6F6": {
+   "name": "service_mode",
+   "doc": [
+    "Service / test mode (DSW service switch, checked at boot and in",
+    "every IRQ). Re-initialises like reset, then: RAM test $0000-$1FFF",
+    "and $6040-$63FF with rotating patterns, custom-chip check, ROM",
+    "checksums of $A000/$C000/$E000 (error digit 1-3 at tile $0306),",
+    "sub/sound handshake and their checksum results, then shows the DIP",
+    "settings and runs the sound test (stick selects, fire plays).",
+    "Leaving the switch resets through reset_main."
+   ]
+  },
+  "B77C": {
+   "name": "fill_tilemap_00_20",
+   "doc": [
+    "Fill $0000-$03FF with $00,$20 word pairs."
+   ]
+  },
+  "BA2F": {
+   "name": "print_string",
+   "doc": [
+    "Print the zero-terminated string at X to tile address U going",
+    "right (U -= $20 per character). Returns X past the terminator."
+   ]
+  },
+  "BD7B": {
+   "name": "service_loop",
+   "doc": [
+    "Service mode loop: service coin held -> crosshatch test grid until",
+    "released; service switch off -> reset_main; otherwise any change of",
+    "the stick/button nibbles steps or plays the sound test ($100A)."
+   ]
+  },
+  "BE01": "draw_test_grid",
+  "BE37": {
+   "name": "easter_egg",
+   "doc": [
+    "Hidden screen in the service mode: shown when the sound test is on",
+    "$09 with the stick up-left, or on $19 with the stick left, while",
+    "start 1 + P1 fire are held (56XX mode 1: $6801 stick, $6803 = 5).",
+    "Draws the bitmap at $BE78 as '0' tiles and hangs."
+   ]
+  },
+  "BE78": "easter_egg_bitmap",
+  "BFEF": {
+   "name": "checksum_A000",
+   "doc": [
+    "Checksum adjust: the byte sum of $A000-$BFFF is 0 (tested at",
+    "boot or in the service mode)."
+   ]
+  },
+  "DFFF": {
+   "name": "checksum_C000",
+   "doc": [
+    "Checksum adjust: the byte sum of $C000-$DFFF is 0 (tested at",
+    "boot or in the service mode)."
+   ]
+  },
+  "FFEF": {
+   "name": "checksum_E000",
+   "doc": [
+    "Checksum adjust: the byte sum of $E000-$FFFF is 0 (tested at",
+    "boot or in the service mode)."
+   ]
+  },
+  "FA7D": {
+   "name": "task_bonus_life",
+   "doc": [
+    "Extra ship check: compare the current player's score with the bonus",
+    "settings ($1001-$1003) through bonus_steps ($1124 P1 / $1125 P2)."
+   ]
+  },
+  "FA8C": "bonus_steps_p1",
+  "FB1D": "bonus_steps_p2",
+  "EAA4": {
+   "name": "task_stage_events",
+   "doc": [
+    "Mode 1 task: on the stages listed at $EACC run the stage event",
+    "steps (index $116E)."
+   ]
+  },
+  "D676": {
+   "name": "task_stage_clear",
+   "doc": [
+    "Mode 6: stage cleared. Reset the formation flags and enemy sprites,",
+    "silence, next stage for the current player, stage-clear sound 5",
+    "(sound 2 on the stages listed at $D6E8), back to mode 0."
+   ]
+  },
+  "D915": {
+   "name": "task_player_hit_check",
+   "doc": [
+    "Build a box around the player ($10C6-$10C9) and test the sprite",
+    "shadow entries $0ECE-$0F13 against it (enemy shots and enemies)."
+   ]
+  }
+ },
+ "comments": {
+  "E000": "mask IRQ",
+  "E002": "hold sub + sound CPUs in reset",
+  "E005": "I/O chips run",
+  "E008": "main IRQ off",
+  "E00F": "main stack below $1600",
+  "E013": "56XX: command 1 (switches), arg 9 = F",
+  "E019": "58XX: command 0 (nop)",
+  "E01C": "tilemap: $00,$20 pairs",
+  "E029": "clear $0400-$1FFF",
+  "E037": "wait for the chips",
+  "E03D": "starfield off",
+  "E040": "no flip",
+  "E064": "56XX mode 8 / 58XX mode 5 check",
+  "E083": "56XX sum of args must be $69",
+  "E090": "error '1': 56XX",
+  "E095": "58XX mode 5 must give F,F",
+  "E0A2": "error '2': 58XX",
+  "E0A7": "62XX must read F,E,1",
+  "E0C2": "error '3': 62XX",
+  "E0C7": "sub + sound CPUs start",
+  "E0CA": "$11: start your ROM checksum",
+  "E0D2": "wait for the sound CPU's $22",
+  "E0DD": "wait for the sub CPU's $22",
+  "E0F5": "56XX, 58XX command 0",
+  "E0FF": "56XX mode 1, 58XX mode 4",
+  "E10B": "copy the switch nibbles to $1006",
+  "E11D": "coin A setting",
+  "E130": "coin B setting",
+  "E13F": "lives setting",
+  "E14D": "difficulty",
+  "E159": "cabinet type",
+  "E160": "bonus life setting",
+  "E1CA": "service switch?",
+  "E1DE": "reset the 56XX coin counters",
+  "E1F3": "56XX mode 2: set coinage",
+  "C000": "kick the watchdog",
+  "C003": "clear and mask this IRQ",
+  "C006": "operator stats (SW1:6)",
+  "C011": "DSW service switch",
+  "C01A": "credits tens nibble >= 10?",
+  "C028": "round advance DIP",
+  "C031": "IRQ latch on again",
+  "C037": "flip flag -> hardware",
+  "C055": "credit added this frame?",
+  "C05C": "coin sound",
+  "C05F": "acknowledge the 56XX",
+  "C067": "coin during the demo: wait for the sub",
+  "C0A8": "restart attract (stack abandoned)",
+  "C14C": "frame counter",
+  "C158": "wait for the sub CPU's frame",
+  "C15E": "release it",
+  "C296": "56XX coin mode for the rest of the game",
+  "C318": "wait one frame",
+  "C38B": "discard start presses",
+  "C41F": "credits?",
+  "C434": "start pressed?",
+  "C454": "attract phase",
+  "C624": "1 credit used: 1P start",
+  "C62D": "2 credits used: 2P start",
+  "CE17": "start tune",
+  "CE7F": "wait for the tune to finish",
+  "CF07": "into the scheduler",
+  "D1B5": "shot sound",
+  "D1BB": "shot sound (dual fighter)",
+  "D150": "wait for the next frame",
+  "D152": "reset the stack",
+  "FEB8": "A = game mode, B = task",
+  "FEBE": "run the task"
+ },
+ "blocks": {
+  "E013": [
+   "Custom I/O chips: 56XX command 1, 58XX command 0."
+  ],
+  "E01C": [
+   "Clear the tilemap and all shared RAM."
+  ],
+  "E043": [
+   "62XX: bytes 8-15 = 4, 5, ..., $0B."
+  ],
+  "E064": [
+   "Chip self-check: 56XX mode 8 and 58XX mode 5 with args 9-15 = F."
+  ],
+  "E0C7": [
+   "Start the sub and sound CPUs and wait for their checksums."
+  ],
+  "E0E8": [
+   "Clear $7820-$782F (IRQ-off latch range)."
+  ],
+  "E0F5": [
+   "Read the switches and DIP switches."
+  ],
+  "E11D": [
+   "Decode the DIP switches."
+  ],
+  "C0AB": [
+   "Sprite copy: main-owned sprites to sprite RAM slots 40-63."
+  ],
+  "C0C3": [
+   "Flipped screen: mirror Y ($E0 or $D0 for 2-tall sprites) and X."
+  ],
+  "C111": [
+   "Disable the remaining slots up to $1000."
+  ],
+  "C125": [
+   "Starfield direction from the frame counter and $1170."
+  ],
+  "C163": [
+   "Round-advance DIP: show the start stage, P1 up steps it."
+  ],
+  "C2FC": [
+   "62XX init: modes 1, 2, 0, 3, one frame apart."
+  ],
+  "C35D": [
+   "High score table: default entries."
+  ],
+  "C4DA": [
+   "Credits: leave attract."
+  ],
+  "CE15": [
+   "Start tune while the ships fly in."
+  ],
+  "CEC4": [
+   "Demo input script: $AADA, or $ACBC for the stage-2 demo."
+  ],
+  "D04C": [
+   "Disassembles as code (reads $6804/$6805, updates $0C00-$0C03)",
+   "but nothing reaches it: dead code or reached through RAM."
+  ],
+  "E5DC": [
+   "Disassembles as code (prints two strings with print_string_attr)",
+   "but nothing reaches it."
+  ],
+  "F924": [
+   "Disassembles as code; F921 jumps over it: disabled routine?"
+  ]
+ },
+ "data": [
+  {
+   "addr": "E176",
+   "len": 8,
+   "type": "ptrs",
+   "per": 4,
+   "comment": "coin A: coins, credits"
+  },
+  {
+   "addr": "E17E",
+   "len": 8,
+   "type": "bytes",
+   "per": 2
+  },
+  {
+   "addr": "E186",
+   "len": 8,
+   "type": "ptrs",
+   "per": 4,
+   "comment": "coin B: coins, credits"
+  },
+  {
+   "addr": "E18E",
+   "len": 8,
+   "type": "bytes",
+   "per": 2
+  },
+  {
+   "addr": "E196",
+   "len": 4,
+   "type": "bytes",
+   "comment": "lives for DSW 0-3"
+  },
+  {
+   "addr": "E19A",
+   "len": 8,
+   "type": "bytes",
+   "comment": "difficulty for DSW 0-7"
+  },
+  {
+   "addr": "E1A2",
+   "len": 16,
+   "type": "ptrs",
+   "per": 4
+  },
+  {
+   "addr": "E1B2",
+   "len": 24,
+   "type": "bytes",
+   "per": 3,
+   "comment": "bonus life: first, second, every (x 10000, BCD)"
+  },
+  {
+   "addr": "C1CA",
+   "len": 12,
+   "type": "strings",
+   "term": "00",
+   "reverse": true
+  },
+  {
+   "addr": "C2D0",
+   "len": 23,
+   "type": "strings",
+   "term": "00",
+   "reverse": true
+  },
+  {
+   "addr": "C2E7",
+   "len": 21,
+   "type": "strings",
+   "term": "00",
+   "reverse": true
+  },
+  {
+   "addr": "C399",
+   "len": 42,
+   "type": "ptrs",
+   "per": 2,
+   "comment": "tile address, string; 0 ends"
+  },
+  {
+   "addr": "C3C3",
+   "len": 84,
+   "type": "strings",
+   "term": "00"
+  },
+  {
+   "addr": "C48B",
+   "len": 7,
+   "type": "strings",
+   "term": "00",
+   "reverse": true
+  },
+  {
+   "addr": "C24F",
+   "len": 4,
+   "type": "words",
+   "comment": "P1, P2 score tiles"
+  },
+  {
+   "addr": "DFAE",
+   "len": 32,
+   "type": "text"
+  },
+  {
+   "addr": "FFD0",
+   "len": 30,
+   "type": "text"
+  }
+ ],
+ "ram": {
+  "0800": {
+   "name": "sub_handshake",
+   "comment": "boot: $11 main->sub, $22 sub done; $33 at game start"
+  },
+  "0801": {
+   "name": "sub_rom_error",
+   "comment": "sub checksum error char '4'-'6'"
+  },
+  "0900": {
+   "name": "hiscore_table",
+   "size": 80,
+   "comment": "5 x 16: score as 8 tile digits"
+  },
+  "0950": {
+   "name": "hiscore_names",
+   "size": 80,
+   "comment": "5 x 16: 14 name characters"
+  },
+  "09A2": {
+   "name": "entry_cursor",
+   "size": 2,
+   "comment": "name entry: tile address"
+  },
+  "09A4": {
+   "name": "entry_fire_latch"
+  },
+  "09A5": {
+   "name": "entry_timer"
+  },
+  "09A6": {
+   "name": "entry_rank"
+  },
+  "09A7": {
+   "name": "entry_music_ptr",
+   "size": 2,
+   "comment": "sound request to set"
+  },
+  "09B0": {
+   "name": "score_p1",
+   "size": 3,
+   "comment": "BCD, least significant byte first"
+  },
+  "09B3": {
+   "name": "score_p2",
+   "size": 3,
+   "comment": "BCD, least significant byte first"
+  },
+  "09B6": {
+   "name": "hiscore",
+   "size": 3,
+   "comment": "BCD, most significant byte first"
+  },
+  "09D6": {
+   "name": "stats_counters",
+   "size": 10,
+   "comment": "bookkeeping, shown by operator_stats"
+  },
+  "09F0": {
+   "name": "demo_timer",
+   "comment": "frames left for this demo input"
+  },
+  "09F1": {
+   "name": "demo_stick",
+   "comment": "demo joystick nibble"
+  },
+  "09F2": {
+   "name": "demo_ptr",
+   "size": 2,
+   "comment": "demo input script pointer"
+  },
+  "09F4": {
+   "name": "attract_flag",
+   "comment": "1 = attract mode / demo game"
+  },
+  "09F5": {
+   "name": "demo_fire"
+  },
+  "09F8": {
+   "name": "clock_frames",
+   "comment": "BCD play clock 0-59"
+  },
+  "09F9": {
+   "name": "clock_seconds",
+   "comment": "BCD"
+  },
+  "09FA": {
+   "name": "clock_minutes",
+   "comment": "BCD"
+  },
+  "09FB": {
+   "name": "clock_hours",
+   "comment": "BCD 0-23"
+  },
+  "09FC": {
+   "name": "p1_time",
+   "size": 3,
+   "comment": "frames, seconds, minutes"
+  },
+  "0C00": {
+   "name": "var_0C00",
+   "size": 2
+  },
+  "0E00": {
+   "name": "sprite_shadow_1",
+   "size": 308,
+   "comment": "code/colour, 154 sprites; +$0800 Y/X, +$1000 flags"
+  },
+  "1000": {
+   "name": "lives_setting",
+   "comment": "from DSW"
+  },
+  "1001": {
+   "name": "bonus_first",
+   "comment": "BCD x 10000"
+  },
+  "1002": {
+   "name": "bonus_second"
+  },
+  "1003": {
+   "name": "bonus_every"
+  },
+  "1004": {
+   "name": "difficulty",
+   "comment": "0-7 from DSW"
+  },
+  "1005": {
+   "name": "cabinet",
+   "comment": "62XX bit 2: upright"
+  },
+  "1006": {
+   "name": "boot_switches",
+   "size": 4,
+   "comment": "56XX mode 1 nibbles at boot"
+  },
+  "100A": {
+   "name": "var_100A",
+   "comment": "service: sound number; stage start: temp"
+  },
+  "1015": {
+   "name": "frame_hi",
+   "comment": "saturates at $FF"
+  },
+  "1016": {
+   "name": "frame_counter",
+   "comment": "+1 per main IRQ; also the game's randomness"
+  },
+  "1019": {
+   "name": "fire_held"
+  },
+  "1025": {
+   "name": "coinage_a",
+   "size": 2,
+   "comment": "coins, credits"
+  },
+  "1027": {
+   "name": "coinage_b",
+   "size": 2,
+   "comment": "coins, credits"
+  },
+  "1029": {
+   "name": "attract_timer",
+   "comment": "+$20 per attract pass"
+  },
+  "102A": {
+   "name": "attract_step"
+  },
+  "102B": {
+   "name": "attract_phase",
+   "comment": "b0-1 select attract_phases"
+  },
+  "102C": {
+   "name": "flip_screen",
+   "comment": "player 2 on a cocktail cabinet"
+  },
+  "102D": {
+   "name": "cur_player",
+   "comment": "0 = P1, 1 = P2"
+  },
+  "102E": {
+   "name": "two_players"
+  },
+  "102F": {
+   "name": "game_mode",
+   "comment": "scheduler mode 0-9 (both CPUs)"
+  },
+  "1030": {
+   "name": "main_task",
+   "comment": "main scheduler task index"
+  },
+  "1032": {
+   "name": "player_speed"
+  },
+  "1035": {
+   "name": "stage",
+   "comment": "effective stage (< 60)"
+  },
+  "1078": {
+   "name": "player_xmin"
+  },
+  "1079": {
+   "name": "player_xmax"
+  },
+  "107A": {
+   "name": "sub_task",
+   "comment": "sub scheduler task index"
+  },
+  "10AF": {
+   "name": "frame_sync",
+   "comment": "$11 = sub done, $22 = main done"
+  },
+  "10D1": {
+   "name": "player_step"
+  },
+  "10D2": {
+   "name": "shot_speed"
+  },
+  "10D3": {
+   "name": "shot_slots_end",
+   "size": 2
+  },
+  "10DB": {
+   "name": "dual_fighter"
+  },
+  "1104": {
+   "name": "lives_p1"
+  },
+  "1105": {
+   "name": "lives_p2"
+  },
+  "1106": {
+   "name": "stage_p1",
+   "comment": "0-based"
+  },
+  "1107": {
+   "name": "stage_p2"
+  },
+  "1160": {
+   "name": "results_step"
+  },
+  "11FF": {
+   "name": "hiscore_step"
+  },
+  "1600": {
+   "name": "player_y",
+   "comment": "sprite shadow bank 2, slot 0"
+  },
+  "1601": {
+   "name": "player_x"
+  },
+  "1860": {
+   "name": "formation_flags",
+   "size": 45,
+   "comment": "b0: slot occupied"
+  },
+  "6040": {
+   "name": "snd_request",
+   "size": 32,
+   "comment": "sound n: main writes 1 (sound: boot handshake at +0)"
+  },
+  "6060": {
+   "name": "snd_active",
+   "size": 32,
+   "comment": "sound n started"
+  }
+ }
+}

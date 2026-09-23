@@ -1,0 +1,396 @@
+<!doctype html>
+<!-- Copyright 2026 by Moshix -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Gaplus (1984)</title>
+<!-- The player's fighter, decoded from the sprite ROM by tools/gen-favicon.mjs. -->
+<link rel="icon" type="image/png" href="favicon.png">
+<style>
+  :root { color-scheme: dark; }
+  html, body {
+    margin: 0; height: 100%; background: #000; color: #cfcfcf;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  body { display: grid; place-items: center; gap: 12px; }
+  /*
+   * The canvas backing store is the arcade screen itself: 224x288, one canvas
+   * pixel per arcade pixel. Scaling happens only in CSS, at an integer factor,
+   * so the render path never resamples.
+   */
+  #screen {
+    width: calc(224px * var(--zoom, 2));
+    height: calc(288px * var(--zoom, 2));
+    image-rendering: pixelated;
+    background: #000;
+    display: block;
+  }
+  #hint { opacity: .55; letter-spacing: .02em; text-align: center; }
+  /* Pausing freezes the simulation but leaves the canvas painted, so the page
+     needs to say so or a still screen looks like a crash. */
+  #hint.paused { opacity: 1; color: #ffb86b; }
+  #hint.paused::after { content: " — PAUSED"; font-weight: 700; }
+
+  /*
+   * The screen, with two things laid over it: the engine badge above it and
+   * the status message (loading, missing ROMs, port not ready) across it.
+   */
+  #stage { position: relative; }
+  #badge {
+    display: block; text-align: center; margin: 0 0 6px;
+    color: #ffd27a; letter-spacing: .08em; font-weight: 700;
+    border: 1px solid rgba(255, 210, 122, .55); border-radius: 4px;
+    background: rgba(255, 210, 122, .10); padding: 2px 8px;
+  }
+  #badge[data-engine="port"] {
+    color: #bfe2ff; border-color: rgba(124, 196, 255, .55); background: rgba(124, 196, 255, .10);
+  }
+  #badge[hidden], #status[hidden], #soundhint[hidden], #status button[hidden] { display: none; }
+  #status button {
+    display: block; margin: 10px auto 0; background: #1b1b1b; color: #cfcfcf; font: inherit;
+    border: 1px solid #8fd18f; border-radius: 4px; padding: 3px 12px; cursor: pointer;
+  }
+  #status button:focus-visible { outline: 1px solid #8fd18f; outline-offset: 2px; }
+  #status {
+    position: absolute; left: 8px; right: 8px; top: 40%;
+    background: rgba(0, 0, 0, .85); color: #ffb86b;
+    border: 1px solid #553; border-radius: 4px; padding: 10px 12px;
+    text-align: center; white-space: pre-line;
+  }
+  #soundhint { color: #8fd18f; text-align: center; }
+  /*
+   * The AI indicator. Whether the game is playing itself is not obvious from
+   * the screen -- a competent AI looks exactly like a competent player -- so
+   * the button that turns it on glows while it is running.
+   */
+  #settings #set-ai[aria-pressed="true"] {
+    box-shadow: 0 0 6px rgba(124, 196, 255, .55), 0 0 18px rgba(124, 196, 255, .30);
+    text-shadow: 0 0 8px rgba(124, 196, 255, .8);
+    animation: ai-pulse 1.9s ease-in-out infinite;
+  }
+  @keyframes ai-pulse {
+    0%, 100% { box-shadow: 0 0 6px rgba(124,196,255,.45), 0 0 16px rgba(124,196,255,.22); }
+    50%      { box-shadow: 0 0 9px rgba(124,196,255,.75), 0 0 26px rgba(124,196,255,.45); }
+  }
+  /* A pulsing glow is exactly the sort of thing that should hold still for
+     anyone who has asked their system to stop animating. */
+  @media (prefers-reduced-motion: reduce) {
+    #settings #set-ai[aria-pressed="true"] { animation: none; }
+  }
+  /*
+   * The legend: only what a player needs to start -- one short line that
+   * must not wrap at 480 px. Everything else is on a settings button (which
+   * shows its key) or in the "?" help panel.
+   */
+  #hint { white-space: nowrap; }
+  #hint .sep { opacity: .5; padding: 0 .35em; }
+  #runnote { color: #ffb86b; text-align: center; }
+  #runnote[hidden], #help[hidden] { display: none; }
+  #help {
+    max-width: 440px; border: 1px solid #2e2e2e; border-radius: 4px;
+    padding: 8px 12px; background: #0a0a0a;
+  }
+  #help table { border-collapse: collapse; }
+  #help td { padding: 1px 10px 1px 0; vertical-align: top; }
+  #help td:first-child { white-space: nowrap; }
+  #help .note { opacity: .55; }
+  /*
+   * Fixed to the corner of the viewport rather than placed in the body grid, so
+   * it never shifts the canvas as the zoom changes. `pointer-events: none`
+   * keeps it from swallowing a click meant for the page.
+   */
+  #version {
+    position: fixed; right: 8px; bottom: 6px;
+    color: #9a9a9a; font-size: 10px; opacity: .55;
+    letter-spacing: .04em; pointer-events: none; user-select: none;
+  }
+  @media (max-width: 560px) { #version { position: static; } }
+  /*
+   * Settings bar: real toggle buttons (aria-pressed), each with the key that
+   * does the same thing. A pressed toggle lights up.
+   */
+  #settings { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; max-width: 600px; }
+  #settings button {
+    background: #111; color: #9a9a9a; font: inherit; letter-spacing: .04em;
+    border: 1px solid #2e2e2e; border-radius: 4px; padding: 3px 9px; cursor: pointer;
+    transition: color .15s, background-color .15s, border-color .15s;
+  }
+  #settings button:hover { border-color: #555; color: #cfcfcf; }
+  #settings button:focus-visible { outline: 1px solid #8fd18f; outline-offset: 1px; }
+  #settings button[aria-pressed="true"] {
+    color: #bfe2ff; border-color: rgba(124, 196, 255, .55); background: rgba(124, 196, 255, .10);
+  }
+  #settings button[aria-pressed="true"] kbd { border-color: rgba(124, 196, 255, .6); color: #dff0ff; }
+  #settings .note { opacity: .55; }
+  #settings button:disabled { opacity: .4; cursor: not-allowed; }
+  #settings button:disabled:hover { border-color: #2e2e2e; color: #9a9a9a; }
+  @media (prefers-reduced-motion: reduce) { #settings button { transition: none; } }
+  kbd {
+    background: #1b1b1b; border: 1px solid #333; border-radius: 3px;
+    padding: 0 4px; font: inherit;
+  }
+  /*
+   * The start screen: which engine to run. Two large options, the focused
+   * one lit like a pressed toggle, so keyboard and pad users see where
+   * they are.
+   */
+  #chooser {
+    background: #0a0a0a; color: #cfcfcf; font: inherit;
+    border: 1px solid #333; border-radius: 6px; padding: 18px; width: min(420px, 90vw);
+  }
+  #chooser::backdrop { background: rgba(0, 0, 0, .8); }
+  #chooser h2 { margin: 0 0 12px; font-size: 13px; letter-spacing: .12em; font-weight: normal; text-align: center; }
+  #chooser .options { display: grid; gap: 10px; }
+  #chooser .option {
+    display: grid; gap: 2px; text-align: left; cursor: pointer;
+    background: #111; color: #cfcfcf; font: inherit;
+    border: 1px solid #2e2e2e; border-radius: 5px; padding: 10px 12px;
+    transition: border-color .15s, background-color .15s, box-shadow .15s;
+  }
+  #chooser .option:hover { border-color: #555; }
+  #chooser .option:focus-visible, #chooser .option:focus {
+    outline: none; border-color: rgba(124, 196, 255, .8); background: rgba(124, 196, 255, .10);
+    box-shadow: 0 0 8px rgba(124, 196, 255, .45);
+  }
+  #chooser .name { font-size: 14px; letter-spacing: .06em; color: #fff; }
+  #chooser .desc { opacity: .7; }
+  #chooser .tag {
+    font-size: 10px; letter-spacing: .06em; color: #ffb86b; border: 1px solid rgba(255, 184, 107, .5);
+    border-radius: 3px; padding: 0 4px; margin-left: 6px; vertical-align: 2px;
+  }
+  #chooser .option.current .name::after { content: "  (running)"; font-size: 11px; opacity: .6; }
+  #chooser .foot { margin: 12px 0 0; opacity: .55; text-align: center; }
+  @media (prefers-reduced-motion: reduce) { #chooser .option { transition: none; } }
+  /*
+   * A native <dialog> rather than a hand-rolled overlay: showModal() gives
+   * focus trapping, an inert background, Escape-to-close and ::backdrop for
+   * nothing, all of which would otherwise be JavaScript to get wrong.
+   */
+  #remap {
+    background: #0a0a0a; color: #cfcfcf; font: inherit;
+    border: 1px solid #333; border-radius: 4px; padding: 16px; min-width: 300px;
+  }
+  #remap::backdrop { background: rgba(0, 0, 0, .72); }
+  #remap h2 { margin: 0 0 4px; font-size: 12px; letter-spacing: .08em; font-weight: normal; }
+  #remap table { border-collapse: collapse; margin: 10px 0; width: 100%; }
+  #remap th { text-align: left; font-weight: normal; opacity: .55; padding: 2px 10px 2px 0; }
+  #remap td { padding: 3px 10px 3px 0; }
+  #remap td.bind { color: #8fd18f; min-width: 90px; }
+  #remap td.bind.unbound { color: #7a7a7a; }
+  /* An aside in a control's label, for the one action the board never had. */
+  #remap td .note { opacity: .55; }
+  #remap button {
+    background: #1b1b1b; border: 1px solid #333; border-radius: 3px;
+    color: inherit; font: inherit; padding: 1px 8px; cursor: pointer;
+  }
+  #remap button:hover { border-color: #555; }
+  #remap button:focus-visible { outline: 1px solid #8fd18f; outline-offset: 1px; }
+  #remapstatus { margin: 8px 0 0; opacity: .7; min-height: 1.5em; }
+  #remap .foot { margin-top: 12px; display: flex; gap: 6px; flex-wrap: wrap; }
+</style>
+<script>
+/*
+ * Cache busting.
+ *
+ * `python3 -m http.server` sends Last-Modified but no Cache-Control and no
+ * ETag, so Chrome falls back to heuristic caching and may reuse a module
+ * without revalidating. During development that is a genuinely confusing
+ * failure: the page loads, the console is clean, and yesterday's code runs.
+ *
+ * Every load mints a token and an import map rewrites each module URL to carry
+ * it, so the entire graph is refetched -- not just the entry point, which is
+ * the mistake that makes the naive `import('./main.js?v=…')` trick useless.
+ *
+ * The lists below are generated by `node tools/gen-index.mjs`; a test keeps
+ * them in step with what is actually on disk. MODULES are the files of src/;
+ * ORACLE are the test oracle's modules, which only the emulated preview
+ * loads (src/engine.js imports test/m6809/board.mjs).
+ */
+(() => {
+  const modules = [
+    /* MODULES:BEGIN */
+      'audio/bang.js',
+      'audio/mixer.js',
+      'audio/resample.js',
+      'audio/sound.js',
+      'audio/waveforms.js',
+      'audio/wsg-worklet.js',
+      'audio/wsg15xx.js',
+      'dev/romfetch.js',
+      'dev/romlayout.js',
+      'engine.js',
+      'game/call.js',
+      'game/m6809ops.js',
+      'game/main/routines.js',
+      'game/romdata.js',
+      'game/sound/routines.js',
+      'game/sub/routines.js',
+      'input/bindings.js',
+      'input/capture.js',
+      'input/gamepad.js',
+      'input/mux.js',
+      'input/remapui.js',
+      'input/switches.js',
+      'machine/machine.js',
+      'machine/namcoio.js',
+      'main.js',
+      'ui/chooser.js',
+      'video/gfxdata.js',
+      'video/palette.js',
+      'video/pens.js',
+      'video/renderer.js',
+      'video/sprites.js',
+      'video/starfield.js',
+      'video/tiles.js',
+    /* MODULES:END */
+  ];
+  const oracle = [
+    /* ORACLE:BEGIN */
+      'test/m6809/board.mjs',
+      'test/m6809/cyclemodel.mjs',
+      'test/m6809/m6809.mjs',
+      'test/m6809/opcodes.mjs',
+    /* ORACLE:END */
+  ];
+  const token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const imports = {};
+  for (const path of modules) imports[`./src/${path}`] = `./src/${path}?v=${token}`;
+  for (const path of oracle) imports[`./${path}`] = `./${path}?v=${token}`;
+  const map = document.createElement('script');
+  map.type = 'importmap';
+  map.textContent = JSON.stringify({ imports });
+  document.currentScript.after(map);
+  window.__gaplusCacheToken = token;
+})();
+</script>
+</head>
+<body>
+  <div id="stage">
+    <!-- Says what is running: until the port lands the page runs the real
+         ROM on the test oracle's 6809 cores, and must never pass for the port. -->
+    <div id="badge" hidden></div>
+    <canvas id="screen" width="224" height="288"></canvas>
+    <div id="status" role="status" aria-live="polite" hidden>
+      <span id="statustext"></span>
+      <button type="button" id="statusaction" hidden></button>
+    </div>
+  </div>
+  <div id="soundhint">click / press a key to start sound</div>
+  <div id="runnote" hidden></div>
+  <div id="hint"><kbd>&larr;&uarr;&darr;&rarr;</kbd> move<span class="sep">·</span><kbd>space</kbd> fire<span class="sep">·</span><kbd>5</kbd> coin<span class="sep">·</span><kbd>1</kbd>/<kbd>2</kbd> start</div>
+  <div id="settings" role="group" aria-label="Settings">
+    <button type="button" id="set-engine" title="Choose ROM or JavaScript (restarts the game)"
+    ><kbd>E</kbd> <span id="engine-name">&hellip;</span></button>
+    <button type="button" id="set-ai" aria-pressed="false" disabled title="JavaScript version only"
+    ><kbd>A</kbd> AI</button>
+    <button type="button" id="set-sound" aria-pressed="true"><kbd>M</kbd> sound</button>
+    <button type="button" id="set-pause" aria-pressed="false"><kbd>P</kbd> pause</button>
+    <button type="button" id="set-joy" title="Set up a joystick or gamepad"><kbd>G</kbd> pad</button>
+    <button type="button" id="set-test" aria-pressed="false"
+      title="The service-mode DIP switch (SW2:1). The game reads it at power-on, so flipping it resets the board."
+    ><kbd>F2</kbd> test</button>
+    <button type="button" id="set-help" aria-expanded="false" aria-controls="help"
+      title="All keys"><kbd>?</kbd></button>
+  </div>
+  <div id="help" hidden>
+    <table>
+      <tr><td><kbd>&larr;&uarr;&darr;&rarr;</kbd></td><td>move (8-way stick)</td></tr>
+      <tr><td><kbd>space</kbd></td><td>fire</td></tr>
+      <tr><td><kbd>5</kbd> / <kbd>6</kbd></td><td>coin, slot 1 / slot 2</td></tr>
+      <tr><td><kbd>1</kbd> / <kbd>2</kbd></td><td>1 or 2 player start</td></tr>
+      <tr><td><kbd>P</kbd></td><td>pause</td></tr>
+      <tr><td><kbd>M</kbd></td><td>sound on / off</td></tr>
+      <tr><td><kbd>+</kbd> / <kbd>&minus;</kbd></td><td>zoom</td></tr>
+      <tr><td><kbd>E</kbd></td><td>engine: ROM or JavaScript (restarts)</td></tr>
+      <tr><td><kbd>A</kbd></td><td>self-playing AI <span class="note">(JavaScript version only)</span></td></tr>
+      <tr><td><kbd>F2</kbd> / <kbd>9</kbd></td><td>test switch <span class="note">(resets the board)</span></td></tr>
+      <tr><td><kbd>G</kbd></td><td>joystick / gamepad setup</td></tr>
+      <tr><td><kbd>?</kbd></td><td>this help</td></tr>
+    </table>
+  </div>
+
+  <dialog id="chooser" aria-labelledby="choosertitle">
+    <h2 id="choosertitle">GAPLUS &middot; WHAT SHOULD RUN?</h2>
+    <div class="options" role="group" aria-label="Engine">
+      <button type="button" class="option" data-engine="rom">
+        <span class="name">ROM</span>
+        <span class="desc">the original program on emulated 6809s</span>
+      </button>
+      <button type="button" class="option" data-engine="port">
+        <span class="name">JavaScript<span class="tag">in progress</span></span>
+        <span class="desc">the routine-by-routine port, with the self-playing AI (A)</span>
+      </button>
+    </div>
+    <p class="foot">&uarr; &darr; choose &nbsp;·&nbsp; Enter / fire to start &nbsp;·&nbsp; E switches later</p>
+  </dialog>
+
+  <dialog id="remap" aria-labelledby="remaptitle">
+    <h2 id="remaptitle">JOYSTICK</h2>
+    <table>
+      <thead><tr><th>control</th><th>bound to</th><th></th></tr></thead>
+      <tbody>
+        <tr data-action="left">
+          <td>move left</td><td class="bind" data-bind>—</td>
+          <td><button type="button" data-set>set</button>
+              <button type="button" data-clear>clear</button></td>
+        </tr>
+        <tr data-action="right">
+          <td>move right</td><td class="bind" data-bind>—</td>
+          <td><button type="button" data-set>set</button>
+              <button type="button" data-clear>clear</button></td>
+        </tr>
+        <tr data-action="up">
+          <td>move up</td><td class="bind" data-bind>—</td>
+          <td><button type="button" data-set>set</button>
+              <button type="button" data-clear>clear</button></td>
+        </tr>
+        <tr data-action="down">
+          <td>move down</td><td class="bind" data-bind>—</td>
+          <td><button type="button" data-set>set</button>
+              <button type="button" data-clear>clear</button></td>
+        </tr>
+        <tr data-action="fire">
+          <td>fire</td><td class="bind" data-bind>—</td>
+          <td><button type="button" data-set>set</button>
+              <button type="button" data-clear>clear</button></td>
+        </tr>
+        <!--
+          Every action in ACTIONS needs a row here. RemapUI builds itself from
+          these `data-action` attributes, so an action without one cannot be
+          rebound or cleared -- and the shipped defaults are guesses about
+          hardware we have never seen. A six-button stick that numbers its
+          buttons 0-5 puts a punch on pause's default; without a row the player
+          would have no way to take it back.
+        -->
+        <tr data-action="coin">
+          <td>insert coin</td><td class="bind" data-bind>—</td>
+          <td><button type="button" data-set>set</button>
+              <button type="button" data-clear>clear</button></td>
+        </tr>
+        <tr data-action="start">
+          <td>1 player start</td><td class="bind" data-bind>—</td>
+          <td><button type="button" data-set>set</button>
+              <button type="button" data-clear>clear</button></td>
+        </tr>
+        <tr data-action="pause">
+          <td>pause <span class="note">(not on the real board)</span></td>
+          <td class="bind" data-bind>—</td>
+          <td><button type="button" data-set>set</button>
+              <button type="button" data-clear>clear</button></td>
+        </tr>
+      </tbody>
+    </table>
+    <p id="remapstatus" aria-live="polite"></p>
+    <div class="foot">
+      <button type="button" id="remapdefaults">defaults</button>
+      <button type="button" id="remapcentre">recalibrate centre</button>
+      <button type="button" id="remapclose">close</button>
+    </div>
+  </dialog>
+  <div id="version">version &hellip; &middot; code by Moshix</div>
+  <script type="module">
+    import(`./src/main.js?v=${window.__gaplusCacheToken}`);
+  </script>
+</body>
+</html>
