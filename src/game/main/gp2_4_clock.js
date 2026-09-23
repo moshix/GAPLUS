@@ -24,6 +24,7 @@
  */
 
 import { burn, clockOf, SPIN } from '../clock.js';
+import { SYNC } from '../timing.js';
 
 export { SPIN };
 
@@ -67,10 +68,14 @@ export const freeClock = (m) => new Clock(m, true);
  */
 export function* sync(c) {
   const n = c.t;
-  if (n === 0) return;
   c.t = 0;
   c.burned += n;
-  if (!c.free) yield* burn(c.m, n);
+  if (c.free) return;
+  if (n !== 0) yield* burn(c.m, n);
+  // (integration, round 3) the access that follows is observable: a
+  // timing point for the scheduler, so it happens at this cycle relative
+  // to the other CPUs (the service mode's sound test writes $6040+n).
+  yield SYNC;
 }
 
 /**

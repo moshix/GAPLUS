@@ -10,7 +10,10 @@
  * predicted track of every threat that could come within reach.
  *
  * A plan is judged, in this order:
- *  1. how many frames it survives -- nothing else matters when they differ;
+ *  1. how many frames it survives -- a frame of life outweighs anything
+ *     else. Two times are counted: until a threat's box, widened by the
+ *     whole uncertainty of its predicted track, covers the fighter, and
+ *     until its box widened only a little does;
  *  2. how close it passes to threats (a near miss predicted is a hit
  *     half the time: the tracks are measured, not known);
  *  3. where it ends up: under something worth shooting (the aim map), at
@@ -32,12 +35,22 @@ const MAX_THREATS = 80;
 const SWITCH_AT = Object.freeze([1, 3, 6, 10, 16]);
 /** A pass closer than this (beyond the hit box and margin) costs. */
 const CLEARANCE = 12;
-/** Weight of the clearance cost against one frame of survival (100). */
+/** Results of test() other than a clearance cost. */
+export const SURE = -2;
+export const POSSIBLE = -1;
+/** The fraction of the margin that makes a hit "sure". */
+const SURE_FRACTION = 0.35;
+/** Score per frame before a sure hit, and before a possible one. */
+const W_SURE = 70;
+const W_SAFE = 50;
+/** Weight of the clearance cost against one frame of survival (120). */
 const W_PROX = 30;
 /** Weight of the end position's value. */
 const W_AIM = 12;
-const W_HOME = 10;
+const W_HOME = 25;
 const W_WALL = 14;
+/** The position's worth is sampled every this many frames of a plan. */
+const VALUE_EVERY = 5;
 /** Bonus for keeping the current direction; reversals must earn it. */
 const W_KEEP = 2.5;
 /** Room from the side walls wanted, pixels. */
@@ -149,36 +162,56 @@ export class Planner {
     for (const plan of this.plans) {
       ship.h = w.h;
       ship.v = w.v;
-      let tDeath = H + 1;
+      // First frame a threat's widened box covers the fighter (possibly
+      // hit), and first frame its tight box does (surely hit, as far as
+      // the prediction goes).
+      let tSafe = H + 1;
+      let tSure = H + 1;
       let prox = 0;
       let firstH = w.h;
       let firstV = w.v;
+      let worth = 0;
       for (let t = 1; t <= H; t += 1) {
         const q = t - 1 - queued.length;
         const dir = q < 0 ? queued[t - 1] : (q < plan.k ? plan.d1 : plan.d2);
         stepShip(ship, dir, w);
         if (q === 0) { firstH = ship.h; firstV = ship.v; }
+        // The position's worth is sampled along the way, so getting there
+        // sooner is worth more than dawdling and getting there at the end.
+        if (t % VALUE_EVERY === 0) {
+          worth += W_AIM * value(ship.h, ship.v) + W_HOME * homeValue(ship.v, w)
+            - W_WALL * wallCost(ship.h, w);
+        }
         if (!w.danger) continue;
         const hit = this.test(ship, t);
-        if (hit < 0) { tDeath = t; break; }
+        if (hit === SURE) {
+          tSure = t;
+          if (tSafe > H) tSafe = t;
+          break;
+        }
+        if (hit === POSSIBLE) {
+          if (tSafe > H) tSafe = t;
+          prox += 1 / (1 + t / 8);
+          continue;
+        }
         // Nearer frames matter more: they are better predicted and
         // cannot be undone.
         prox += hit / (1 + t / 8);
       }
-      let score = tDeath * 100 - prox * W_PROX;
-      if (tDeath > H) {
-        score += W_AIM * value(ship.h, ship.v)
-          + W_HOME * homeValue(ship.v, w) - W_WALL * wallCost(ship.h, w);
-      } else {
-        // Doomed: at least die trying from a better spot.
-        score += 0.1 * (W_AIM * value(ship.h, ship.v));
-      }
-      if (plan.d1 === lastDir) score += W_KEEP;
+      // Both times count: a plan that is surely hit is worse than one that
+      // may be, but a possible hit soon is worse than a sure one late (the
+      // search runs again every frame, from better information).
+      let score = W_SURE * tSure + W_SAFE * tSafe - prox * W_PROX;
+      // Doomed plans stop sampling at the hit; the survivors' worth is the
+      // mean of their samples.
+      if (tSure > H) score += (tSafe > H ? 1 : 0.5) * worth / Math.floor(H / VALUE_EVERY);
+      // Keep going the way it was going: a reversal must earn its place.
+      if (lastDir !== 0 && plan.d1 === lastDir) score += W_KEEP;
       score += bias[plan.d1];
       if (score > best) {
         best = score;
         move.dir = plan.d1;
-        move.tDeath = tDeath;
+        move.tDeath = tSafe;
         move.h = firstH;
         move.v = firstV;
       }
@@ -188,33 +221,37 @@ export class Planner {
   }
 
   /**
-   * The fighter at `ship` on frame t: -1 if some threat's box (widened by
-   * its margin) covers it, else the clearance cost (0: nothing near).
+   * The fighter at `ship` on frame t: SURE if some threat's box, widened
+   * by a fraction of its margin, covers it; POSSIBLE if the box widened by
+   * the whole margin does; else the clearance cost (0: nothing near).
    * @param {{h: number, v: number}} ship @param {number} t @returns {number}
    */
   test(ship, t) {
     const H1 = this.horizon + 1;
     let cost = 0;
+    let possible = false;
     for (let j = 0; j < this.count; j += 1) {
       const k = j * H1 + t;
       const m = this.tm[k];
-      const dh = Math.abs(this.th[k] - ship.h) - HIT_H - m;
-      const dv = Math.abs(this.tv[k] - ship.v) - 2 * HIT_V2 - m;
-      if (dh < 0 && dv < 0) return -1;
-      const gap = Math.max(dh, dv);
+      const dh = Math.abs(this.th[k] - ship.h) - HIT_H;
+      const dv = Math.abs(this.tv[k] - ship.v) - 2 * HIT_V2;
+      const ms = Math.max(1, SURE_FRACTION * m);
+      if (dh < ms && dv < ms) return SURE;
+      if (dh < m && dv < m) { possible = true; continue; }
+      const gap = Math.max(dh, dv) - m;
       if (gap < CLEARANCE) cost += (CLEARANCE - gap) / CLEARANCE;
     }
-    return cost;
+    return possible ? POSSIBLE : cost;
   }
 }
 
 /**
- * 1 at the home row, falling off linearly over the fighter's range.
+ * 1 at the home row, falling off linearly over 96 pixels.
  * @param {number} v @param {World} w @returns {number}
  */
 function homeValue(v, w) {
   const home = w.vHome ?? v;
-  return 1 - Math.min(1, Math.abs(v - home) / 64);
+  return 1 - Math.min(1, Math.abs(v - home) / 96);
 }
 
 /**

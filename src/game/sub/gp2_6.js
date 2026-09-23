@@ -57,9 +57,10 @@ export { SPIN, RENDEZVOUS, BUSY, SYNC };
  * times, unmasks IRQs and runs task_dispatch_sub for good.
  *
  * Timing: charges every instruction from $E000 (the 4-cycle vector fetch
- * is the scheduler's). The $11 poll yields SYNC before each read of
- * $0800 and SPIN after a failed one (failed passes are waiting, not
- * charged; the pass that sees $11 is). The checksum loops touch only ROM:
+ * is the scheduler's). The $11 poll is src/game/timing.js poll(): SYNC
+ * before each read of $0800, a failed pass charged and marked with its
+ * loop cycles (the scheduler keeps its phase); the pass that sees $11 is
+ * charged here. The checksum loops touch only ROM:
  * 3 x 8,192 x 13 cycles charged in three lumps, so the scheduler spends
  * the 13 frames there, and the writes that follow ($0801 on a bad sum,
  * $22, the IRQ latch) are SYNC'd at their own cycles. Never returns.
@@ -150,8 +151,9 @@ function romSum(s, from, to) {
  * Timing: charges every instruction from $E061 to the RTI (15 cycles,
  * the entire state is pulled); the 19-cycle entry (4 from a CWAI) is the
  * scheduler's. Every shared access is SYNC'd (gp2_6_state.js). The poll of
- * $10AF yields RENDEZVOUS after each failed pass (not charged: waiting);
- * the pass that sees $22 is charged. RTI restores CC.I = 0: the sub is
+ * $10AF is src/game/timing.js poll() (failed passes charged and marked,
+ * so the scheduler keeps the loop's phase); the pass that sees $22 is
+ * charged here. RTI restores CC.I = 0: the sub is
  * only ever interrupted in a CWAI or after its ANDCC.
  * @see gaplus-sub.asm $E061
  * @param {Machine} m

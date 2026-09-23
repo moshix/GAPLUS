@@ -143,7 +143,7 @@ function* firstBonus(m, p2) {
     yield* sub_FB9E(m);
     m.charge(3); // bra
   }
-  sub_FB0F(m);
+  yield* sub_FB0F(m);
 }
 
 /**
@@ -208,7 +208,7 @@ function* secondBonus(m, p2) {
     yield* sub_FB9E(m);
     m.charge(3); // bra
   }
-  sub_FB0F(m);
+  yield* sub_FB0F(m);
 }
 
 /**
@@ -275,7 +275,7 @@ function* everyBonus(m, p2) {
     yield* sub_FB9E(m);
     m.charge(p2 ? 4 : 3); // P2 jmp, P1 bra
   }
-  sub_FB0F(m);
+  yield* sub_FB0F(m);
 }
 
 /**

@@ -210,6 +210,13 @@
 (() => {
   const modules = [
     /* MODULES:BEGIN */
+      'ai/aim.js',
+      'ai/autoplay.js',
+      'ai/constants.js',
+      'ai/evade.js',
+      'ai/hook.js',
+      'ai/predict.js',
+      'ai/world.js',
       'audio/bang.js',
       'audio/mixer.js',
       'audio/resample.js',
@@ -270,6 +277,7 @@
       'game/sub/gp2_8_util.js',
       'game/sub/index.js',
       'game/sub/routines.js',
+      'game/timing.js',
       'input/bindings.js',
       'input/capture.js',
       'input/gamepad.js',
@@ -362,7 +370,7 @@
         <span class="desc">the original program on emulated 6809s</span>
       </button>
       <button type="button" class="option" data-engine="port">
-        <span class="name">JavaScript<span class="tag">in progress</span></span>
+        <span class="name">JavaScript</span>
         <span class="desc">the routine-by-routine port, with the self-playing AI (A)</span>
       </button>
     </div>

@@ -42,6 +42,9 @@ export const KIND = Object.freeze({
  * @property {number} vv     vertical speed
  * @property {number} ah     horizontal acceleration (0 when unknown)
  * @property {number} av     vertical acceleration
+ * @property {number} turn   heading change, radians per frame (0 when
+ *                           unknown): divers fly curves at a steady speed
+ * @property {number} speed  pixels per frame along the heading
  * @property {number} age    frames this entry has been tracked (0: new)
  * @property {boolean} exact the track is computed, not measured
  */
@@ -148,7 +151,7 @@ export class WorldReader {
     this.vh[k] = v;
     this.age[id] = age;
     this.seen[id] = this.tick;
-    let vh = 0; let vv = 0; let ah = 0; let av = 0;
+    let vh = 0; let vv = 0; let ah = 0; let av = 0; let turn = 0;
     if (age > 0) {
       const n = Math.min(age, VSPAN);
       const [hn, vn] = this.past(id, n);
@@ -156,11 +159,22 @@ export class WorldReader {
       vv = (v - vn) / n;
       if (age >= 2 * VSPAN) {
         const [h2, v2] = this.past(id, 2 * VSPAN);
-        ah = (vh - wrapH(hn - h2) / VSPAN) / VSPAN;
-        av = (vv - (vn - v2) / VSPAN) / VSPAN;
+        const ph = wrapH(hn - h2) / VSPAN;
+        const pv = (vn - v2) / VSPAN;
+        ah = (vh - ph) / VSPAN;
+        av = (vv - pv) / VSPAN;
+        // The heading's change between the two spans, per frame. Only
+        // meaningful when the object is really moving.
+        if (Math.hypot(vh, vv) > 0.5 && Math.hypot(ph, pv) > 0.5) {
+          let d = Math.atan2(vv, vh) - Math.atan2(pv, ph);
+          if (d > Math.PI) d -= 2 * Math.PI; else if (d < -Math.PI) d += 2 * Math.PI;
+          turn = d / VSPAN;
+        }
       }
     }
-    return { id, kind, h, v, vh, vv, ah, av, age, exact: false };
+    return {
+      id, kind, h, v, vh, vv, ah, av, turn, speed: Math.hypot(vh, vv), age, exact: false,
+    };
   }
 
   /**
@@ -272,6 +286,8 @@ function exactShot(peek, o, j) {
   o.vv = ESHOT_VY;
   o.ah = 0;
   o.av = 0;
+  o.turn = 0;
+  o.speed = Math.hypot(o.vh, o.vv);
   o.exact = true;
 }
 

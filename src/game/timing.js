@@ -24,9 +24,9 @@
  * cycle-exact.
  */
 
-import { SYNC, pollAgain } from './scheduler.js';
+import { SYNC, pollAgain, frameDue } from './scheduler.js';
 
-export { SYNC, pollAgain };
+export { SYNC, pollAgain, frameDue };
 
 /** @typedef {import('../machine/machine.js').CpuView} CpuView */
 /** @typedef {'main'|'sub'|'sound'} Cpu */
@@ -64,12 +64,14 @@ export function timed(cpu, addr) {
 
 /**
  * `yield* at(view, addr)` right before an instruction that accesses
- * `addr` (a pointer operand): a SYNC when the access is timed.
+ * `addr` (a pointer operand): a SYNC when the access is timed, or when
+ * the chunk has run past the next vblank (frameDue: the access belongs
+ * to the next frame).
  * @param {CpuView} view @param {number} addr
  * @returns {Generator<symbol, void, unknown>}
  */
 export function* at(view, addr) {
-  if (timed(view.cpu, addr)) yield SYNC;
+  if (timed(view.cpu, addr) || frameDue()) yield SYNC;
 }
 
 /**

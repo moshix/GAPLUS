@@ -17,17 +17,21 @@
  * THE HANDLER IS A GENERATOR because it waits for the sub CPU: at the end
  * of every frame (and on the coin-during-demo path) it polls frame_sync
  * ($10AF) until the sub CPU's handler has stored $11, then answers $22.
- * It yields RENDEZVOUS while $10AF is not $11. round_select and
+ * It polls $10AF for $11 with src/game/timing.js poll() (a pollAgain
+ * marker per failed pass). round_select and
  * coin_jammed are loops the handler does not leave by itself; they yield
  * BUSY once per pass. Everything the handler does before and after is
  * run atomically (the 6809 has IRQs masked; nothing but the other CPUs
- * can interleave).
+ * can interleave), except for a SYNC before the accesses the other CPUs
+ * see (the IRQ latch, attract_flag, the $1E31 clears the sub's sprite copy
+ * reads, the coin sound) -- integration, round 3.
  *
  * CYCLES. Every routine here charges (Machine.charge) the cycles of the
  * instructions it executes: the handler from $C000 (the 19-cycle IRQ
  * entry is not included), callees their own from their first instruction
- * to their RTS inclusive. Failed iterations of the frame_sync poll are not
- * charged (that is waiting); the final, successful one is. So after a
+ * to their RTS inclusive. Failed iterations of the frame_sync poll are
+ * charged by timing.js poll() (the scheduler needs the loop's phase; the
+ * tests refund them as waiting); the final, successful one here. So after a
  * normal frame m.charged[0] has grown by the handler's work including the
  * RTI (15 cycles).
  *
@@ -45,7 +49,7 @@ import { MAIN } from './routines.js';
 import { call } from '../call.js';
 import { add8, daa } from '../m6809ops.js';
 import { mainRom } from '../romdata.js';
-import { BUSY, RENDEZVOUS, busy, requestJump } from './gp2_3b_state.js';
+import { BUSY, busy, requestJump } from './gp2_3b_state.js';
 import { poll, SYNC } from '../timing.js';
 
 /** @typedef {import('../../machine/machine.js').Machine} Machine */
@@ -225,7 +229,7 @@ function* irqMainNormal(m, a) {
 /**
  * $C0AB irq_copy_sprites: the tail of irq_main, reached by branches from
  * $C05A/$C065: sprite copy, starfield direction, frame counter, the
- * frame_sync rendezvous (yields RENDEZVOUS) and the RTI.
+ * frame_sync rendezvous (a poll loop, timing.js) and the RTI.
  * @see gaplus-main.asm $C0AB
  * @param {Machine} m
  * @returns {Generator<symbol, void, unknown>}
@@ -259,20 +263,25 @@ function* coinDuringDemo(m) {
     [0x1117, 7], [0x1030, 6], [0x107a, 6], [0x102f, 6], [0x1e01, 7],
     [0x1f17, 7], [0x1f19, 7], [0x1f1b, 7], [0x1f1d, 7],
   ];
+  // (integration, round 3: the sub and sound CPUs read these -- a SYNC
+  // before each; CLR reads first; charges after the access)
   for (const [addr, cyc] of cleared) {
+    yield SYNC;
+    m.peek(addr);
     m.poke(addr, 0);
     m.charge(cyc);
   }
-  // $C09E: jsr clear_sprite_shadows / jsr sound_demo_gate. Its BUSY
-  // points are for busy foreground callers; nothing interrupts the IRQ
-  // handler, so they are simply run through.
+  // $C09E: jsr clear_sprite_shadows / jsr sound_demo_gate. Their SYNC /
+  // BUSY points are timing points for the other CPUs here too.
   m.charge(8);
-  for (const mark of clear_sprite_shadows(m)) void mark;
+  yield* clear_sprite_shadows(m);
   m.charge(8);
-  for (const mark of sound_demo_gate(m)) void mark;
-  // $C0A4: lda #$22 / sta <$AF / jmp attract_loop
-  m.charge(2); m.charge(4); m.charge(4);
+  yield* sound_demo_gate(m);
+  // $C0A4: lda #$22 / sta <$AF (the sub polls it) / jmp attract_loop
+  m.charge(2);
+  yield SYNC;
   m.poke(0x10af, 0x22);
+  m.charge(4); m.charge(4);
   requestJump(m, ATTRACT_LOOP);
 }
 

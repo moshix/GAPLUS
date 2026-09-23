@@ -55,9 +55,14 @@ const HISTORY = 6;
 /** Coin/start pulse: held this many frames out of every COIN_CYCLE. */
 const COIN_HOLD = 4;
 const COIN_CYCLE = 20;
-/** The row the fighter rests on in normal play: the bottom, farthest from
- * the formation and with the most time to see a diver coming. */
-const HOME_PLAY = V_BOTTOM - 1;
+/**
+ * The row the fighter rests on in normal play: near the bottom, farthest
+ * from the formation and with the most time to see a diver coming -- but
+ * not on it: from PARSEC 4 on, divers sweep along the bottom row at 4 px a
+ * frame, and a fighter there (1 px a frame vertically) cannot climb out
+ * of their way in time.
+ */
+const HOME_PLAY = V_BOTTOM - 17;
 /** In a challenging stage nothing can hit it: rest high, near the
  * enemies' paths, so shots arrive sooner. */
 const HOME_CHALLENGE = V_TOP + 24;

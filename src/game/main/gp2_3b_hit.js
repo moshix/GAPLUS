@@ -31,6 +31,7 @@ import { MAIN } from './routines.js';
 import { call } from '../call.js';
 import { disp8 } from '../m6809ops.js';
 import { busy } from './gp2_3b_state.js';
+import { SYNC } from '../timing.js';
 
 /** @typedef {import('../../machine/machine.js').Machine} Machine */
 /** @typedef {Generator<unknown, void, unknown>} Gen */
@@ -434,6 +435,7 @@ export function* sub_D28A(m) {
         m.poke(0x1076, 0);
         ch(6);
         yield* s();
+        yield SYNC; // main_task: the sub CPU may clear it
         inc(m, 0x1030); // main_task
         ch(6 + 4);
         return;
@@ -934,6 +936,7 @@ export function* sub_D588(m) {
     ch(6);
   }
   yield* s();
+  yield SYNC; // main_task: the sub CPU may clear it
   inc(m, 0x1030);
   ch(6 + 4);
 }
@@ -1203,6 +1206,7 @@ export function* task_stage_start(m) {
   yield* st(x - 0x60, 0x20, 5 + 8);
   yield* call(MAIN.load_stage_params, m, {});
   yield* s();
+  yield SYNC; // main_task: the sub CPU may clear it
   inc(m, 0x1030);
   ch(6 + 4);
 }
@@ -1228,6 +1232,7 @@ function* stageVars(m) {
   m.charge(6); m.charge(16);
   yield; // $D803: cwai #$EF
   yield* busy(m, 0);
+  yield SYNC; // main_task: the sub CPU may clear it
   m.poke(0x1030, 0);
   m.charge(6); m.charge(4);
 }

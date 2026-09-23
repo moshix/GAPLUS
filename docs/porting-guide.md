@@ -333,103 +333,116 @@ latch: a vblank that finds the mask off is lost. The I/O chips run 50 us
 | sub   | `$E061` | `sta $6080`                         | `sta $6081` / `rti` at `$E0E8` |
 | sound | `$E055` | `sta $6000` / `sta $3000` (watchdog) | `sta $4000`           |
 
-The scheduler (`src/game/scheduler.js`, written separately) owns the
-order in which the three CPUs' work runs within the port's frame, and
-calls `m.vblank()` / `m.ioUpdate()`. It hooks `m.hooks.onCli` so that an
-`andcc #$EF` in foreground code (`m.cli()`) takes a pending IRQ right
-there, as the 6809 does.
+The scheduler (`src/game/scheduler.js`) owns the order in which the three
+CPUs' work runs, and calls `m.vblank()` / `m.ioUpdate()`. It runs MAME's
+model: slices of at most 256 cycles, cut at the vblank and at the I/O
+run, main then sub then sound within each slice, a line-changing write
+(an IRQ mask off, SRESET) ending the writer's slice (see its header and
+section 6.4). A ported CPU's code runs in *chunks* (the code between two
+yields); a chunk is atomic and happens at the CPU time where it starts.
 
-**Where `m.ioUpdate()` goes.** Call it right after `m.vblank()` and
-**before** the main IRQ handler runs. In MAME the 56XX/58XX run lands at
-cycle 76.8 of the handler; the handler's I/O reads that can see a change
-are `ldd $6800` at `$C01A` (cycles 79-80) and `lda $6802` at `$C055`
-(later), both after the run, so "update first" reproduces MAME. Calling it
-after the (atomic) ported handler would credit every coin one frame late
-(`$6056`, the credit display). The reads before cycle 77 are 58XX DIP
-nibbles that never change during play. **Known exception**: with SW1:6 ON
-the operator-stats path reads `$6805` at `$FCE8` around cycle 50, before
-the run; the port either accepts that divergence or runs the update from
-inside the handler between `$C011` and `$C01A`. (The oracle delivers the
-run at the exact cycle: `Board.ioCatchUp`.)
+**The 56XX/58XX run** lands at vblank + 76.8 cycles, as in MAME: the
+scheduler delivers it before the first main-CPU access to `$6800-$681F`
+at or after that instant (the charged cycles give the time of the
+access), else at the end of that slice. Code does nothing for it: it
+just charges its cycles (6.4). Handlers read `$6816` at cycle 41,
+`$6805` at ~50 (SW1:6 on), `$6814` at 67, `$6800/$6801` at 79/80.
 
 **Measured timing** (oracle, docs/oracle-notes.md): every handler starts
 within 8 cycles of vblank; main and sub end together at their
 `frame_sync` rendezvous (`$C158` / `$E0E2`), cycle 4,918-5,746 (main
 ~10,600 on the frame a coin or start leaves attract); sound 1,225-8,243.
-The rendezvous cycle depends on the CPU interleave. In attract mode the
-foreground `attract_loop` (`$C417`) is a busy loop adding `$20` to
-`attract_timer` (`$1029`) per pass (2-3 passes a frame), so attract
-timing depends on it. In play, the main foreground copies positions the
-sub is updating in the same part of the frame (e.g. `$D434`), a race whose
-outcome follows MAME's slice order. See docs/oracle-notes.md section 3.
+In attract mode the foreground `attract_loop` (`$C417`) is a busy loop
+adding `$20` to `attract_timer` (`$1029`) per pass (2-3 passes a
+frame); in play, the main foreground copies positions the sub is
+updating (`$D434`). Both are races through shared RAM whose outcome
+follows the slices: section 6.4 is what makes the port win them as the
+board does.
 
 ### 6.2 Interrupt handlers
 
-* **Handlers and the routines they call are plain functions** that run to
-  completion, or generators that `yield` only progress markers, if the
-  scheduler needs to interleave two handlers (as Galaga's slot numbers).
+* **Handlers are generators** (or plain functions when they neither
+  poll nor touch RAM another CPU uses during the handler). They charge
+  every instruction and yield SYNC before shared accesses like any code
+  (6.4); the main and sub handlers meet at `frame_sync` with
+  `poll()`. The IRQ entry (19 cycles, 4 from a CWAI) is the scheduler's;
+  the RTI (15, entire state) is the handler's.
 * The 6809 sets CC.I on IRQ entry and `rti` restores the stacked CC. A
-  handler that changes the **stacked** CC (to return with different
-  flags or with IRQs masked) must say so explicitly. Check `rti` paths,
-  and never assume "IRQs enabled on return".
+  handler that leaves through a jump instead of `rti` (main `$C016`,
+  `$C0A8`) records it with `requestJump` (src/game/main/jump.js) and
+  returns; main/index.js then returns `NO_RTI` to the scheduler, so CC.I
+  stays set until the code jumped to clears it.
 * Porting the acknowledge and re-enable writes is not optional: they are
   latch writes (section 5.2), and the scheduler reads the masks.
 
 ### 6.3 Foreground code is a generator
 
-* **The foreground (reset) thread of each CPU is a generator.** Where the
-  6809 waits for something only an interrupt can change, the port
-  `yield`s once per iteration:
+* **The foreground (reset) thread of each CPU is a generator.**
+* **`cwai #$EF` waits for the next IRQ**: charge its 16 cycles, then one
+  plain `yield`, with a comment: `// $C318: cwai #$EF -- wait for vblank`.
+  The wake-up and the handler are the scheduler's; the generator resumes
+  after the RTI.
+* **Waiting for another CPU is a poll loop**: `poll()` from
+  src/game/timing.js, with the loop's instruction cycles, the read first:
 
   ```js
-  // $E0C7: lda $6040 / ldy $7C00 / cmpa #$22 / bne $E0C7
-  // (ldy reads $7C00 and $7C01: two watchdog kicks per pass)
-  while (m.peek(0x6040) !== 0x22) { m.peek16(0x7c00); yield SPIN; }
+  // $E0E2: lda <$AF (4) / cmpa #$22 (2) / bne $E0E2 (3)
+  yield* poll(s, 0x10af, (v) => v === 0x22, [4, 2, 3]);
+  s.charge(4); s.charge(2); s.charge(3); // the pass that saw it
   ```
 
-  Use `yield SPIN` (from `scheduler.js`) instead of a bare `yield` when the
-  loop waits on **another CPU's foreground** (the `$11`/`$22` boot
-  handshakes through `$0800` and `$6040`), so that the wait resolves
-  within the frame. Note that the loop above still performs its watchdog
-  read each time around.
-* **`cwai #$EF` waits for the next IRQ**: the 6809 stacks its entire state,
-  clears I and sleeps, the handler runs, and `rti` resumes after the
-  `cwai`. In the port that is exactly one `yield`, at the point of the
-  `cwai`, with a comment: `// $C318: cwai #$EF -- wait for vblank`.
+  Each failed pass is charged and yields `pollAgain(4, 2, 3)`, so the
+  scheduler keeps the loop's phase and the exit is at the 6809's cycle.
+  (`SPIN` / `RENDEZVOUS` still work but re-poll only at slice starts.)
 * **The main loops restart after every frame.** Main `$D150` is
   `cwai #$EF / lds #$1600 / clr <$30 / jmp $FEB5`, and sub `$E17F` is
-  `cwai #$EF / lds #$1D80 / jmp $E0EC`. After each IRQ, the foreground
-  throws its stack away and dispatches again from the state variables
-  (`<$2F`/`<$30`, sub `<$2F`/`<$7A`) through two-level jump tables. So the
-  dispatcher is a loop: `for (;;) { yield; /* $D152 ... dispatch */ }`.
-  No JS local may survive the `cwai`, because the 6809's registers don't.
-* **The sound CPU has no foreground work**: after initialisation it runs
-  `bra *` at `$E053` forever, and everything happens in its IRQ handler.
-  Its foreground generator ends in `for (;;) yield;`.
-* **Calling a routine from foreground code**: if it might wait (anywhere
-  down its call tree), it must be a generator called with `yield*`. When
-  calling a routine owned by another module, always use the helper, which
-  works whether or not the callee is a generator:
+  `cwai #$EF / lds #$1D80 / jmp $E0EC`. The dispatchers are loops that
+  SYNC before reading `<$2F`/`<$30` and before each task; a task's
+  `inc <$30 / jmp dispatch` is the INC (timed: the sub may clear
+  `main_task`) and a return. No JS local may survive the `cwai`.
+* **The sound CPU has no foreground work**: `bra *` at `$E053` forever is
+  `for (;;) yield idle(3);` -- the IRQ then enters on the loop's pass
+  boundary, exactly.
+* **Calling a routine from foreground code**: generators with `yield*`;
+  across modules always `yield* call(MAIN.sub_C2FC, m, { a })`, which
+  works whether or not the callee is a generator.
+* `orcc #$10` / `andcc #$EF`: `m.sei()` / `m.cli()` (`m.sub.cli()`, ...).
+  A pending IRQ is taken at the next yield.
+* **Busy loops that burn time** (delays, checksums, clears): charge each
+  pass; they need no other yield unless they store (6.4). The main
+  boot's clock (src/game/clock.js `burn`) charges and yields at frame
+  boundaries.
+* Non-local jumps of the main CPU: src/game/main/jump.js; the driver in
+  src/game/main/index.js starts the target at once.
 
-  ```js
-  import { call } from '../call.js';
-  const out = yield* call(MAIN.sub_C2FC, m, { a });
-  ```
-* `orcc #$10` / `andcc #$EF` in foreground code: `m.sei()` / `m.cli()`
-  (sub and sound: `m.sub.cli()`, ...). `cli()` can run a pending IRQ
-  handler before it returns, as on the 6809.
-* `sync` is not used on the paths inspected. If you find one, stop and
-  flag it.
-* **Busy loops that burn time** without waiting on anything (delays,
-  checksum loops, the boot's RAM clear with its watchdog reads) must
-  `yield` once for every 25,344 cycles the real CPU spends in them. Count
-  the cycles from the MAME cycle table (the oracle's `callRoutine` returns
-  `cycles`), keep a running cycle clock, and yield **before** the next
-  observable write that falls in a new frame. Comment the numbers.
-* Long interrupt handlers: if a handler can run past the next vblank with
-  its mask still off, that vblank is lost. Measure the handler's cycles on
-  the oracle and report it to the scheduler with `m.charge(cycles)`
-  (`m.sub.charge`, ...), with the measurement in a comment.
+### 6.4 The timing contract (src/game/timing.js)
+
+The port reproduces the board's races only if every CPU's clock is exact
+and every visible access happens at its cycle. So all ported code:
+
+1. **Charges every instruction** with its MAME cycles, **one `charge()`
+   call per instruction**, *after* the instruction's accesses: at an
+   access the charged total is the cycle its instruction starts. JSR/BSR
+   are charged by the caller, RTS by the routine, a table jump by the
+   dispatching code. (Each call is an instruction boundary: where an IRQ
+   enters a chunk that runs across the vblank, and where a core would
+   stop at a slice's end. `m.charge(8 + 3)` hides one; write
+   `m.charge(8); m.charge(3);`.)
+2. **Yields SYNC right before every instruction whose access is timed**:
+   `timed(cpu, addr)` -- main `$0000-$1FFF` (not its stack),
+   `$6000-$63FF`, `$7000-$8FFF`; sub `$0000-$1FFF` (not `$1D74-$1D80`),
+   `$6000-$6FFF`; sound `$0040-$007F`, `$4000-$7FFF` -- and before *any*
+   access once `frameDue()` (the chunk has run past the next vblank: that
+   access belongs to the next frame). `yield* at(view, addr)` does both
+   for a computed address. A chip may use a narrower measured set (main
+   gp2-2b `RACY`), at its own risk: `$1030` was missing from it and cost
+   a divergence at frame 6,216.
+3. **Waits with `poll()`** (6.3).
+
+Checked by: each chip's tests (total cycles, the cycle of every write and
+of every SYNC against the oracle's instruction starts) and lockstep:
+`node tools/lockstep-run.mjs 20000 [--play=SEED] [--timing]` (IRQ
+start/end cycles, ROM vs port) and test/oracle/lockstep*.test.mjs.
 
 ## 7. The custom chips, from the game's side
 

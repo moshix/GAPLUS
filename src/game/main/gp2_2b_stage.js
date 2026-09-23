@@ -273,6 +273,7 @@ function* lEB53(m) {
   yield SYNC;
   clr(m, 0x107a); // clr <$7A sub_task
   ch(m, 6);
+  yield SYNC;
   clr(m, 0x1030); // clr <$30 main_task
   ch(m, 6);
   yield* sub_EB5B(m);
@@ -477,7 +478,7 @@ export function* sub_EB9B(m) {
  * The common tail `inc $116E / jmp sub_EB01` (7 + 4) plus sub_EB01.
  * @param {Machine} m
  */
-function nextStep(m) {
+function* nextStep(m) {
   inc(m, 0x116e);
   ch(m, 7 + 4);
   yield* nextTask(m);
@@ -496,7 +497,7 @@ export function* sub_EBA9(m) {
   star(m, 0xa003, 0x87);
   star(m, 0xa002, f ? 0x80 : 0x86);
   if (f) ch(m, 3); // $EBD3: bra $EBC3
-  nextStep(m);
+  yield* nextStep(m);
 }
 
 /**
@@ -509,7 +510,7 @@ export function* sub_EBA9(m) {
 export function* sub_EBD5(m) {
   if (!countTo(m, 0x64, true)) { yield* nextTask(m); return; }
   star(m, 0xa002, 0x87);
-  nextStep(m);
+  yield* nextStep(m);
 }
 
 /**
@@ -524,7 +525,7 @@ export function* sub_EBEC(m) {
   const f = yield* flipped(m);
   star(m, 0xa002, f ? 0x86 : 0x80);
   if (f) ch(m, 3); // $EC0C: bra $EC01
-  nextStep(m);
+  yield* nextStep(m);
 }
 
 /**
@@ -540,7 +541,7 @@ export function* sub_EC0E(m) {
   star(m, 0xa003, f ? 0x86 : 0x80);
   star(m, 0xa002, f ? 0x85 : 0x81);
   if (f) ch(m, 3); // $EC38: bra $EC28
-  nextStep(m);
+  yield* nextStep(m);
 }
 
 /**
@@ -585,7 +586,7 @@ export function* sub_EC71(m) {
   // $EC71: inc $116F / lbne sub_EB01 (Z from the INC)
   const z = inc(m, 0x116f) === 0;
   ch(m, 7 + (z ? 5 : 6));
-  if (z) nextStep(m); else yield* nextTask(m);
+  if (z) yield* nextStep(m); else yield* nextTask(m);
 }
 
 /**

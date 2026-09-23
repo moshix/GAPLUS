@@ -38,7 +38,7 @@
  * (docs/requests/main-E.md 1); re-exported here for existing importers.
  */
 export { FRAME_CYCLES, SPIN, clockOf, setClock, burn } from '../clock.js';
-import { timed } from '../timing.js';
+import { frameDue } from '../scheduler.js';
 
 /**
  * scheduler.js SYNC (a registered symbol): "charged up to here; what
@@ -54,12 +54,15 @@ export const SYNC = Symbol.for('gaplus.sync');
  * request/active flags $6040-$607F. A main-CPU access there may race, so
  * ported code must `yield SYNC` at exactly the cycle its instruction starts.
  */
+// (integration, round 3: + main_task $1030, which the sub CPU clears on
+// a mode change -- seen at frame 6216 of attract, not in the 12,000
+// frames this list was measured on)
 export const RACY = Object.freeze([
   [0x0800, 0x0802], [0x0849, 0x084f], [0x0850, 0x0852], [0x0870, 0x0872],
   [0x09b0, 0x09b2], [0x09b4, 0x09b5], [0x09f4, 0x09f5], [0x0e00, 0x0ea6],
   [0x0eaa, 0x0ed0], [0x0f1e, 0x0f22], [0x0f82, 0x0fd0], [0x100f, 0x1011],
   [0x1013, 0x1014], [0x1016, 0x101b], [0x101e, 0x1021], [0x102c, 0x102d],
-  [0x102e, 0x1030], [0x1035, 0x1038], [0x103a, 0x1044], [0x104a, 0x104c],
+  [0x102e, 0x1031], [0x1035, 0x1038], [0x103a, 0x1044], [0x104a, 0x104c],
   [0x1052, 0x105a], [0x1064, 0x1066], [0x1069, 0x106b], [0x106e, 0x1072],
   [0x107a, 0x107b], [0x1081, 0x10be], [0x10bf, 0x10c2], [0x10cb, 0x10d1],
   [0x10d6, 0x10dc], [0x10e9, 0x10ea], [0x10f8, 0x1100], [0x1103, 0x1104],
@@ -78,9 +81,9 @@ export const RACY = Object.freeze([
 ]);
 
 /**
- * (Integration, round 3.) RACY above is what the sub CPU was seen using
- * in 12,000 frames; it missed main_task $1030, which the sub clears on a
- * mode change. Every shared byte is racy now: src/game/timing.js timed().
+ * RAM another CPU uses -- or any access once the running chunk is past
+ * the next vblank (integration, round 3: scheduler.js frameDue).
  * @param {number} a main-CPU address @returns {boolean}
  */
-export const isRacy = (a) => timed('main', a);
+export const isRacy = (a) => RACY.some(([lo, hi]) => a >= lo && a < hi)
+  || frameDue();

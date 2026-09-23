@@ -26,8 +26,11 @@
  *   WHAT A CHUNK COSTS. (1) The cycles the code charged (`m.charge`,
  *   `m.sub.charge`, `m.sound.charge`): ported code counts the 6809's
  *   cycles instruction by instruction, checked against the oracle's
- *   core in its tests (the sound CPU and main gp2-3b do; the boot's
- *   clock, src/game/clock.js, charges too). (2) Otherwise, if the chunk
+ *   core in its tests (every chip; the boot's clock, src/game/clock.js,
+ *   charges too). One `charge()` call per instruction: each call marks
+ *   an instruction boundary, which is where an IRQ can enter a chunk
+ *   that runs across the vblank, and where an emulated core would stop
+ *   at a slice's end (both decide the slice grid, hence the races). (2) Otherwise, if the chunk
  *   followed a progress marker (a number the code yielded), the cycles
  *   in the optional `costs` table for that address (measured medians,
  *   supplied by the caller; none is shipped: exact charges are the
@@ -35,11 +38,10 @@
  *
  *   So the order in which two CPUs' chunks run, and hence who wins a
  *   race through shared RAM, follows their clocks, with MAME's main ->
- *   sub -> sound order inside a slice. It is exact where the code
- *   charges its cycles and yields SYNC before each access another CPU
- *   can see; measured: every CPU emulated, and the ported sound CPU
- *   with the other two emulated, match the oracle for thousands of
- *   frames (test/oracle/lockstep.test.mjs).
+ *   sub -> sound order inside a slice. It is exact when the code follows
+ *   src/game/timing.js: the full port matches the oracle byte for byte
+ *   over 20,000 frames of attract and of played games
+ *   (test/oracle/lockstep.test.mjs, lockstep-scenarios.test.mjs).
  *
  * YIELD VOCABULARY (for ported code)
  *
@@ -48,15 +50,20 @@
  *                    thread sleeps until the next vblank; if the IRQ is
  *                    taken then, the handler runs first (CWAI wake-up,
  *                    4 cycles).
- *   yield SPIN       a poll loop waiting for another CPU's foreground
- *                    (the $11/$22 handshakes): re-polled once per slice.
- *   yield RENDEZVOUS the IRQ handlers' frame_sync ($10AF) poll: as SPIN.
- *   yield BUSY       after m.charge(): as SYNC; without a charge, a busy
- *                    loop only another CPU can end: as SPIN.
  *   yield SYNC       "I charged time, and what follows may be seen by
  *                    another CPU": resumed once the CPU's clock is inside
  *                    a slice again. Code that charges exact cycles yields
- *                    SYNC right before each shared-RAM access.
+ *                    SYNC right before each shared-RAM access (and any
+ *                    access once {@link frameDue}).
+ *   yield pollAgain(c...)  a failed, charged pass of a poll loop whose
+ *                    instructions take c... cycles (the read first): the
+ *                    loop keeps its phase, the next read happens where
+ *                    the 6809's does (src/game/timing.js poll()).
+ *   yield BUSY       as SYNC (busy loops charge each pass).
+ *   yield SPIN       a poll loop waiting for another CPU, re-read once
+ *   yield RENDEZVOUS per slice at the slice's start (the phase is lost:
+ *                    only the main boot's handshakes still use them, and
+ *                    their end is re-aligned with setClock).
  *   yield <number>   a progress marker: "about to run the code at this
  *                    address" (costs, above); otherwise as SYNC.
  *   yield idle(p)    the CPU loops forever without effect in a loop of
@@ -120,11 +127,10 @@ export const SPIN = Symbol.for('gaplus.SPIN');
 export const RENDEZVOUS = Symbol.for('gaplus.rendezvous');
 
 /**
- * Yielded by a foreground busy loop. Right after charging time
- * (m.charge) it is a timing point, like SYNC (main-C's attract loop);
- * without a charge it is a loop that only another CPU (or an IRQ) can
- * end, handled like SPIN: re-polled once per slice, an IRQ can be
- * taken there (sub-E's sub_EA4C, main-C's coin_jammed).
+ * Yielded by busy foreground code (main-C's attract loop and stores,
+ * sub-E's sub_EA4C, coin_jammed): a timing point, handled like SYNC.
+ * The loops charge each pass, so time passes and an IRQ can be taken
+ * there.
  */
 export const BUSY = Symbol.for('gaplus.busy');
 
@@ -290,6 +296,26 @@ function isIdle(v) {
 /** A foreground that does nothing, forever (a parked, hung CPU). */
 function* parked() { for (;;) yield; }
 
+/**
+ * The ported CPU running a chunk right now (any scheduler), for
+ * {@link frameDue}.
+ * @type {JsAgent | null}
+ */
+let RUNNING = null;
+
+/**
+ * Is the running ported CPU's clock at or past the next vblank? Its chunk
+ * has then run into the next frame, and an access there must wait for
+ * the vblank (the lockstep samples RAM at every vblank, and the other
+ * CPUs' IRQ handlers run first): shared predicates of "must SYNC before
+ * this access" answer true then. False outside the scheduler (routine
+ * tests).
+ * @returns {boolean}
+ */
+export function frameDue() {
+  return RUNNING !== null && RUNNING.now() >= RUNNING.s.nextVblankT;
+}
+
 /** Consecutive zero-cost chunks that count as a JavaScript hang. */
 const STUCK_LIMIT = 1_000_000;
 
@@ -448,7 +474,7 @@ export class JsAgent {
     this.local += this.cost(m.charged[this.n] - before, IRQ_VECTOR[this.n]);
     if (r !== NO_RTI) m.iMask[this.n] = false;
     this.s.onIrq?.(this.n, false, this.local);
-    this.local += this.owed;
+    if (r !== NO_RTI) this.local += this.owed;
     this.owed = 0;
   }
 
@@ -580,6 +606,7 @@ export class JsAgent {
       /** @type {IteratorResult<unknown, unknown>} */
       let r;
       s.current = n;
+      RUNNING = this;
       try {
         r = t.next();
       } catch (e) {
@@ -589,6 +616,7 @@ export class JsAgent {
         continue;
       } finally {
         s.current = -1;
+        RUNNING = null;
         this.recording = false;
       }
       const charged = m.charged[n] - before;
@@ -611,8 +639,14 @@ export class JsAgent {
         if (r.value !== NO_RTI) m.iMask[n] = false;
         s.onIrq?.(n, false, this.local);
         // The interrupted foreground's time after the IRQ's entry point
-        // (the rest of its chunk, or of its poll loop's pass).
-        this.local += this.owed;
+        // (the rest of its chunk, or of its poll loop's pass) -- unless
+        // the handler jumped away: that foreground is abandoned.
+        if (r.value === NO_RTI) {
+          this.wait = RUN;
+          this.fgPoll = null;
+        } else {
+          this.local += this.owed;
+        }
         this.owed = 0;
         if (this.wait === POLL && this.fgPoll) this.fgPoll.next = this.local;
         continue;
@@ -620,9 +654,9 @@ export class JsAgent {
       let ws = RUN;
       if (v === undefined) ws = FRAME;
       else if (v === SPIN || v === RENDEZVOUS) ws = SPINNING;
-      // BUSY after charging time is a timing point (main-C's attract
-      // loop); BUSY without it, a loop that only another CPU ends.
-      else if (v === BUSY) ws = charged > 0 ? RUN : SPINNING;
+      // BUSY is a timing point, like SYNC: every busy loop charges its
+      // passes (a chunk may also begin with it, before its first store).
+      else if (v === BUSY) ws = RUN;
       else if (isIdle(v)) {
         if (inIrq) throw new Error(`${NAMES[n]} CPU: idle inside IRQ`);
         ws = IDLE;

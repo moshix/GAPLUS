@@ -16,7 +16,9 @@
  *     the main CPU also reads and writes: `INC $6056`, `LDA $6040`,
  *     the clear loops at main $D8D2/$DF19);
  *   - every write to an IRQ latch and every ANDCC (the scheduler reads
- *     them at vblank).
+ *     them at vblank);
+ *   - any store once the clock is past the next vblank (frameDue: the
+ *     boot's long checksum and clear stretches).
  *
  * The scheduler (src/game/scheduler.js) runs the CPUs in MAME's 256-cycle
  * slices, main then sub then sound, and resumes a thread only while its
@@ -46,7 +48,7 @@ import { SOUND, SOUND_AT, soundAt } from './routines.js';
 import { soundWord } from '../romdata.js';
 import { disp8 } from '../m6809ops.js';
 import { call } from '../call.js';
-import { SYNC, idle } from '../scheduler.js';
+import { SYNC, idle, frameDue } from '../scheduler.js';
 
 /** @typedef {import('../../machine/machine.js').Machine} Machine */
 /** @typedef {import('../../machine/machine.js').CpuView} CpuView */
@@ -185,7 +187,9 @@ export function* reset_sound(m) {
   // $E01A: cmpa #$00 / beq $E020 / lda #$01
   s.charge(2 + 3);
   if (a !== 0) { a = 1; s.charge(2); }
-  // $E020: sta $0380 -- ROM error flag
+  // $E020: sta $0380 -- ROM error flag (after the long checksum stretch:
+  // a timing point, or the store would land frames early)
+  yield SYNC;
   s.poke(SND_ROM_ERROR, a);
   s.charge(5);
   // $E023: lda #$22 / sta <$40 -- the handshake answer
@@ -201,7 +205,7 @@ export function* reset_sound(m) {
   // polls $6040), so each of those is timed.
   for (let x = 0; x < 0x300; x += 2) {
     s.charge(7);
-    if (x >= 0x40 && x < 0x80) yield SYNC;
+    if ((x >= 0x40 && x < 0x80) || frameDue()) yield SYNC;
     s.peek16(0x3000);
     s.poke16(x, 0);
     s.charge(8 + 4 + 3);
@@ -210,11 +214,13 @@ export function* reset_sound(m) {
   // cmpx #$E40F / bcs $E03E): the tempo table (32 bytes).
   s.charge(3 + 3);
   for (let i = 0; i < 0x20; i += 2) {
+    s.charge(8); // ldd ,x++
+    if (frameDue()) yield SYNC;
     s.poke16(SND_TEMPO + i, s.read16(TEMPO_INIT + i));
+    s.charge(8 + 4 + 3);
   }
   // The last word loaded was $E40D-$E40E: A = $04 afterwards.
   a = s.read(TEMPO_INIT + 0x1e);
-  s.charge(16 * (8 + 8 + 4 + 3));
   // $E047: lds #$0400 -- the stack (no RAM effect in the port)
   s.charge(4);
   // $E04B: andcc #$EF -- IRQs unmasked (the latch is still off)

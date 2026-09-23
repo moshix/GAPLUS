@@ -41,6 +41,7 @@ import {
   createEngine, engineKindFrom, loadEngineChoice, saveEngineChoice,
 } from './engine.js';
 import { EngineChooser } from './ui/chooser.js';
+import { aiAllowed, autoplayInputs, createPageAutoplayer } from './ai/hook.js';
 
 /**
  * Displayed in the corner of the page and the single place this is written
@@ -128,6 +129,13 @@ export class Game {
     this.choosing = false;
     /** The self-playing AI is on (JavaScript engine only). */
     this.aiEnabled = false;
+    /**
+     * The AI playing the current engine, while it is on (src/ai/hook.js).
+     * @type {import('./ai/autoplay.js').AutoPlayer | null}
+     */
+    this.ai = null;
+    /** The AI's own switches; the engine runs on these while it plays. */
+    this.aiInputs = createInputState();
     /** Last seen state of the pad's pause control, for edge detection. */
     this.padPauseHeld = false;
     this.zoom = 2;
@@ -226,8 +234,11 @@ export class Game {
    */
   setAi(on) {
     const engine = this.engine;
-    const allowed = on && engine?.supportsAi === true;
+    const allowed = on && aiAllowed(engine);
     this.aiEnabled = allowed;
+    // A fresh AI each time it is switched on: its history is of the frames
+    // it saw, and it must never outlive the engine it read.
+    this.ai = allowed && engine !== null ? createPageAutoplayer(engine, this.aiInputs) : null;
     if (engine !== null && 'aiEnabled' in engine) engine.aiEnabled = allowed;
     // Hand the controls back cleanly, or a stale gamepad input stays held.
     this.mux.clearSource('gamepad');
@@ -291,7 +302,9 @@ export class Game {
     if (engine === null || !engine.ready) return;
     this.frameCount += 1;
     this.mux.setAll('gamepad', toSwitchNames(padActions ?? this.gamepad.poll()));
-    engine.runFrame(this.inputs);
+    // The AI hook: while the AI plays the port, the frame runs on its
+    // switches; otherwise (and always on the ROM) on the page's.
+    engine.runFrame(autoplayInputs(engine, this.ai, this.inputs, this.aiInputs));
     // The frame shown is RAM at the vblank instant, then the starfield
     // advances (MAME: screen_update, then screen_vblank(0)). The stars
     // advance every frame even when it is not drawn.
