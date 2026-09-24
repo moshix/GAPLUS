@@ -44,7 +44,8 @@ Every routine is a generator that charges the MC6809's exact cycles
 (`m.sub.charge`, instructions quoted next to the counts) and yields
 `SYNC` right before every instruction that touches shared RAM
 (`timed` in gp2_8_util.js: $0000-$1FFF except the sub stack
-machine.js STACKS.sub, $1D70-$1D80, plus the $6000-$6FFF latch). Pointer operands (`,x`,
+machine.js STACKS.sub, $1D70-$1D80, plus the $6000-$6FFF latch).
+Pointer operands (`,x`,
 `[$1090]`, U/Y of the object handlers) SYNC when their computed address
 is timed (`syncAt`). A routine charges its RTS, or its task's final
 `jmp task_dispatch_sub` (4); callers charge JSR (8) / BSR (7); the

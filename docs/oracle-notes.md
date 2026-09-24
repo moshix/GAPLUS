@@ -282,6 +282,18 @@ at `$15E2-$15E7` was checked to be a push. The service mode only reaches
   port equals the ROM (`test/oracle/lockstep-scenarios.test.mjs`, "RA
   straight to PARSEC 3/8/13"). After one normal stage Round Advance
   works; the browser has no Round Advance control.
+* **task_shot_hits' formation scan can walk all of memory.** `$D2E4`
+  steps X from `$1860` until it equals `formation_end` (`$112D`). That
+  word changes from `$188D` to `$188C` when play starts; if the scan is
+  at X = `$188D` just then, it misses the end and runs on through all
+  64 KB (about 280 frames, the main foreground busy the whole time),
+  treating every byte with b0 clear as a formation slot. Seen in an AI
+  game at PARSEC 1 (tools/ai-lockstep.mjs run 7, frame 1930). The port
+  follows it (its ROM reads are a whole-ROM sweep, romdata.js
+  romSweep), but the scan also reads the three CPUs' S stacks, which
+  the port does not hold: there the port can differ from the ROM (run
+  7: `$10C4` at frame 1935, from the sub stack at `$1D75`). Not fixed;
+  it would need the stacks' contents, i.e. every CPU's registers.
 * `challenging_stages $D860` holds 0-based indexes 2, 7, 12, ... (PARSEC
   3, 8, 13): the listing comment said 3, 8, 13 (fixed in the annotation).
 * All TOP 5 entries are 50,000 at power-on, so a name entry needs more.

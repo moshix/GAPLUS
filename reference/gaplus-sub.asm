@@ -10,7 +10,7 @@
 ; (game_mode $102F, task index $107A); its IRQ copies its sprites into
 ; sprite RAM and meets the main CPU's IRQ at frame_sync ($10AF).
 ; 7723 code bytes, 16853 data bytes, 88 routines, 19 dispatch tables.
-; Coverage input: 2750 executed addresses.
+; Coverage input: 2715 executed addresses.
 
 ; Hardware (docs/hardware.md section 3)
 TILE_RAM         EQU   $0000                 ; tilemap codes

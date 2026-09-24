@@ -36,7 +36,7 @@ import { romSweep } from '../romdata.js';
 
 /**
  * A read of the formation scan's pointer X ($D2E6 `lda ,x+`, `lda -1,x`
- * at $D2F1 / $D39E). The scan ends when X equals formation_end ($112D);
+ * at $D2F1 / $D35A). The scan ends when X equals formation_end ($112D);
  * when that changes under it (from $188D to $188C at the start of play,
  * while X is at $188D), the ROM's scan runs on through all 64 KB, about
  * 280 frames, reading the ROMs as data too: a whole-ROM sweep

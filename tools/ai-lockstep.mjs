@@ -60,7 +60,9 @@ function logPlayer(changes, port) {
   return (f) => {
     while (i < changes.length && changes[i][0] <= f) {
       const mask = changes[i][1];
-      SWITCHES.forEach((name, k) => port.setInput(name, (mask & (1 << k)) !== 0));
+      SWITCHES.forEach((name, k) => {
+        port.setInput(name, (mask & (1 << k)) !== 0);
+      });
       i += 1;
     }
   };

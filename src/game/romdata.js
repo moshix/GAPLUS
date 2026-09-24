@@ -28,6 +28,8 @@
  *     service mode ROM checksums, one per 8 KB chip
  *   main $E000-$FFFF $B743/$B758 LDX -$2000,U:
  *     service RAM test of $0000-$1FFF: the pattern is $E000-$FFFF
+ *   main $A000-$FFFF $D2E6 LDA ,X+, $D2F1/$D35A LDA -1,X:
+ *     the formation scan can miss its end and sweep all memory
  *   main $E000-$E3BF $B7AC/$B7C1 LDX $7FC0,U:
  *     sound-RAM test of $6040-$63FF: the pattern is $E000-$E3BF
  *   sub $A000-$FFFF $E018/$E02B/$E03E ADDA ,X+:
@@ -582,7 +584,7 @@ const RAW = {
     + 'AAAAAID//38AAAAAAAAAAAAAAAAAAAAAAAD4/////38AAAAAAAAAAAAAAAAAAAAAAAAAAA'
     + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/////////////////'
     + '////////////////////////////////////',
-    sweeps: [[0xA000, 0xFFFF], [0xE000, 0xFFFF], [0xE000, 0xE3BF]],
+    sweeps: [[0xA000, 0xFFFF], [0xE000, 0xFFFF], [0xA000, 0xFFFF], [0xE000, 0xE3BF]],
   },
   sub: {
     base: 0xA000,

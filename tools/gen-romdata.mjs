@@ -129,6 +129,13 @@ export const SWEEPS = Object.freeze({
       why: 'service RAM test of $0000-$1FFF: the pattern is $E000-$FFFF',
     },
     {
+      // task_shot_hits' formation scan when formation_end changes under
+      // it: X runs through all 64 KB (docs/oracle-notes.md section 8).
+      // Not an ignoredReader: no coverage session happens to run it.
+      lo: 0xa000, hi: 0xffff, reader: '$D2E6 LDA ,X+, $D2F1/$D35A LDA -1,X',
+      why: 'the formation scan can miss its end and sweep all memory',
+    },
+    {
       // Not an ignoredReader of tools/coverage.mjs: its reads are in
       // coverage dataRead, which the check below accepts here.
       lo: 0xe000, hi: 0xe3bf, reader: '$B7AC/$B7C1 LDX $7FC0,U',

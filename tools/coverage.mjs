@@ -102,12 +102,12 @@ const SESSIONS = [
     // Random play dies in PARSEC 1-2: the stage clears, later stages and
     // the challenging stage's full count come from an AI game's inputs
     // (test/oracle/lockstep-ai.test.mjs replays the same log).
-    name: 'AI game (tools/ai-lockstep.mjs run 0 log) to PARSEC 9',
-    frames: 20000,
+    name: 'AI game (tools/ai-lockstep.mjs run 6 log) to PARSEC 9',
+    frames: 26000,
     /** @param {Board} b */
     setup(b) {
       const log = JSON.parse(readFileSync(
-        join(ROOT, 'test/oracle/data/ai-run0.json'), 'utf8'));
+        join(ROOT, 'test/oracle/data/ai-run6.json'), 'utf8'));
       let next = 0;
       b.inputScript = (f, bb) => {
         while (next < log.changes.length && log.changes[next][0] <= f) {

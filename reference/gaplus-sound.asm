@@ -25,7 +25,7 @@
 ; Every voice steps a volume envelope and a note stream (next_note).
 ; DP stays 0 (never set).
 ; 957 code bytes, 7235 data bytes, 21 routines, 2 dispatch tables.
-; Coverage input: 439 executed addresses.
+; Coverage input: 435 executed addresses.
 
 ; Hardware (docs/hardware.md section 3)
 WSG              EQU   $0000                 ; 15XX sound registers

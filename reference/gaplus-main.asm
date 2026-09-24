@@ -9,7 +9,7 @@
 ; scheduler at $FEB5, scoring and all sound requests (the sub CPU cannot
 ; reach the sound RAM). DP is $10 everywhere after boot.
 ; 13945 code bytes, 10631 data bytes, 159 routines, 23 dispatch tables.
-; Coverage input: 4352 executed addresses.
+; Coverage input: 4340 executed addresses.
 
 ; Hardware (docs/hardware.md section 3)
 TILE_RAM         EQU   $0000                 ; tilemap codes
