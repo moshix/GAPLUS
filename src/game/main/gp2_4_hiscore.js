@@ -6,9 +6,18 @@
  *
  * TASK CONVENTION. The mode-9 task list is run by task_dispatch ($FEB5,
  * gp2_2b). A task ends with `INC <main_task / JMP task_dispatch`; in the
- * port the task performs the INC and RETURNS, and the dispatcher loops
- * (it re-reads game_mode/main_task as the 6809 does). Tasks here are
- * generators because some paths reach a `CWAI #$EF` (one `yield`).
+ * port the task performs the INC, charges the JMP and RETURNS, and the
+ * dispatcher loops (it re-reads game_mode/main_task as the 6809 does).
+ * Tasks here are generators: they yield SYNC before shared accesses, and
+ * the end of mode 9 reaches a `CWAI #$EF` (16 cycles, then one `yield`).
+ *
+ * TIMING (docs/porting-guide.md section 6.4). Every instruction is
+ * charged with its MAME cycles, one `m.charge()` per instruction, after
+ * its accesses; JSR/JMP are charged by the code that executes them. The
+ * helpers rd / rd16 / wr / wr16 / rmw below are one instruction each:
+ * `at()` (SYNC when the access is timed -- nearly everything here is
+ * tile or work RAM below $2000 -- or when the chunk has run past the
+ * vblank), the access, the charge. Cycles are quoted `(n)` in comments.
  *
  * The screen: scores are 8 tile codes, names 14; tile addresses decrease
  * by $20 per column going right (print direction). The table itself
@@ -21,9 +30,10 @@
 import { call } from '../call.js';
 import { mainAt } from './routines.js';
 import { disp8 } from '../m6809ops.js';
-import { fill_tilemap_00_20 } from './gp2_4_svc.js';
+import { at } from '../timing.js';
 
 /** @typedef {import('../../machine/machine.js').Machine} Machine */
+/** @typedef {Generator<unknown, void, unknown>} Gen */
 
 /**
  * `LEAX -$20,X` and friends: 16-bit wrap.
@@ -32,12 +42,77 @@ import { fill_tilemap_00_20 } from './gp2_4_svc.js';
 const add16 = (v, d) => (v + d) & 0xffff;
 
 /**
- * `INC <main_task` ($1030), the common end of a task before
- * `JMP task_dispatch`.
- * @param {Machine} m
+ * One reading instruction of `cyc` cycles (LDA, CMPA, LDB...): SYNC if
+ * needed, read, charge.
+ * @param {Machine} m @param {number} addr @param {number} cyc
+ * @returns {Generator<unknown, number, unknown>}
  */
-function incMainTask(m) {
-  m.poke(0x1030, (m.peek(0x1030) + 1) & 0xff); // main_task
+function* rd(m, addr, cyc) {
+  yield* at(m, addr);
+  const v = m.peek(addr & 0xffff);
+  m.charge(cyc);
+  return v;
+}
+
+/**
+ * One 16-bit load (LDD/LDX/LDU/LDY, high byte first).
+ * @param {Machine} m @param {number} addr @param {number} cyc
+ * @returns {Generator<unknown, number, unknown>}
+ */
+function* rd16(m, addr, cyc) {
+  yield* at(m, addr);
+  const v = m.peek16(addr & 0xffff);
+  m.charge(cyc);
+  return v;
+}
+
+/**
+ * One storing instruction (STA/STB, or CLR on memory with v = 0).
+ * @param {Machine} m @param {number} addr @param {number} v
+ * @param {number} cyc
+ * @returns {Gen}
+ */
+function* wr(m, addr, v, cyc) {
+  yield* at(m, addr);
+  m.poke(addr & 0xffff, v & 0xff);
+  m.charge(cyc);
+}
+
+/**
+ * One 16-bit store (STD/STX/STU, high byte first).
+ * @param {Machine} m @param {number} addr @param {number} v
+ * @param {number} cyc
+ * @returns {Gen}
+ */
+function* wr16(m, addr, v, cyc) {
+  yield* at(m, addr);
+  m.poke16(addr & 0xffff, v & 0xffff);
+  m.charge(cyc);
+}
+
+/**
+ * A read-modify-write (INC/DEC on memory): one instruction, one SYNC.
+ * @param {Machine} m @param {number} addr @param {number} d +1 or -1
+ * @param {number} cyc
+ * @returns {Generator<unknown, number, unknown>} the value written
+ */
+function* rmw(m, addr, d, cyc) {
+  yield* at(m, addr);
+  const v = (m.peek(addr & 0xffff) + d) & 0xff;
+  m.poke(addr & 0xffff, v);
+  m.charge(cyc);
+  return v;
+}
+
+/**
+ * `INC <main_task (6) / JMP task_dispatch (4)` ($1030), the common end
+ * of a task.
+ * @param {Machine} m
+ * @returns {Gen}
+ */
+function* nextTask(m) {
+  yield* rmw(m, 0x1030, 1, 6);
+  m.charge(4); // jmp task_dispatch
 }
 
 /**
@@ -46,44 +121,67 @@ function incMainTask(m) {
  * 1 hiscore_draw_screen, 2 hiscore_enter_name.
  * @see gaplus-main.asm $AFBE
  * @param {Machine} m
- * @returns {Generator<unknown, void, unknown>}
+ * @returns {Gen}
  */
 export function* task_hiscore_entry(m) {
-  // $AFBE: lda hiscore_step / asla / ldx #$AFC7 / jmp [a,x]
-  // (asla is an 8-bit shift; a,x is a signed offset)
-  const a = (m.peek(0x11ff) << 1) & 0xff;
-  const target = m.read16(disp8(0xafc7, a));
+  // $AFBE: lda hiscore_step (5) / asla (2) / ldx #$AFC7 (3) /
+  // jmp [a,x] (7) (asla is an 8-bit shift; a,x is a signed offset)
+  const a = ((yield* rd(m, 0x11ff, 5)) << 1) & 0xff;
+  m.charge(2);
+  m.charge(3);
+  const target = yield* rd16(m, disp8(0xafc7, a), 7);
   yield* call(mainAt(target), m, {});
 }
 
 /**
  * Copy the player's score digits (8 tile codes read from Y going down
- * in address, `LDA ,X / LEAX -1,X`) into a table entry at U.
+ * in address) into a table entry at U: `ldb #8 (2) / tfr y,x (6) /
+ * ldu #u (3)`, then 8 x `lda ,x (4) / sta ,u+ (6) / leax -1,x (5) /
+ * decb (2) / bne (3)`.
  * @param {Machine} m @param {number} y first digit's tile @param {number} u
+ * @returns {Gen}
  */
-function copyScore(m, y, u) {
+function* copyScore(m, y, u) {
+  m.charge(2);
+  m.charge(6);
+  m.charge(3);
   let x = y;
   for (let b = 8; b > 0; b -= 1) {
-    m.poke(u, m.peek(x));
+    const a = yield* rd(m, x, 4);
+    yield* wr(m, u, a, 6);
     u = add16(u, 1);
+    m.charge(5);
     x = add16(x, -1);
+    m.charge(2);
+    m.charge(3);
   }
 }
 
 /**
- * Move TOP 5 entry n-1 down to entry n: the 8 score bytes at X (from
- * X-$10) and the 14 name bytes at U (from U-$10).
+ * Move TOP 5 entry n-1 down to entry n: `ldx #x (3) / ldu #u (3) /
+ * ldb #8 (2)`, 8 x `lda -$10,x (5) / sta ,x+ (6) / decb (2) / bne (3)`,
+ * `ldb #$0E (2)`, 14 x the same on U.
  * @param {Machine} m @param {number} x @param {number} u
+ * @returns {Gen}
  */
-function shiftEntry(m, x, u) {
-  // $B59C: lda -$10,x / sta ,x+ (8x), then lda -$10,u / sta ,u+ (14x)
+function* shiftEntry(m, x, u) {
+  m.charge(3);
+  m.charge(3);
+  m.charge(2);
   for (let b = 8; b > 0; b -= 1) {
-    m.poke(x, m.peek(add16(x, -0x10)));
+    const a = yield* rd(m, add16(x, -0x10), 5);
+    yield* wr(m, x, a, 6);
     x = add16(x, 1);
+    m.charge(2);
+    m.charge(3);
   }
+  m.charge(2);
   for (let b = 0x0e; b > 0; b -= 1) {
-    m.poke(u, m.peek(add16(u, -0x10)));
+    const a = yield* rd(m, add16(u, -0x10), 5);
+    yield* wr(m, u, a, 6);
     u = add16(u, 1);
+    m.charge(2);
+    m.charge(3);
   }
 }
 
@@ -101,145 +199,202 @@ function shiftEntry(m, x, u) {
  * below all five goes straight to the end of mode 9 (lB2AE).
  * @see gaplus-main.asm $B49F
  * @param {Machine} m
- * @returns {Generator<unknown, void, unknown>}
+ * @returns {Gen}
  */
 export function* hiscore_check(m) {
-  yield* call(mainAt(0xdf19), m, {}); // $B49F: jsr sound_all_off
-  // $B4A2: ldy #$03FD / lda <cur_player / beq / ldy #$03EB
-  const y = m.peek(0x102d) === 0 ? 0x03fd : 0x03eb;
+  m.charge(8); // $B49F: jsr sound_all_off
+  yield* call(mainAt(0xdf19), m, {});
+  // $B4A2: ldy #$03FD (4) / lda <cur_player (4) / beq (3) /
+  // ldy #$03EB (4)
+  m.charge(4);
+  let y = 0x03fd;
+  const p = yield* rd(m, 0x102d, 4);
+  m.charge(3);
+  if (p !== 0) { y = 0x03eb; m.charge(4); }
 
-  // $B4AE-$B524: five unrolled compare loops. `cmpa ,u / bcs next /
-  // bne found`: lower digit -> try the next entry, higher -> rank found,
-  // 8 equal digits also count as found (a tie goes above).
+  // $B4AE-$B524: five unrolled compare loops. `tfr y,x (6) / ldu #e (3)
+  // / ldb #8 (2)`, then `lda ,x (4) / cmpa ,u (4) / bcs next (3) /
+  // bne found (3) / leau 1,u (5) / leax -1,x (5) / decb (2) / bne (3)`:
+  // lower digit -> try the next entry, higher -> rank found, 8 equal
+  // digits (`bra found` (3)) also count as found (a tie goes above).
   let rank = 5;
   for (let k = 0; k < 5 && rank === 5; k += 1) {
+    m.charge(6);
+    m.charge(3);
+    m.charge(2);
     let x = y;
     let u = 0x0900 + k * 0x10;
     let lower = false;
-    for (let b = 8; b > 0; b -= 1) {
-      const a = m.peek(x);
-      const t = m.peek(u);
+    for (let b = 8; ; b -= 1) {
+      const a = yield* rd(m, x, 4);
+      const t = yield* rd(m, u, 4);
+      m.charge(3); // bcs
       if (a < t) { lower = true; break; }
+      m.charge(3); // bne
       if (a !== t) break;
+      m.charge(5);
       u = add16(u, 1);
+      m.charge(5);
       x = add16(x, -1);
+      m.charge(2); // decb
+      m.charge(3); // bne
+      if (b === 1) { m.charge(3); break; } // bra found
     }
     if (!lower) rank = k;
   }
   if (rank === 5) {
-    // $B526: jmp lB2AE -- not in the TOP 5
+    m.charge(4); // $B526: jmp lB2AE -- not in the TOP 5
     yield* hiscore_leave(m);
     return;
   }
 
-  // $B529/$B53C/...: std entry_cursor / std entry_music_ptr / sta entry_rank
-  m.poke16(0x09a2, 0x024f + rank * 3); // entry_cursor
-  m.poke16(0x09a7, rank === 0 ? 0x6043 : 0x6044); // entry_music_ptr
+  // $B529/$B53C/...: ldd (3) / std entry_cursor (6) / ldd (3) /
+  // std entry_music_ptr (6)
+  m.charge(3);
+  yield* wr16(m, 0x09a2, 0x024f + rank * 3, 6); // entry_cursor
+  m.charge(3);
+  yield* wr16(m, 0x09a7, rank === 0 ? 0x6043 : 0x6044, 6);
   if (rank === 4) {
     // $B581: the last entry is simply replaced (no entry_rank store)
-    copyScore(m, y, 0x0940);
+    yield* copyScore(m, y, 0x0940);
+    m.charge(4); // jmp lB64C
   } else {
-    m.poke(0x09a6, 4 - rank); // entry_rank
+    m.charge(2); // lda #n
+    yield* wr(m, 0x09a6, 4 - rank, 5); // sta entry_rank
+    m.charge(3); // bra lB594
     // $B594..: shift entries 3->4, 2->3, ... down to rank->rank+1. Each
-    // step `DEC entry_rank` and stops at 0; the last step (0->1) ends
-    // with `CLR entry_rank` instead of a DEC.
+    // step `DEC entry_rank (7) / BEQ (3)` and stops at 0; the last step
+    // (0->1) ends with `CLR entry_rank` (7) instead. The score then
+    // goes into the freed entry (`bra lB64C` (3), except lB63C which
+    // falls through).
     let dst = 0x0940;
     for (;;) {
-      shiftEntry(m, dst, dst + 0x50);
+      yield* shiftEntry(m, dst, dst + 0x50);
       if (dst === 0x0910) {
-        m.poke(0x09a6, 0); // $B603: clr entry_rank
+        yield* wr(m, 0x09a6, 0, 7); // $B603: clr entry_rank
         break;
       }
-      const r = (m.peek(0x09a6) - 1) & 0xff;
-      m.poke(0x09a6, r); // dec entry_rank
+      const r = yield* rmw(m, 0x09a6, -1, 7); // dec entry_rank
+      m.charge(3); // beq
       if (r === 0) break;
       dst -= 0x10;
     }
-    copyScore(m, y, dst - 0x10);
+    yield* copyScore(m, y, dst - 0x10);
+    if (dst !== 0x0920) m.charge(3); // bra lB64C
   }
-  // $B64C: inc hiscore_step / inc <main_task / inc <main_task
-  m.poke(0x11ff, (m.peek(0x11ff) + 1) & 0xff);
-  incMainTask(m);
-  incMainTask(m);
+  // $B64C: inc hiscore_step (7) / inc <main_task (6) x2 / jmp (4)
+  yield* rmw(m, 0x11ff, 1, 7);
+  yield* rmw(m, 0x1030, 1, 6);
+  yield* nextTask(m);
 }
 
 /**
- * Print zero-terminated strings from a table of (tile address, string)
- * pairs ended by a zero address ($AFDD / $B24E loops). `ldx ,y++ / beq`
- * ends on a zero address.
+ * The $AFDD loop: print zero-terminated strings from a table of (tile
+ * address, string) pairs ended by a zero address: `ldx ,y++ (8) / beq
+ * (3) / ldu ,y++ (8)`, then `lda ,u+ (6) / beq (3) / sta ,x (4) /
+ * leax -$20,x (5) / bra (3)`.
  * @param {Machine} m @param {number} y table
- * @param {boolean} swap true: (string, tile) pairs as in dat_B164
- * @param {boolean} clearAttr also `CLR $0400,U` per character
+ * @returns {Gen}
  */
-function printTable(m, y, swap, clearAttr) {
+function* printTable(m, y) {
   for (;;) {
-    const first = m.read16(y);
+    let dst = yield* rd16(m, y, 8);
     y = add16(y, 2);
-    if (first === 0) return;
-    const second = m.read16(y);
+    m.charge(3);
+    if (dst === 0) return;
+    let src = yield* rd16(m, y, 8);
     y = add16(y, 2);
-    let src = swap ? first : second;
-    let dst = swap ? second : first;
     for (;;) {
-      const a = m.read(src);
+      const a = yield* rd(m, src, 6);
       src = add16(src, 1);
+      m.charge(3);
       if (a === 0) break;
-      m.poke(dst, a);
-      if (clearAttr) m.poke(add16(dst, 0x400), 0);
+      yield* wr(m, dst, a, 4);
+      m.charge(5);
       dst = add16(dst, -0x20);
+      m.charge(3);
     }
   }
 }
 
 /**
  * Fixed-length rows from a (tile address, source) table ($AFF2 / $B00A):
- * `ldb #n / ldx ,y++ / beq / ldu ,y++` then n x `lda ,u+ / sta ,x /
- * leax -$20,x`.
+ * `ldb #n (2) / ldx ,y++ (8) / beq (3) / ldu ,y++ (8)` then n x
+ * `lda ,u+ (6) / sta ,x (4) / leax -$20,x (5) / decb (2) / bne (3)`,
+ * `bra (3)`.
  * @param {Machine} m @param {number} y @param {number} n
+ * @returns {Gen}
  */
-function drawRows(m, y, n) {
+function* drawRows(m, y, n) {
   for (;;) {
-    let x = m.read16(y);
+    m.charge(2);
+    let x = yield* rd16(m, y, 8);
     y = add16(y, 2);
+    m.charge(3);
     if (x === 0) return;
-    let u = m.read16(y);
+    let u = yield* rd16(m, y, 8);
     y = add16(y, 2);
     for (let b = n; b > 0; b -= 1) {
-      m.poke(x, m.read(u));
+      const a = yield* rd(m, u, 6);
       u = add16(u, 1);
+      yield* wr(m, x, a, 4);
+      m.charge(5);
       x = add16(x, -0x20);
+      m.charge(2);
+      m.charge(3);
     }
+    m.charge(3);
   }
 }
 
 /**
  * The reverse ($B266 / $B27E): read n tile codes from the screen (U,
- * going right) back into the table (X, going up).
+ * going right) back into the table (X, going up): `ldu ,y++ (8) / beq
+ * (3) / ldx ,y++ (8) / ldb #n (2)`, n x `lda ,u (4) / sta ,x+ (6) /
+ * leau -$20,u (5) / decb (2) / bne (3)`, `bra (3)`.
  * @param {Machine} m @param {number} y @param {number} n
+ * @returns {Gen}
  */
-function readRows(m, y, n) {
+function* readRows(m, y, n) {
   for (;;) {
-    let u = m.read16(y);
+    let u = yield* rd16(m, y, 8);
     y = add16(y, 2);
+    m.charge(3);
     if (u === 0) return;
-    let x = m.read16(y);
+    let x = yield* rd16(m, y, 8);
     y = add16(y, 2);
+    m.charge(2);
     for (let b = n; b > 0; b -= 1) {
-      m.poke(x, m.peek(u));
+      const a = yield* rd(m, u, 4);
+      yield* wr(m, x, a, 6);
       x = add16(x, 1);
+      m.charge(5);
       u = add16(u, -0x20);
+      m.charge(2);
+      m.charge(3);
     }
+    m.charge(3);
   }
 }
 
 /**
- * `STA ,X / LEAX -$20,X` n times: a column of attribute bytes.
- * @param {Machine} m @param {number} x @param {number} v @param {number} n
+ * A column of 27 attribute bytes: `ldx #x (3)`, then the setup (`ldd
+ * #$021B` (3) or `lda #$1B` (2)), then 27 x `sta ,x (4)` or `clr ,x (6)`
+ * / `leax -$20,x (5) / decb|deca (2) / bne (3)`.
+ * @param {Machine} m @param {number} x @param {number} v
+ * @param {number} setup cycles of the count load
+ * @param {number} st cycles of the store
+ * @returns {Gen}
  */
-function attrColumn(m, x, v, n) {
-  for (let b = n; b > 0; b -= 1) {
-    m.poke(x, v);
+function* attrColumn(m, x, v, setup, st) {
+  m.charge(3);
+  m.charge(setup);
+  for (let b = 0x1b; b > 0; b -= 1) {
+    yield* wr(m, x, v, st);
+    m.charge(5);
     x = add16(x, -0x20);
+    m.charge(2);
+    m.charge(3);
   }
 }
 
@@ -252,53 +407,105 @@ function attrColumn(m, x, v, n) {
  * columns; entry_timer = 5, hiscore_step 2, next task.
  * @see gaplus-main.asm $AFCD
  * @param {Machine} m
- * @returns {Generator<unknown, void, unknown>}
+ * @returns {Gen}
  */
 export function* hiscore_draw_screen(m) {
-  yield* call(mainAt(0xdf5d), m, {}); // jsr clear_sprite_shadows
-  m.poke16(0x1600, 0x7848); // player_y / player_x
-  m.poke(0x1e01, 0); // clr $1E01
-  printTable(m, 0xb070, false, false); // $AFD9: headings, ranks
-  drawRows(m, 0xb092, 8); // $AFEE: scores
-  drawRows(m, 0xb0a8, 0x0e); // $B006: names
-  // $B01E: the placeholder name row, with attribute $3F
+  m.charge(8); // jsr clear_sprite_shadows
+  yield* call(mainAt(0xdf5d), m, {});
+  m.charge(3); // ldd #$7848
+  yield* wr16(m, 0x1600, 0x7848, 6); // player_y / player_x
+  yield* wr(m, 0x1e01, 0, 7); // clr $1E01
+  m.charge(4); // $AFD9: ldy #$B070
+  yield* printTable(m, 0xb070); // headings, ranks
+  m.charge(4); // $AFEE: ldy #$B092
+  yield* drawRows(m, 0xb092, 8); // scores
+  m.charge(4); // $B006: ldy #$B0A8
+  yield* drawRows(m, 0xb0a8, 0x0e); // names
+  // $B01E: the placeholder name row, with attribute $3F: ldu #$B138 (3)
+  // / ldx entry_cursor (6) / ldb #$0E (2), 14 x `lda ,u+ (6) / sta ,x
+  // (4) / lda #$3F (2) / sta $0400,x (8) / leax -$20,x (5) / decb (2) /
+  // bne (3)`
+  m.charge(3);
   let u = 0xb138;
-  let x = m.peek16(0x09a2); // entry_cursor
+  let x = yield* rd16(m, 0x09a2, 6);
+  m.charge(2);
   for (let b = 0x0e; b > 0; b -= 1) {
-    m.poke(x, m.read(u));
+    const a = yield* rd(m, u, 6);
     u = add16(u, 1);
-    m.poke(add16(x, 0x400), 0x3f);
+    yield* wr(m, x, a, 4);
+    m.charge(2);
+    yield* wr(m, add16(x, 0x400), 0x3f, 8);
+    m.charge(5);
     x = add16(x, -0x20);
+    m.charge(2);
+    m.charge(3);
   }
-  // $B036: 11 attribute bytes of 1 going DOWN the screen (leax $20,x)
-  x = m.peek16(0x09a2);
+  // $B036: 11 attribute bytes of 1 going DOWN the screen: ldx (6) /
+  // ldb #$0B (2), 11 x `lda #1 (2) / sta $0400,x (8) / leax $20,x (5) /
+  // decb (2) / bne (3)`
+  x = yield* rd16(m, 0x09a2, 6);
+  m.charge(2);
   for (let b = 0x0b; b > 0; b -= 1) {
-    m.poke(add16(x, 0x400), 0x01);
+    m.charge(2);
+    yield* wr(m, add16(x, 0x400), 0x01, 8);
+    m.charge(5);
     x = add16(x, 0x20);
+    m.charge(2);
+    m.charge(3);
   }
-  attrColumn(m, 0x078a, 0x02, 0x1b); // $B047: ldd #$021B
-  attrColumn(m, 0x078d, 0x02, 0x1b); // $B055
-  m.poke(0x09a5, 0x05); // entry_timer
-  m.poke(0x11ff, (m.peek(0x11ff) + 1) & 0xff); // inc hiscore_step
-  incMainTask(m);
+  yield* attrColumn(m, 0x078a, 0x02, 3, 4); // $B047: ldd #$021B
+  yield* attrColumn(m, 0x078d, 0x02, 3, 4); // $B055
+  m.charge(2); // lda #5
+  yield* wr(m, 0x09a5, 0x05, 5); // entry_timer
+  yield* rmw(m, 0x11ff, 1, 7); // inc hiscore_step
+  yield* nextTask(m);
 }
 
 /**
  * Compare the zero-terminated ROM string at X with the tiles from $024F
- * going right ($B212 / $B22B loops). `lda ,x+ / cmpa ,u / bne /
- * leau -$20,u / lda ,x / bne`.
+ * going right ($B212 / $B22B loops): `ldx #s (3) / ldu #$024F (3)`,
+ * then `lda ,x+ (6) / cmpa ,u (4) / bne (3) / leau -$20,u (5) /
+ * lda ,x (4) / bne (3)`.
  * @param {Machine} m @param {number} x
- * @returns {boolean} the whole string matched
+ * @returns {Generator<unknown, boolean, unknown>} the whole string matched
  */
-function nameIs(m, x) {
+function* nameIs(m, x) {
+  m.charge(3);
+  m.charge(3);
   let u = 0x024f;
   for (;;) {
-    const a = m.read(x);
+    const a = yield* rd(m, x, 6);
     x = add16(x, 1);
-    if (a !== m.peek(u)) return false;
+    const t = yield* rd(m, u, 4);
+    m.charge(3);
+    if (a !== t) return false;
+    m.charge(5);
     u = add16(u, -0x20);
-    if (m.read(x) === 0) return true;
+    const n = yield* rd(m, x, 4);
+    m.charge(3);
+    if (n === 0) return true;
   }
+}
+
+/**
+ * fill_tilemap_00_20 ($B77C, gp2_4_svc.js) as called from the name
+ * entry, where the IRQ is on: the same stores, charged per instruction
+ * for the scheduler (gp2_4_svc.js times it on the service mode's burn
+ * clock instead). `ldx #0 (3) / ldu #$0020 (3)`, 512 x `ldy WATCHDOG
+ * (7) / stu ,x++ (8) / cmpx #$0400 (4) / bne (3)`, `rts (5)`.
+ * @param {Machine} m
+ * @returns {Gen}
+ */
+function* fillTilemap(m) {
+  m.charge(3);
+  m.charge(3);
+  for (let x = 0; x !== 0x400; x += 2) {
+    yield* rd16(m, 0x7c00, 7); // the watchdog read
+    yield* wr16(m, x, 0x0020, 8);
+    m.charge(4);
+    m.charge(3);
+  }
+  m.charge(5);
 }
 
 /**
@@ -309,41 +516,79 @@ function nameIs(m, x) {
  * leaves that loop (only the watchdog read at $B241 keeps it alive).
  * Otherwise (and after the first secret), lB25F.
  * @param {Machine} m
- * @returns {Generator<unknown, void, unknown>}
+ * @returns {Gen}
  */
 function* hiscore_finish(m) {
-  if (nameIs(m, 0xb146)) {
-    m.poke(0x1000, 0x08); // $B225: sta <lives_setting
-  } else if (nameIs(m, 0xb155)) {
-    // $B23E: jsr fill_tilemap_00_20, then the endless loop $B241
-    fill_tilemap_00_20(m);
+  if (yield* nameIs(m, 0xb146)) {
+    m.charge(2); // lda #8
+    yield* wr(m, 0x1000, 0x08, 4); // $B227: sta <lives_setting
+    m.charge(3); // bra lB25F
+  } else if (yield* nameIs(m, 0xb155)) {
+    m.charge(8); // $B23E: jsr fill_tilemap_00_20
+    yield* fillTilemap(m);
+    // $B241: the endless loop. The vblank IRQ keeps running in between
+    // (the scheduler enters it at an instruction boundary, as ever).
     for (;;) {
-      m.peek(0x7c00); // $B241: ldb WATCHDOG
-      printTable(m, 0xb164, true, true);
-      // Every pass writes the same bytes; the vblank IRQ keeps running
-      // in between, so the port repeats the pass once per frame.
-      yield;
+      yield* rd(m, 0x7c00, 5); // $B241: ldb WATCHDOG
+      m.charge(4); // ldy #$B164
+      let y = 0xb164;
+      // lB248: ldx ,y++ (8) / beq $B241 (3) / ldu ,y++ (8); lB24E:
+      // lda ,x+ (6) / beq lB25D (3) / sta ,u (4) / clr $0400,u (10) /
+      // leau -$20,u (5) / bra (3); lB25D: bra lB248 (3). The table is
+      // (string, tile address) pairs.
+      for (;;) {
+        let x = yield* rd16(m, y, 8);
+        y = add16(y, 2);
+        m.charge(3);
+        if (x === 0) break;
+        let u = yield* rd16(m, y, 8);
+        y = add16(y, 2);
+        for (;;) {
+          const a = yield* rd(m, x, 6);
+          x = add16(x, 1);
+          m.charge(3);
+          if (a === 0) break;
+          yield* wr(m, u, a, 4);
+          yield* wr(m, add16(u, 0x400), 0, 10);
+          m.charge(5);
+          u = add16(u, -0x20);
+          m.charge(3);
+        }
+        m.charge(3); // lB25D: bra lB248
+      }
     }
   }
   // lB25F
-  yield* call(mainAt(0xdf19), m, {}); // jsr sound_all_off
-  readRows(m, 0xb092, 8); // $B262: scores back into the table
-  readRows(m, 0xb0a8, 0x0e); // $B27A: names
-  // $B292: blank the rows of the TOP 5 screen: ldx ,y / beq / leay 4,y
-  // then the string dat_B11C (spaces) with the attribute cleared
+  m.charge(8); // jsr sound_all_off
+  yield* call(mainAt(0xdf19), m, {});
+  m.charge(4); // $B262: ldy #$B092
+  yield* readRows(m, 0xb092, 8); // scores back into the table
+  m.charge(4); // $B27A: ldy #$B0A8
+  yield* readRows(m, 0xb0a8, 0x0e); // names
+  // $B292: blank the rows of the TOP 5 screen: ldy #$B070 (4); lB296:
+  // ldx ,y (5) / beq (3) / leay 4,y (5) / ldu #$B11C (3), then the
+  // spaces with the attribute cleared: lda ,u+ (6) / beq lB296 (3) /
+  // sta ,x (4) / clr $0400,x (10) / leax -$20,x (5) / bra (3)
+  m.charge(4);
   let y = 0xb070;
   for (;;) {
-    let x = m.read16(y);
+    let x = yield* rd16(m, y, 5);
+    m.charge(3);
     if (x === 0) break;
+    m.charge(5);
     y = add16(y, 4);
+    m.charge(3);
     let u = 0xb11c;
     for (;;) {
-      const a = m.read(u);
+      const a = yield* rd(m, u, 6);
       u = add16(u, 1);
+      m.charge(3);
       if (a === 0) break;
-      m.poke(x, a);
-      m.poke(add16(x, 0x400), 0);
+      yield* wr(m, x, a, 4);
+      yield* wr(m, add16(x, 0x400), 0, 10);
+      m.charge(5);
       x = add16(x, -0x20);
+      m.charge(3);
     }
   }
   yield* hiscore_leave(m);
@@ -357,21 +602,40 @@ function* hiscore_finish(m) {
  * player 2, $DBE2 for player 1, both inside task_player_hit_check's
  * flow; they end with `JMP task_dispatch`), called as a tail call.
  * @param {Machine} m
- * @returns {Generator<unknown, void, unknown>}
+ * @returns {Gen}
  */
 function* hiscore_leave(m) {
-  m.poke(0x11ff, 0); // clr hiscore_step
-  m.fill(0x1860, 0x01, 0x2a); // $B2B1: formation_flags
-  attrColumn(m, 0x078a, 0x00, 0x1b); // $B2BD: clr ,x (x27)
-  attrColumn(m, 0x078d, 0x00, 0x1b); // $B2CA
-  m.poke16(0x1854, 0xc000); // $B2D7
-  m.poke(0x188a, 0); // clr formation_flags+42
-  yield* call(mainAt(0xdf19), m, {}); // jsr sound_all_off
-  m.poke(0x1e01, 0x81);
+  yield* wr(m, 0x11ff, 0, 7); // clr hiscore_step
+  // $B2B1: ldx #$1860 (3) / lda #1 (2) / ldb #$2A (2), 42 x
+  // `sta ,x+ (6) / decb (2) / bne (3)` -- formation_flags
+  m.charge(3);
+  m.charge(2);
+  m.charge(2);
+  for (let i = 0; i < 0x2a; i += 1) {
+    yield* wr(m, 0x1860 + i, 0x01, 6);
+    m.charge(2);
+    m.charge(3);
+  }
+  yield* attrColumn(m, 0x078a, 0x00, 2, 6); // $B2BD: clr ,x (x27)
+  yield* attrColumn(m, 0x078d, 0x00, 2, 6); // $B2CA
+  m.charge(3); // $B2D7: ldd #$C000
+  yield* wr16(m, 0x1854, 0xc000, 6);
+  yield* wr(m, 0x188a, 0, 7); // clr formation_flags+42
+  m.charge(8); // jsr sound_all_off
+  yield* call(mainAt(0xdf19), m, {});
+  m.charge(2); // lda #$81
+  yield* wr(m, 0x1e01, 0x81, 5);
+  m.charge(16);
   yield; // $B2E8: cwai #$EF -- wait for vblank
-  const p2 = m.peek(0x102d) !== 0; // lda <cur_player
-  m.poke(0x102f, 0x05); // game_mode
-  m.poke(0x1030, 0x06); // main_task
+  // lda <cur_player (4) / beq (3) / lda #5 (2) / sta <game_mode (4) /
+  // lda #6 (2) / sta <main_task (4) / jmp (4)
+  const p2 = (yield* rd(m, 0x102d, 4)) !== 0;
+  m.charge(3);
+  m.charge(2);
+  yield* wr(m, 0x102f, 0x05, 4); // game_mode
+  m.charge(2);
+  yield* wr(m, 0x1030, 0x06, 4); // main_task
+  m.charge(4);
   yield* call(mainAt(p2 ? 0xdc0b : 0xdbe2), m, {});
 }
 
@@ -389,127 +653,230 @@ function* hiscore_leave(m) {
  * ([entry_music_ptr] = 1) every frame.
  * @see gaplus-main.asm $B304
  * @param {Machine} m
- * @returns {Generator<unknown, void, unknown>}
+ * @returns {Gen}
  */
 export function* hiscore_enter_name(m) {
   // The two `JMP hiscore_enter_name` ($B390, $B3A5) restart from the top.
   for (;;) {
-    let u = m.peek16(0x09a2); // entry_cursor
-    m.poke(add16(u, 0x400), 0); // $B307: clr $0400,u
-    if (m.peek(0x1016) === 0) { // $B30B: lda <frame_counter / lbeq
-      // lB496: dec entry_timer / lbeq lB212
-      const t = (m.peek(0x09a5) - 1) & 0xff;
-      m.poke(0x09a5, t);
-      if (t === 0) { yield* hiscore_finish(m); return; }
-      incMainTask(m);
+    // $B304: ldu entry_cursor (6) / clr $0400,u (10) /
+    // lda <frame_counter (4) / lbeq lB496 (5, 6 taken)
+    const u = yield* rd16(m, 0x09a2, 6);
+    yield* wr(m, add16(u, 0x400), 0, 10);
+    if ((yield* rd(m, 0x1016, 4)) === 0) {
+      m.charge(6);
+      // lB496: dec entry_timer (7) / lbeq lB212 (5/6) / bra lB478 (3)
+      const t = yield* rmw(m, 0x09a5, -1, 7);
+      if (t === 0) { m.charge(6); yield* hiscore_finish(m); return; }
+      m.charge(5);
+      m.charge(3);
+      yield* nextTask(m);
       return;
     }
-    // $B311: ldd entry_cursor / andb #$F0 / cmpd ... (unsigned lbcs)
-    const d = m.peek16(0x09a2) & 0xfff0;
+    m.charge(5);
+    // $B311: ldd entry_cursor (6) / andb #$F0 (2), then `cmpd #n (5) /
+    // lbcs (5, 6 taken)` for $00A0, $0120, $01A0 (unsigned)
+    const d = (yield* rd16(m, 0x09a2, 6)) & 0xfff0;
+    m.charge(2);
     let x;
+    m.charge(5);
     if (d < 0x00a0) {
-      // lB482: ldu $09A0 / clr -$20,u / clr ,u / clr $20,u
-      u = m.peek16(0x09a0);
-      m.poke(add16(u, -0x20), 0);
-      m.poke(u, 0);
-      m.poke(add16(u, 0x20), 0);
-      const t = (m.peek(0x09a5) + 1) & 0xff; // inc entry_timer
-      m.poke(0x09a5, t);
-      if (t === 0) { yield* hiscore_finish(m); return; }
-      incMainTask(m);
+      m.charge(6);
+      // lB482: ldu $09A0 (6) / clr -$20,u (7) / clr ,u (6) /
+      // clr $20,u (7) / inc entry_timer (7) / lbeq (5/6) / bra (3)
+      const v = yield* rd16(m, 0x09a0, 6);
+      yield* wr(m, add16(v, -0x20), 0, 7);
+      yield* wr(m, v, 0, 6);
+      yield* wr(m, add16(v, 0x20), 0, 7);
+      const t = yield* rmw(m, 0x09a5, 1, 7);
+      if (t === 0) { m.charge(6); yield* hiscore_finish(m); return; }
+      m.charge(5);
+      m.charge(3);
+      yield* nextTask(m);
       return;
-    } else if (d < 0x0120) {
+    }
+    m.charge(5);
+    m.charge(5);
+    if (d < 0x0120) {
+      m.charge(6);
       x = 0xb445; // lB3A8: blood type
-      fieldStep(m, d, 0x00a0);
-    } else if (d < 0x01a0) {
-      x = 0xb437; // lB3DF: age digits
-      fieldStep(m, d, 0x0120);
+      yield* fieldStep(m, 0x00a0);
     } else {
-      x = 0xb418; // $B32E: name letters
+      m.charge(5);
+      m.charge(5);
+      if (d < 0x01a0) {
+        m.charge(6);
+        x = 0xb437; // lB3DF: age digits
+        yield* fieldStep(m, 0x0120);
+      } else {
+        m.charge(5);
+        x = 0xb418; // $B32E: name letters
+        m.charge(3);
+      }
     }
 
-    // lB331
-    m.poke(m.peek16(0x09a7), 0x01); // sta [entry_music_ptr]
-    const flip = m.peek(0x102c) !== 0;
-    let a = m.peek(0x6804); // $B337: P1 stick (read even when flipped)
-    if (flip) a = m.peek(0x6806);
-    if ((a & 0x02) !== 0) {
-      if (m.peek(0x116d) !== 0) { decRepeat(m); break; } // lB393
-      m.poke(0x116d, 0x08);
-      // $B34F: lda $116C / inc $116C / lda a,x -- the OLD value indexes
-      const i = m.peek(0x116c);
-      m.poke(0x116c, (i + 1) & 0xff);
-      a = m.read(disp8(x, i));
-      if (a === 0) { m.poke(0x116c, 0); continue; } // lB3A2: restart
-      m.poke(m.peek16(0x09a2), a);
-      break; // jmp lB44B
-    }
-    // lB361: the stick is read again
-    a = m.peek(0x6804);
-    if (flip) a = m.peek(0x6806);
-    if ((a & 0x08) !== 0) {
-      if (m.peek(0x116d) !== 0) { decRepeat(m); break; }
-      m.poke(0x116d, 0x08);
-      // $B379: dec $116C / lda $116C / lda a,x
-      const i = (m.peek(0x116c) - 1) & 0xff;
-      m.poke(0x116c, i);
-      a = m.read(disp8(x, i));
-      if (a === 0) {
-        // lB38B: lda -2,x / sta $116C -- wrap around. The byte 2 before
-        // each alphabet is the index of its terminator ($B416 = $1C for
-        // the letters, $B435 = $0B the digits, $B443 = $05 "ABO ?"), so
-        // the next step left lands on the last character.
-        m.poke(0x116c, m.read(add16(x, -2)));
-        continue; // jmp hiscore_enter_name
+    // lB331 entry_step_char: lda #1 (2) / sta [entry_music_ptr] (9)
+    m.charge(2);
+    yield* at(m, 0x09a7);
+    m.poke(m.peek16(0x09a7), 0x01);
+    m.charge(9);
+    // $B337: lda $6804 (5) / ldb <flip_screen (4) / beq (3) /
+    // lda $6806 (5) / anda #$02 (2) / beq lB361 (3)
+    if (((yield* stick(m)) & 0x02) !== 0) {
+      // lda $116D (5) / bne lB393 (3)
+      if ((yield* rd(m, 0x116d, 5)) !== 0) {
+        m.charge(3);
+        yield* decRepeat(m);
+        break;
       }
-      m.poke(m.peek16(0x09a2), a);
+      m.charge(3);
+      m.charge(2); // lda #8
+      yield* wr(m, 0x116d, 0x08, 5);
+      // $B34F: lda $116C (5) / inc $116C (7) / lda a,x (5) / beq (3) --
+      // the OLD value indexes
+      const i = yield* rd(m, 0x116c, 5);
+      yield* rmw(m, 0x116c, 1, 7);
+      const a = yield* rd(m, disp8(x, i), 5);
+      m.charge(3);
+      if (a === 0) {
+        // lB3A2: clr $116C (7) / jmp hiscore_enter_name (4): restart
+        yield* wr(m, 0x116c, 0, 7);
+        m.charge(4);
+        continue;
+      }
+      // ldu entry_cursor (6) / sta ,u (4) / jmp entry_fire (4)
+      yield* wr(m, yield* rd16(m, 0x09a2, 6), a, 4);
+      m.charge(4);
       break;
     }
-    // lB399: lda $116D / lbeq lB44B / bra lB393
-    if (m.peek(0x116d) !== 0) decRepeat(m);
+    // lB361: the stick is read again, same instructions, bit 3
+    if (((yield* stick(m)) & 0x08) !== 0) {
+      if ((yield* rd(m, 0x116d, 5)) !== 0) {
+        m.charge(3);
+        yield* decRepeat(m);
+        break;
+      }
+      m.charge(3);
+      m.charge(2);
+      yield* wr(m, 0x116d, 0x08, 5);
+      // $B379: dec $116C (7) / lda $116C (5) / lda a,x (5) / beq (3)
+      yield* rmw(m, 0x116c, -1, 7);
+      const i = yield* rd(m, 0x116c, 5);
+      const a = yield* rd(m, disp8(x, i), 5);
+      m.charge(3);
+      if (a === 0) {
+        // lB38B: lda -2,x (5) / sta $116C (5) / jmp (4) -- wrap around.
+        // The byte 2 before each alphabet is the index of its
+        // terminator ($B416 = $1C for the letters, $B435 = $0B the
+        // digits, $B443 = $05 "ABO ?"), so the next step left lands on
+        // the last character.
+        const w = yield* rd(m, add16(x, -2), 5);
+        yield* wr(m, 0x116c, w, 5);
+        m.charge(4);
+        continue; // jmp hiscore_enter_name
+      }
+      yield* wr(m, yield* rd16(m, 0x09a2, 6), a, 4);
+      m.charge(4);
+      break;
+    }
+    // lB399: lda $116D (5) / lbeq entry_fire (5/6) / bra lB393 (3)
+    if ((yield* rd(m, 0x116d, 5)) !== 0) {
+      m.charge(5);
+      m.charge(3);
+      yield* decRepeat(m);
+    } else {
+      m.charge(6);
+    }
     break;
   }
 
-  // lB44B: fire accepts the character and moves the cursor right
-  let u = m.peek16(0x09a2);
-  let a = m.peek(0x6805);
-  if (m.peek(0x102c) !== 0) a = m.peek(0x6807);
+  // entry_fire ($B44B): fire accepts the character and moves the cursor
+  // right. ldu entry_cursor (6) / lda $6805 (5) / ldb <flip_screen (4) /
+  // beq (3) / lda $6807 (5) / anda #$02 (2) / beq lB47D (3)
+  let u = yield* rd16(m, 0x09a2, 6);
+  let a = yield* rd(m, 0x6805, 5);
+  const flip = yield* rd(m, 0x102c, 4);
+  m.charge(3);
+  if (flip !== 0) a = yield* rd(m, 0x6807, 5);
+  m.charge(2);
+  m.charge(3);
   if ((a & 0x02) !== 0) {
-    if (m.peek(0x09a4) === 0) { // entry_fire_latch
-      m.poke(0x09a4, 0x01); // inc (it was 0)
-      m.poke(add16(u, 0x400), 0x01);
+    // lda entry_fire_latch (5) / bne lB478 (3)
+    const latch = yield* rd(m, 0x09a4, 5);
+    m.charge(3);
+    if (latch === 0) {
+      // inc latch (7) / lda #1 (2) / sta $0400,u (8) / leau -$20,u (5)
+      // / stu entry_cursor (6) / clr $116C (7) / lda #5 (2) /
+      // sta entry_timer (5)
+      yield* rmw(m, 0x09a4, 1, 7);
+      m.charge(2);
+      yield* wr(m, add16(u, 0x400), 0x01, 8);
+      m.charge(5);
       u = add16(u, -0x20);
-      m.poke16(0x09a2, u);
-      m.poke(0x116c, 0);
-      m.poke(0x09a5, 0x05); // entry_timer
+      yield* wr16(m, 0x09a2, u, 6);
+      yield* wr(m, 0x116c, 0, 7);
+      m.charge(2);
+      yield* wr(m, 0x09a5, 0x05, 5); // entry_timer
     }
   } else {
-    m.poke(0x09a4, 0); // lB47D: clr entry_fire_latch
+    yield* wr(m, 0x09a4, 0, 7); // lB47D: clr entry_fire_latch
+    m.charge(3); // bra lB478
   }
-  incMainTask(m); // lB478
+  yield* nextTask(m); // lB478
 }
 
 /**
- * lB393: `DEC $116D` (the auto-repeat delay).
+ * The stick read of $B337 / $B361: `lda $6804 (5) / ldb <flip_screen
+ * (4) / beq (3) / lda $6806 (5)` (the P1 stick is read even when the
+ * screen is flipped), then `anda #n (2) / beq (3)` charged here too.
  * @param {Machine} m
+ * @returns {Generator<unknown, number, unknown>} the stick byte
  */
-function decRepeat(m) {
-  m.poke(0x116d, (m.peek(0x116d) - 1) & 0xff);
+function* stick(m) {
+  let a = yield* rd(m, 0x6804, 5);
+  const flip = yield* rd(m, 0x102c, 4);
+  m.charge(3);
+  if (flip !== 0) a = yield* rd(m, 0x6806, 5);
+  m.charge(2);
+  m.charge(3);
+  return a;
+}
+
+/**
+ * lB393: `DEC $116D (7) / JMP entry_fire (4)` (the auto-repeat delay).
+ * @param {Machine} m
+ * @returns {Gen}
+ */
+function* decRepeat(m) {
+  yield* rmw(m, 0x116d, -1, 7);
+  m.charge(4);
 }
 
 /**
  * lB3A8 / lB3DF: within a 2-cell field the cursor stays on the four
  * cells base..base+$30; anywhere else (the gap after the field) it jumps
  * 2 cells right (`leau -$40,u`) and the alphabet index restarts.
- * @param {Machine} m @param {number} d entry_cursor & $FFF0
+ * `ldx #alphabet (3) / ldd entry_cursor (6) / andb #$F0 (2)`, then
+ * `cmpd #n (5) / lbeq entry_step_char (5, 6 taken)` for base+$30, +$20,
+ * +$10, base; else `ldu (6) / leau -$40,u (5) / stu (6) / clr $116C (7)
+ * / jmp entry_step_char (4)`.
+ * @param {Machine} m
  * @param {number} base $00A0 or $0120
+ * @returns {Gen}
  */
-function fieldStep(m, d, base) {
-  // cmpd #base+$30 / +$20 / +$10 / base, each lbeq lB331
-  if (d === base + 0x30 || d === base + 0x20 || d === base + 0x10
-      || d === base) return;
-  m.poke16(0x09a2, add16(m.peek16(0x09a2), -0x40));
-  m.poke(0x116c, 0);
+function* fieldStep(m, base) {
+  m.charge(3);
+  const d = (yield* rd16(m, 0x09a2, 6)) & 0xfff0;
+  m.charge(2);
+  for (const c of [base + 0x30, base + 0x20, base + 0x10, base]) {
+    m.charge(5);
+    if (d === c) { m.charge(6); return; }
+    m.charge(5);
+  }
+  const u = yield* rd16(m, 0x09a2, 6);
+  m.charge(5);
+  yield* wr16(m, 0x09a2, add16(u, -0x40), 6);
+  yield* wr(m, 0x116c, 0, 7);
+  m.charge(4);
 }
 
 /**
@@ -520,21 +887,32 @@ function fieldStep(m, d, base) {
  * -$0E83), the 9th goes to $0E84.
  * @see gaplus-main.asm $B656
  * @param {Machine} m
+ * @returns {Gen}
  */
-export function load_formation_sprites(m) {
-  // $B656: ldx #$B6BA / lda <$6E / asla / ldx a,x (signed offset)
-  let x = m.read16(disp8(0xb6ba, (m.peek(0x106e) << 1) & 0xff));
+export function* load_formation_sprites(m) {
+  // $B656: ldx #$B6BA (3) / lda <$6E (4) / asla (2) / ldx a,x (6)
+  // (signed offset) / ldu #$0E02 (3)
+  m.charge(3);
+  const a = ((yield* rd(m, 0x106e, 4)) << 1) & 0xff;
+  m.charge(2);
+  let x = yield* rd16(m, disp8(0xb6ba, a), 6);
+  m.charge(3);
   let u = 0x0e02;
-  // Each run is `ldd ,x++` then do { std ,u++ } while (u != end).
+  // Each run is `ldd ,x++ (8)` then do { std ,u++ (8) / cmpu #end (5) /
+  // bne (3) } while (u != end).
   for (const end of [0x0e16, 0x0e20, 0x0e28, 0x0e2c, -1,
     0x0e58, 0x0e6c, 0x0e7c, 0x0e84]) {
-    if (end === -1) { u = 0x0e30; continue; } // $B689: ldu #$0E30
-    const d = m.read16(x);
+    if (end === -1) { u = 0x0e30; m.charge(3); continue; } // ldu #$0E30
+    const d = yield* rd16(m, x, 8);
     x = add16(x, 2);
     do {
-      m.poke16(u, d);
+      yield* wr16(m, u, d, 8);
       u = add16(u, 2);
+      m.charge(5);
+      m.charge(3);
     } while (u !== end);
   }
-  m.poke16(0x0e84, m.read16(x)); // $B6B4: ldd ,x++ / std $0E84
+  // $B6B4: ldd ,x++ (8) / std $0E84 (6) / rts (5)
+  yield* wr16(m, 0x0e84, yield* rd16(m, x, 8), 6);
+  m.charge(5);
 }

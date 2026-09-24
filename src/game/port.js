@@ -2,7 +2,7 @@
 /**
  * The JavaScript port as one object: a Machine, the three CPUs' ported
  * code and the scheduler, behind the same front-end API as the oracle's
- * Board (test/m6809/board.mjs), so src/engine.js drives either the same
+ * Board (src/emu/board.js), so src/engine.js drives either the same
  * way and lockstep tests treat them alike:
  *
  *   port.runFrame()        one frame: vblank, handlers, foregrounds, up to
@@ -28,7 +28,6 @@ import { subCpu, chipReport as subReport } from './sub/index.js';
 import { soundCpu } from './sound/index.js';
 
 /** @typedef {import('./scheduler.js').Agent} Agent */
-/** @typedef {import('./scheduler.js').CostTable} CostTable */
 /** @typedef {import('../machine/namcoio.js').InputState} InputState */
 
 /**
@@ -58,7 +57,6 @@ export function portStatus() {
  * @typedef {object} PortOptions
  * @property {Array<Agent | null | undefined>} [agents] per CPU, an agent
  *   instead of the ported code (tests: the fallback bridge)
- * @property {CostTable} [costs] measured marker costs
  * @property {number} [quantum] slice length in cycles (default 256)
  */
 
@@ -80,7 +78,8 @@ export class Port {
     this.bangs = 0;
     this.machine.io.onBang = () => {
       this.bangs += 1;
-      this.onBang?.(this.scheduler.frameCycle());
+      // The cycle of the write itself, as the ROM engine reports it.
+      this.onBang?.(this.scheduler.accessCycle());
     };
     for (const [n, cpu] of /** @type {const} */ ([[0, mainCpu],
       [1, subCpu], [2, soundCpu]])) {
@@ -93,7 +92,7 @@ export class Port {
     /** The scheduler (powers the board on). */
     this.scheduler = new Scheduler(this.machine,
       { main: mainCpu, sub: subCpu, sound: soundCpu },
-      { agents: opts.agents, costs: opts.costs, quantum: opts.quantum });
+      { agents: opts.agents, quantum: opts.quantum });
   }
 
   /** Frames completed. */

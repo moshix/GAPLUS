@@ -1,7 +1,7 @@
 // Copyright 2026 by Moshix
 /**
  * Screenshot the ORIGINAL ROM, running on the emulated board
- * (test/m6809/board.mjs), through the port's own renderer.
+ * (src/emu/board.js), through the port's own renderer.
  *
  *   node tools/shoot.mjs out.png FRAME [options]
  *

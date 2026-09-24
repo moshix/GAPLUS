@@ -26,6 +26,7 @@ import { call } from '../call.js';
 import { mainWord, mainRom } from '../romdata.js';
 import { SPIN, burn, setClock, FRAME_CYCLES } from '../clock.js';
 import { SYNC } from './gp2_2b_state.js';
+import { ioRead, ioStore } from '../timing.js';
 
 /** @typedef {import('../../machine/machine.js').Machine} Machine */
 
@@ -94,12 +95,16 @@ export function* reset_main(m) {
   m.poke(0x7c00, 0);
   // sta 5, lda #$10 2, tfr a,dp 6, lds #$1600 4, ldd #$01FF 3
   yield* burn(m, 5 + 2 + 6 + 4 + 3);
-  // $E016: std $6808 -- 56XX command 1 (switches), arg 9 = F
-  m.poke16(0x6808, 0x01ff);
+  // $E016: std $6808 -- 56XX command 1 (switches), arg 9 = F. The
+  // chip accesses below that are not an extended instruction's 5th
+  // cycle state theirs (timing.js ioRead / ioStore): std writes $6809
+  // on cycle index 5, clr writes on 6, `,u+` / `,x+` access on 5.
+  m.poke(0x6808, 0x01);
+  ioStore(m, 0x6809, 0xff, 5);
   yield* burn(m, 6);
   // $E019: clr $6818 -- read-modify-write: reads the 58XX first
   m.peek(0x6818);
-  m.poke(0x6818, 0);
+  ioStore(m, 0x6818, 0, 6);
   // clr 7, ldx #0 3, ldu #$0020 3
   yield* burn(m, 7 + 3 + 3);
 
@@ -140,18 +145,18 @@ export function* reset_main(m) {
   // $E064: ldd #$080F / ldu #$6808 / ldx #$6818 / sta ,u+ / lda #$05 /
   // sta ,x+ -- 56XX mode 8 and 58XX mode 5 (the self-check)
   yield* burn(m, 3 + 3 + 3);
-  m.poke(0x6808, 0x08);
+  ioStore(m, 0x6808, 0x08, 5);
   yield* burn(m, 6 + 2);
-  m.poke(0x6818, 0x05);
+  ioStore(m, 0x6818, 0x05, 5);
   yield* burn(m, 6);
   // $E073: lbsr delay_65536
   yield* delay(m, 9);
   // $E076: stb ,u+ / stb ,x+ / cmpu #$6810 / bne -- args 9-15 = F on
   // both chips, interleaved. 20 cycles per pass.
   for (let i = 0; i < 7; i += 1) {
-    m.poke(0x6809 + i, 0x0f);
+    ioStore(m, 0x6809 + i, 0x0f, 5);
     yield* burn(m, 6);
-    m.poke(0x6819 + i, 0x0f);
+    ioStore(m, 0x6819 + i, 0x0f, 5);
     yield* burn(m, 14);
   }
   // $E080: lbsr delay_65536
@@ -161,7 +166,7 @@ export function* reset_main(m) {
   // -- 56XX mode 8: the sum of args 9-15 (7 x F = $69) as two nibbles.
   // (ldd reads $6800 then $6801.)
   let hi = m.peek(0x6800) & 0x0f;
-  let lo = m.peek(0x6801) & 0x0f;
+  let lo = ioRead(m, 0x6801, 5) & 0x0f;
   // ldd 6, anda 2, andb 2, cmpd 5, beq 3
   yield* burn(m, 18);
   if (hi !== 0x06 || lo !== 0x09) {
@@ -171,7 +176,7 @@ export function* reset_main(m) {
   }
   // $E095: ldd $6810 ... cmpd #$0F0F -- 58XX mode 5 gives F,F
   hi = m.peek(0x6810) & 0x0f;
-  lo = m.peek(0x6811) & 0x0f;
+  lo = ioRead(m, 0x6811, 5) & 0x0f;
   yield* burn(m, 18);
   if (hi !== 0x0f || lo !== 0x0f) {
     // $E0A2: ldd #$2032 / bra boot_chip_error -- error '2': 58XX
@@ -297,7 +302,7 @@ export function* boot_after_handshake(m) {
   // switch nibbles to boot_switches $1006-$1009 (22 cycles a pass; the
   // store starts 8 cycles in)
   for (let i = 0; i < 4; i += 1) {
-    const v = m.peek(0x6800 + i) & 0x0f;
+    const v = ioRead(m, 0x6800 + i, 5) & 0x0f;
     yield* burn(m, 8);
     m.poke(0x1006 + i, v);
     yield* burn(m, 14);

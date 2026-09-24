@@ -97,7 +97,7 @@ function* nextTask(m) {
   // (integration, round 3) the sub CPU may clear main_task: timed
   yield SYNC;
   inc(m, 0x1030);
-  ch(m, 6 + 4);
+  ch(m, 6); ch(m, 4);
 }
 
 /**
@@ -116,7 +116,7 @@ export function* sub_EA21(m) {
   let a = m.peek(0x1171);
   ch(m, 5);
   const p2 = m.peek(0x102d) !== 0; // cur_player
-  ch(m, 4 + 3);
+  ch(m, 4); ch(m, 3);
   if (p2) {
     a = m.peek(0x1172);
     ch(m, 5);
@@ -126,16 +126,16 @@ export function* sub_EA21(m) {
   // $EA2E: lda $1164 / beq lEA84
   yield SYNC;
   a = m.peek(0x1164);
-  ch(m, 5 + 3);
+  ch(m, 5); ch(m, 3);
   if (a !== 0) {
     // $EA33: lda $1166 / anda #7 / asla / ldx #dat_A000 / ldx a,x / clra
     const base = () => m.read16('main', 0xa000 + ((m.peek(0x1166) & 7) << 1));
     let x = base();
-    ch(m, 5 + 2 + 2 + 3 + 6 + 2);
+    ch(m, 5); ch(m, 2); ch(m, 2); ch(m, 3); ch(m, 6); ch(m, 2);
     // $EA3F: ldb $1164 / cmpb #$A5 / bcs / ldb #$A5 / stb $1164
     yield SYNC;
     let b = m.peek(0x1164);
-    ch(m, 5 + 2 + 3);
+    ch(m, 5); ch(m, 2); ch(m, 3);
     if (b >= 0xa5) {
       b = 0xa5;
       ch(m, 2);
@@ -146,33 +146,33 @@ export function* sub_EA21(m) {
     for (;;) {
       // $EA4B: decb / cmpb #$FF / beq lEA84
       b = (b - 1) & 0xff;
-      ch(m, 2 + 2 + 3);
+      ch(m, 2); ch(m, 2); ch(m, 3);
       if (b === 0xff) break;
       // $EA50: aslb / bcc / coma / lda #$01 -- D = B * 2 (9 bits)
       ch(m, 2 + 3 + ((b & 0x80) ? 2 + 2 : 0));
       // $EA56: ldx d,x / rorb (B restored: C was 1 exactly when it
       // shifted out a 1) / cmpx #$1000 / bcc $EA76
       const e = m.read16('main', (x + (b << 1)) & 0xffff);
-      ch(m, 9 + 2 + 4 + 3);
+      ch(m, 9); ch(m, 2); ch(m, 4); ch(m, 3);
       if (e >= 0x1000) {
         // $EA76: lda #$60 / sta -$1000,x / lda #$0B / sta -$0C00,x / bra
         ch(m, 2);
         yield* wr(m, e - 0x1000, 0x60);
-        ch(m, 8 + 2);
+        ch(m, 8); ch(m, 2);
         yield* wr(m, e - 0x0c00, 0x0b);
-        ch(m, 8 + 3);
+        ch(m, 8); ch(m, 3);
       } else {
         // $EA5E: lda #$60 / sta ,x / lda #$0A / sta $0400,x
         ch(m, 2);
         yield* wr(m, e, 0x60);
-        ch(m, 4 + 2);
+        ch(m, 4); ch(m, 2);
         yield* wr(m, e + 0x0400, 0x0a);
         ch(m, 8);
       }
       // $EA68: lda $1166 / anda #7 / asla / ldx #dat_A000 / ldx a,x /
       // clra / bra $EA4B
       x = base();
-      ch(m, 5 + 2 + 2 + 3 + 6 + 2 + 3);
+      ch(m, 5); ch(m, 2); ch(m, 2); ch(m, 3); ch(m, 6); ch(m, 2); ch(m, 3);
     }
   }
   yield* nextTask(m); // $EA84
@@ -191,14 +191,14 @@ export function* sub_EA89(m) {
   // $EA8C: leax 2,x / cmpx #$1716 / beq / lda ,x / cmpa #$E0 / bcs /
   // clr $0801,x / bra
   for (let x = 0x16ce; ; x += 2) {
-    ch(m, 5 + 4 + 3);
+    ch(m, 5); ch(m, 4); ch(m, 3);
     if (x === 0x1716) break;
     const v = yield* rd(m, x);
-    ch(m, 4 + 2 + 3);
+    ch(m, 4); ch(m, 2); ch(m, 3);
     if (v >= 0xe0) {
       yield* syncAt(x + 0x0801);
       clr(m, x + 0x0801);
-      ch(m, 10 + 3);
+      ch(m, 10); ch(m, 3);
     }
   }
   yield* nextTask(m); // $EA9F
@@ -224,7 +224,7 @@ function* inList(m, p, endCycles) {
     ch(m, endCycles);
     yield SYNC;
     const st = m.peek(0x1035); // cmpa <$35
-    ch(m, 4 + 3);
+    ch(m, 4); ch(m, 3);
     if (a === st) return true;
   }
 }
@@ -236,7 +236,7 @@ function* inList(m, p, endCycles) {
  */
 function* stepJump(m, tbl) {
   const t = m.read16('main', disp8(tbl, (m.peek(0x116e) << 1) & 0xff));
-  ch(m, 5 + 2 + 3 + 7);
+  ch(m, 5); ch(m, 2); ch(m, 3); ch(m, 7);
   yield* call(mainAt(t), m, {});
 }
 
@@ -293,7 +293,7 @@ export function* sub_EB5B(m) {
   clr(m, 0x116f);
   ch(m, 7);
   clr(m, 0x107c);
-  ch(m, 6 + 4); // clr <$7C / jmp task_dispatch
+  ch(m, 6); ch(m, 4); // clr <$7C / jmp task_dispatch
 }
 
 /**
@@ -328,7 +328,7 @@ function countTo(m, n, long) {
 function* flipped(m) {
   yield SYNC;
   const f = m.peek(0x102c) !== 0;
-  ch(m, 4 + 3);
+  ch(m, 4); ch(m, 3);
   return f;
 }
 
@@ -358,7 +358,7 @@ export function* sub_EAD5(m) {
   if (countTo(m, 0x3c, false)) {
     if (yield* flipped(m)) {
       clr(m, 0x1170); // $EAFC: clr $1170 / bra
-      ch(m, 7 + 3);
+      ch(m, 7); ch(m, 3);
     } else {
       ch(m, 2);
       m.poke(0x1170, 0x02);
@@ -367,7 +367,7 @@ export function* sub_EAD5(m) {
     star(m, 0xa003, 0x87);
     star(m, 0xa002, 0x87);
     inc(m, 0x116e);
-    ch(m, 7 + 3); // inc $116E / bra sub_EB01
+    ch(m, 7); ch(m, 3); // inc $116E / bra sub_EB01
   }
   yield* nextTask(m);
 }
@@ -388,7 +388,7 @@ export function* sub_EB06(m) {
     m.poke(0xa002, v);
     ch(m, 5 + (f ? 3 : 0));
     inc(m, 0x116e);
-    ch(m, 7 + 3); // $EB1C: inc $116E / bra sub_EB01
+    ch(m, 7); ch(m, 3); // $EB1C: inc $116E / bra sub_EB01
   }
   yield* nextTask(m);
 }
@@ -417,7 +417,7 @@ export function* sub_EB2B(m) {
   ch(m, 2);
   yield SYNC;
   m.poke(0x1016, 0x07); // frame_counter
-  ch(m, 4 + 3);
+  ch(m, 4); ch(m, 3);
   yield* lEB53(m);
 }
 
@@ -444,7 +444,7 @@ export function* sub_EB66(m) {
     star(m, 0xa002, 0x9f);
     // $EC9F: brn $EC59 -- "branch never": a disabled jump to the step
     // advance; falls through to jmp sub_EB01. Deliberately kept inert.
-    ch(m, 3 + 4);
+    ch(m, 3); ch(m, 4);
     yield* nextTask(m);
     return;
   }
@@ -470,7 +470,7 @@ export function* sub_EB9B(m) {
   m.poke(0x6058, 0x01); // snd_request+24
   ch(m, 5);
   inc(m, 0x116e);
-  ch(m, 7 + 4); // inc $116E / jmp sub_EB01
+  ch(m, 7); ch(m, 4); // inc $116E / jmp sub_EB01
   yield* nextTask(m);
 }
 
@@ -480,7 +480,7 @@ export function* sub_EB9B(m) {
  */
 function* nextStep(m) {
   inc(m, 0x116e);
-  ch(m, 7 + 4);
+  ch(m, 7); ch(m, 4);
   yield* nextTask(m);
 }
 
@@ -571,7 +571,7 @@ export function* sub_EC3A(m) {
   inc(m, 0x116e);
   ch(m, 7);
   clr(m, 0x116f);
-  ch(m, 7 + 4);
+  ch(m, 7); ch(m, 4);
   yield* nextTask(m);
 }
 
@@ -612,7 +612,7 @@ function* copyBytes(m, dst, src, n) {
     const v = yield* rd(m, src + i);
     ch(m, 6);
     yield* wr(m, dst + i, v);
-    ch(m, 6 + 2 + 3);
+    ch(m, 6); ch(m, 2); ch(m, 3);
   }
 }
 
@@ -650,22 +650,22 @@ export function* load_stage_params(m) {
   ch(m, 4);
   while (a >= 0x3c) {
     a -= 0x1e;
-    ch(m, 2 + 3 + 2 + 3);
+    ch(m, 2); ch(m, 3); ch(m, 2); ch(m, 3);
   }
-  ch(m, 2 + 3);
+  ch(m, 2); ch(m, 3);
   yield SYNC;
   m.poke(0x1035, a); // $F4AF: sta <$35
   ch(m, 4);
   const stage = a;
   // $F4B1: lda <$04 / asla / ldx #dat_F486 / ldx a,x -- signed offset
   let x = m.read16('main', disp8(0xf486, (m.peek(0x1004) << 1) & 0xff));
-  ch(m, 4 + 2 + 3 + 6);
+  ch(m, 4); ch(m, 2); ch(m, 3); ch(m, 6);
   // $F4B9: lda <$35 / lda a,x (stage < $3C: positive) / ldb #8 / mul /
   // ldx #dat_EFD2 / leax d,x
   yield SYNC;
   ch(m, 4);
   a = yield* rd(m, disp8(x, stage));
-  ch(m, 5 + 2 + 11 + 3 + 8);
+  ch(m, 5); ch(m, 2); ch(m, 11); ch(m, 3); ch(m, 8);
   x = (0xefd2 + mul(a, 8).v) & 0xffff;
   // Four table copies: ldu #tbl / lda ,x+ / ldb #k / mul / leau d,u /
   // ldb #n / ldy #dst, then n bytes.
@@ -675,14 +675,14 @@ export function* load_stage_params(m) {
     ch(m, 3);
     a = yield* rd(m, x);
     x = (x + 1) & 0xffff;
-    ch(m, 6 + 2 + 11 + 8 + 2 + 4);
+    ch(m, 6); ch(m, 2); ch(m, 11); ch(m, 8); ch(m, 2); ch(m, 4);
     yield* copyBytes(m, dst, (tbl + mul(a, k).v) & 0xffff, k);
   }
   // $F521: ldu #dat_EFC4 / lda ,x+ / asla / ldd a,u / std <$64
   ch(m, 3);
   a = yield* rd(m, x);
   x = (x + 1) & 0xffff;
-  ch(m, 6 + 2);
+  ch(m, 6); ch(m, 2);
   const pa = disp8(0xefc4, (a << 1) & 0xff);
   yield* syncAt(pa);
   if (racy(pa + 1)) yield SYNC;
@@ -699,7 +699,7 @@ export function* load_stage_params(m) {
   // $F539: ldx #dat_F2A6 / lda <$35 / ldb #8 / mul / leax d,x
   ch(m, 3);
   yield SYNC;
-  ch(m, 4 + 2 + 11 + 8);
+  ch(m, 4); ch(m, 2); ch(m, 11); ch(m, 8);
   x = (0xf2a6 + stage * 8) & 0xffff;
   for (const dst of [0x106f, 0x106e, 0x1070, 0x1012, 0x1071, 0x1102,
     0x1103]) {
@@ -709,13 +709,13 @@ export function* load_stage_params(m) {
   // $F561: lda ,x+ / ldx #dat_F266 / ldb #8 / mul / leax d,x / ldb #8 /
   // ldu #$1052, then 8 bytes (lda ,x+ / sta ,u+ / decb / bne)
   a = yield* rd(m, x);
-  ch(m, 6 + 3 + 2 + 11 + 8 + 2 + 3);
+  ch(m, 6); ch(m, 3); ch(m, 2); ch(m, 11); ch(m, 8); ch(m, 2); ch(m, 3);
   yield* copyBytes(m, 0x1052, (0xf266 + mul(a, 8).v) & 0xffff, 8);
   // $F577: clr <$11 / ldb <$04 / cmpb #$05 / bcs / ldb #$01 / stb <$11
   clr(m, 0x1011);
   ch(m, 6);
   const hard = m.peek(0x1004) >= 0x05;
-  ch(m, 4 + 2 + 3);
+  ch(m, 4); ch(m, 2); ch(m, 3);
   if (hard) {
     ch(m, 2);
     m.poke(0x1011, 0x01);
@@ -727,7 +727,7 @@ export function* load_stage_params(m) {
   // $1011: it is stored after.
   ch(m, 3);
   yield SYNC;
-  ch(m, 4 + 2 + 11 + 8);
+  ch(m, 4); ch(m, 2); ch(m, 11); ch(m, 8);
   const d3 = mul(stage, 3);
   x = (0xf1b2 + d3.v) & 0xffff;
   const dsts = [0x100f, 0x1010, 0x1011];
@@ -746,21 +746,21 @@ export function* load_stage_params(m) {
   ch(m, 3);
   for (let p = 0x19e0; p < 0x1a0d; p += 1) {
     yield* wr(m, p, a);
-    ch(m, 6 + 4 + 3);
+    ch(m, 6); ch(m, 4); ch(m, 3);
   }
   // $F5B2: lda <$70 / bne / lda <$DB / beq / lda $1EC3 / anda #$80 /
   // beq / clr <$6F / rts
   yield SYNC;
   a = m.peek(0x1070);
-  ch(m, 4 + 3);
+  ch(m, 4); ch(m, 3);
   if (a === 0) {
     yield SYNC;
     a = m.peek(0x10db); // dual_fighter
-    ch(m, 4 + 3);
+    ch(m, 4); ch(m, 3);
     if (a !== 0) {
       yield SYNC;
       a = m.peek(0x1ec3) & 0x80;
-      ch(m, 5 + 2 + 3);
+      ch(m, 5); ch(m, 2); ch(m, 3);
       if (a !== 0) {
         yield SYNC;
         clr(m, 0x106f);

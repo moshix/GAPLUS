@@ -259,7 +259,7 @@ export function* sub_E654(m) {
   const h = yield* rd(s, 0x1e01, 5);
   s.charge(2); s.charge(3);
   let store = (h & 0x01) === 0;
-  if (!store) { s.charge(2 + 3); store = x < 0x49; }
+  if (!store) { s.charge(2); s.charge(3); store = x < 0x49; }
   if (store) yield* wr(s, 0x1601, x, 5);
   // $E6AF: lda $1E01 ~5 / cmpa $1E8B ~5 / bne $E6C1 ~3 / lda $1601 ~5 /
   // suba #$05 ~2 / cmpa $168B ~5 / beq $E6D3 ~3

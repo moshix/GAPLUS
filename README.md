@@ -35,7 +35,7 @@ the page tells you which files are missing.
 Each time the page opens, it asks what to run:
 
 * **ROM**: the original program on emulated 6809s (the test oracle,
-  `test/m6809/board.mjs`). A badge above the screen says so, so it can't
+  `src/emu/board.js`). A badge above the screen says so, so it can't
   be mistaken for the port.
 * **JavaScript**: the routine-by-routine port. It's marked *in progress*,
   and for now picking it shows "port not ready yet" with a button that
@@ -70,10 +70,36 @@ key to start sound" until you do one of those. Gaplus's attract mode is
 silent until its demo game, about 40 s in. Insert a coin to hear
 something straight away.
 
-The self-playing AI will drive only the JavaScript port, because it reads
-the port's state. In ROM mode its control is greyed out ("JavaScript
-version only") and A does nothing. The AI itself hasn't been written
-yet: for now the toggle only switches a flag.
+### The self-playing AI
+
+Press A (or the AI button) on the JavaScript engine and the computer
+plays. If no game is running it inserts a coin and presses start. It
+reads the game's state from RAM and only closes the switches a player
+has: the 8-way stick and fire. It never writes memory. It drives only
+the JavaScript port. In ROM mode its control is greyed out ("JavaScript
+version only") and A does nothing.
+
+Each frame it predicts every threat 30 frames ahead. Enemy shots are
+computed exactly from RAM; divers fly on at their measured speed and
+turn rate. It then tries 369 stick plans through the fighter's real
+movement code. It keeps the plan that survives longest, passes widest
+of danger and ends under something worth shooting. It fires only when a
+simulated shot meets a target. Changing direction costs a little, so it
+commits to a direction instead of flickering. In challenging stages,
+where nothing can hit it, it hunts. `docs/ai.md` has the details and the
+RAM it reads.
+
+```sh
+node tools/ai-bench.mjs --runs=10 --verbose   # headless games on the port
+```
+
+On 12 games capped at 400,000 frames (110 minutes) each, every game was
+still going at the cap. They averaged PARSEC 168 (worst 145) and a score
+of 1,330,000, and lost 0.042 ships per parsec. The AI then averaged 34 hits
+per challenging stage. Since then a minimum hold per direction and dead
+zones have halved the jitter, to 3.6 direction changes and 0.9 reversals
+a second. They lost fewer ships, not more: 0.017 per parsec in 12 games
+of 38,000 frames. The cost is challenging-stage hits, now 26 a stage.
 
 Any USB stick or pad works. Press G and move the control you want for
 each action. The defaults are the left stick or d-pad to move, button 0
@@ -109,6 +135,7 @@ using Node's built-in WebSocket (Node 22+, no puppeteer). It covers:
 * coin, start and 10 s of play at 60.6 fps, with the AI control
   disabled in ROM mode
 * the chooser reopened with E and closed with Escape
+* on the port, A turns the AI on and it coins up and starts a game
 * the port's "not ready yet" screen and its switch to the ROM version
 * sound after coin + start: audible register images reach the
   AudioWorklet, and the worklet reports non-silent output

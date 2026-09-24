@@ -37,6 +37,7 @@
 import { mainAt } from './routines.js';
 import { call } from '../call.js';
 import { disp8 } from '../m6809ops.js';
+import { ioRead, ioStore } from '../timing.js';
 import {
   BUSY, SYNC, requestJump, pendingJump,
 } from './gp2_3b_state.js';
@@ -209,7 +210,10 @@ export function* game_init(m) {
   m.charge(3);
   yield* clr(m, 0x6828, 8);
   m.charge(2);
-  yield* st(m, 0x6829, 0x0f, 6);
+  // sta ,x+ to the bang trigger: its write is the 6th cycle (index 5).
+  yield BUSY;
+  ioStore(m, 0x6829, 0x0f, 5);
+  m.charge(6);
   for (let x = 0x682a; x <= 0x682d; x += 1) yield* clr(m, x, 8);
   m.charge(2);
   yield* st(m, 0x682e, 0x05, 6);
@@ -227,7 +231,10 @@ export function* game_init(m) {
   m.charge(3);
   yield* clr(m, 0x6828, 8);
   m.charge(2);
-  yield* st(m, 0x6829, 0x0f, 6);
+  // sta ,x+ to the bang trigger: its write is the 6th cycle (index 5).
+  yield BUSY;
+  ioStore(m, 0x6829, 0x0f, 5);
+  m.charge(6);
   yield* clr(m, 0x682a, 8);
   yield* clr(m, 0x682b, 8);
   m.charge(2);
@@ -350,7 +357,7 @@ export function* attract_pass(m, { a }) {
   // / decb / lbeq push_start_1p / jmp push_start_2p
   yield BUSY;
   const tens = m.peek(0x6800) & 0x0f;
-  const units = m.peek(0x6801) & 0x0f;
+  const units = ioRead(m, 0x6801, 5) & 0x0f; // LDD's second byte
   m.charge(6); m.charge(2);
   /** @type {Function} */
   let next;
@@ -426,7 +433,7 @@ export function* draw_credit(m) {
   // $C475: ldd $6800 / andb #$0F / orb #$30 / stb -9,x
   yield BUSY;
   let a = m.peek(0x6800);
-  const b = (m.peek(0x6801) & 0x0f) | 0x30;
+  const b = (ioRead(m, 0x6801, 5) & 0x0f) | 0x30; // LDD's second byte
   m.charge(6); m.charge(2); m.charge(2);
   yield* st(m, x - 9, b, 5);
   // anda #$0F / ora #$20 / cmpa #$20 / beq / ora #$10 / sta -8,x / rts
@@ -478,7 +485,8 @@ function* demoStart(m) {
 export function* attract_demo2(m) {
   m.charge(2);
   yield* st(m, 0x1106, 0x02, 5);
-  m.charge(3 + 3 + 3); // ldx #$0EC2 / ldu #$F025 / ldd #$0081
+  // ldx #$0EC2 / ldu #$F025 / ldd #$0081
+  m.charge(3); m.charge(3); m.charge(3);
   for (let x = 0x0ec2; x < 0x0ece; x += 2) {
     yield* st16(m, x + 0x1000, 0x0081, 9); // std $1000,x
     yield* st16(m, x, 0xf025, 8); // stu ,x++
@@ -855,7 +863,8 @@ export function* attract_phase0(m) {
   const step = m.peek(0x102a);
   m.charge(4); m.charge(2);
   if (step === 0xff) {
-    m.charge(6 + 3 + 4); // lbeq / ldx #dat_AE8C / ldy #dat_C9EE
+    // lbeq / ldx #dat_AE8C / ldy #dat_C9EE
+    m.charge(6); m.charge(3); m.charge(4);
     yield* logoColumns(m, 0xc9ee, true);
     // $CA73: clear flags of entries 1-16, $117A = 0, jmp attract_loop
     for (let p = 0x1e03; p <= 0x1e21; p += 2) yield* clr(m, p, 7);

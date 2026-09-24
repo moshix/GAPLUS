@@ -716,8 +716,8 @@ unchanged.
 
 | Area | Why and what |
 |------|--------------|
-| `test/m6809/m6809.mjs` | new cycle-counted MC6809E core. Exact CC flags (E F H I N Z V C), `cwai`/`sync`, IRQ/FIRQ/NMI stacking, `D` = `A:B`, DP, indexed and indirect modes, MAME cycle counts (`reference/mame/m6809/`). Unit-test it against the manual |
-| `test/m6809/board.mjs` | `GaplusBoard`, below |
+| `src/emu/m6809.js` | new cycle-counted MC6809E core. Exact CC flags (E F H I N Z V C), `cwai`/`sync`, IRQ/FIRQ/NMI stacking, `D` = `A:B`, DP, indexed and indirect modes, MAME cycle counts (`reference/mame/m6809/`). Unit-test it against the manual |
+| `src/emu/board.js` | `GaplusBoard`, below |
 | `src/machine/machine.js` | new memory map. **Big-endian** `peek16`/`poke16`/`read16` (high byte written first). ROM is at the **top** (`read(cpu,a)`: main/sub `a >= $A000`, sound `a >= $E000`). IRQ control **by address bit**, not data. Watchdog on *read* |
 | `src/game/m6809ops.js` | replaces `z80ops.js`: add/adc (H flag), sub/sbc/cmp, `daa` (6809 semantics), `mul`, `neg`, `com`, `asl`/`asr`/`lsr`/`rol`/`ror`, `sex`, 16-bit `addd`/`subd`/`cmpx` flags. Test it exhaustively against the core |
 | `src/game/scheduler.js` | keep the vocabulary (`SPIN`/`HALT`/`BUSY`/`CpuHang`, SPIN rounds, `fgDebt`, `mainTail`). Rewrite the timeline: **one vblank IRQ for all three CPUs**, no sound NMIs, the I/O chips run 50 us after vblank. Re-measure every constant. A `RENDEZVOUS` and slot phases only if Gaplus has the same shape |

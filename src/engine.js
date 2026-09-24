@@ -27,7 +27,7 @@
  * Two engines, chosen on the page's start screen (src/ui/chooser.js) or
  * with `?engine=rom|port`:
  *
- *  - `rom` ("ROM"): the test oracle's board, test/m6809/board.mjs --
+ *  - `rom` ("ROM"): the test oracle's board, src/emu/board.js --
  *    three MC6809 cores running the original program, fetched from roms/
  *    by src/dev/romfetch.js. The original, not the port, and the page
  *    says so on screen.
@@ -139,9 +139,9 @@ export function copyInputs(from, to) {
 // ----------------------------------------------------------------- rom
 
 /**
- * Everything the page needs from test/m6809/board.mjs, in one place.
+ * Everything the page needs from src/emu/board.js, in one place.
  *
- * Used (test/m6809/board.mjs): `new Board({ roms })`, `runFrame()`,
+ * Used (src/emu/board.js): `new Board({ roms })`, `runFrame()`,
  * `powerOn()`, `board.mem` (64 KB, main-CPU addresses), `board.inputs`
  * (the live InputState its I/O chips sample), `board.starCtrl`,
  * `board.soundEnable`, `board.wsgRegs` ($6000-$603F) and the
@@ -265,13 +265,13 @@ export class EmulatedEngine {
     let BoardClass;
     try {
       // Resolved against this module, so the page and the tests agree.
-      const url = opts.boardUrl ?? new URL('../test/m6809/board.mjs', import.meta.url).href;
+      const url = opts.boardUrl ?? new URL('./emu/board.js', import.meta.url).href;
       const mod = await import(url);
       BoardClass = mod.Board ?? mod.default;
-      if (typeof BoardClass !== 'function') throw new Error('board.mjs exports no Board');
+      if (typeof BoardClass !== 'function') throw new Error('board.js exports no Board');
     } catch (err) {
       return new EmulatedEngine(null,
-        `The oracle board (test/m6809/board.mjs) could not be loaded: ${messageOf(err)}`);
+        `The oracle board (src/emu/board.js) could not be loaded: ${messageOf(err)}`);
     }
     try {
       const engine = new EmulatedEngine(new BoardAdapter(new BoardClass({ roms })));
@@ -339,7 +339,7 @@ export class PortEngine {
     this.kind = /** @type {EngineKind} */ ('port');
     this.label = PORT_LABEL;
     this.supportsAi = true;
-    /** The self-playing AI's switch; the AI itself is still to be built. */
+    /** The self-playing AI is on (src/main.js runs src/ai/hook.js). */
     this.aiEnabled = false;
     /** @type {PortLike | null} */
     this.port = port;
@@ -347,6 +347,8 @@ export class PortEngine {
     this.machine = new Machine();
     this.ready = port !== null;
     this.why = port !== null ? '' : why;
+    /** The exception that stopped the port, for the page's log. @type {unknown} */
+    this.error = null;
     /** @type {((cycle: number) => void) | null} */
     this.onBang = null;
     if (port !== null) port.onBang = (cycle) => this.onBang?.(cycle);
@@ -391,6 +393,7 @@ export class PortEngine {
       // A porting bug: stop here rather than run on from broken state.
       this.ready = false;
       this.why = `port stopped: ${messageOf(err)} — play the ROM version`;
+      this.error = err;
     }
   }
 
@@ -406,6 +409,7 @@ export class PortEngine {
     this.port.powerOn();
     this.ready = true;
     this.why = '';
+    this.error = null;
   }
 }
 

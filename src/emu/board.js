@@ -67,12 +67,12 @@
  * firings; on this board a firing is a bug.
  */
 
-import { M6809, CC_I, CC_F } from './m6809.mjs';
-import { Machine, CPU, CYCLES_PER_FRAME, CPU_CLOCK } from '../../src/machine/machine.js';
+import { M6809, CC_I, CC_F } from './m6809.js';
+import { Machine, CPU, CYCLES_PER_FRAME, CPU_CLOCK } from '../machine/machine.js';
 
-/** @typedef {import('../../src/machine/machine.js').MachineState} MachineState */
-/** @typedef {import('./m6809.mjs').CpuState} CpuState */
-/** @typedef {import('../../src/machine/namcoio.js').InputState} InputState */
+/** @typedef {import('../machine/machine.js').MachineState} MachineState */
+/** @typedef {import('./m6809.js').CpuState} CpuState */
+/** @typedef {import('../machine/namcoio.js').InputState} InputState */
 
 /** Sub-cycle time resolution: 5 ticks per CPU cycle (76.8 cycles = 384). */
 export const TICKS_PER_CYCLE = 5;

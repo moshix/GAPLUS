@@ -18,7 +18,9 @@
  *     half the time: the tracks are measured, not known);
  *  3. where it ends up: under something worth shooting (the aim map), at
  *     the home row, away from the side walls;
- *  4. whether it keeps the direction already taken (no shaking).
+ *  4. whether it keeps the direction already taken: changing costs a
+ *     little, turning round soon after the last change costs more, and a
+ *     vertical move must earn its start (no flicker; see planCosts).
  * The first direction of the best plan is what the stick does this frame;
  * next frame the search runs again from where the fighter really is.
  */
@@ -49,10 +51,81 @@ const W_PROX = 30;
 const W_AIM = 12;
 const W_HOME = 25;
 const W_WALL = 14;
-/** The position's worth is sampled every this many frames of a plan. */
-const VALUE_EVERY = 5;
-/** Bonus for keeping the current direction; reversals must earn it. */
-const W_KEEP = 2.5;
+/** Pixels either side of the home row that count as on it. */
+const HOME_BAND = 8;
+/** The position's worth is sampled every this many frames of a plan: every
+ * frame, or a 5 px wide aim peak is missed between samples at 3 px/frame. */
+const VALUE_EVERY = 1;
+/**
+ * Commitment (no flicker). A plan whose first move differs from the stick
+ * as it is pays W_SWITCH (W_START from a standstill); one that turns an
+ * axis round (left <-> right, up <-> down) pays W_REVERSE more while the
+ * last change is younger than HOLD frames, a third of it after; one that
+ * starts a vertical move pays W_VERTICAL. All are far below a frame of
+ * survival (120), so a threat that demands a turn always gets it; they
+ * only stop the fighter trading directions over small differences.
+ */
+const W_SWITCH = 4;
+const W_START = 3;
+const W_REVERSE = 20;
+const W_VERTICAL = 3;
+const HOLD = 12;
+/** Share of the commitment costs kept in a challenging stage. */
+const CHALLENGE_COMMIT = 0.3;
+
+/**
+ * The stick as it is: the direction sent last frame, frames since it last
+ * changed, and the last non-zero sign of each axis.
+ * @typedef {object} Steer
+ * @property {number} dir @property {number} since
+ * @property {number} signH @property {number} signV
+ */
+
+/** A fighter at rest with no history. @type {Steer} */
+export const STILL = Object.freeze({ dir: 0, since: HOLD, signH: 0, signV: 0 });
+
+/**
+ * The cost of changing the stick from `from` to `to`.
+ * @param {number} from @param {number} to DIRS indices
+ * @param {number} signH @param {number} signV last non-zero sign of each
+ *   axis before the change
+ * @param {boolean} early the last change was less than HOLD frames ago
+ * @returns {number}
+ */
+export function changeCost(from, to, signH, signV, early) {
+  if (from === to) return 0;
+  const [ch, cv] = DIRS[from];
+  const [dh, dv] = DIRS[to];
+  const turn = early ? W_REVERSE : W_REVERSE / 3;
+  let cost = from === 0 ? W_START : W_SWITCH;
+  if (dh !== 0 && signH !== 0 && dh !== signH) cost += turn;
+  if (dv !== 0 && signV !== 0 && dv !== signV) cost += turn;
+  if (dv !== 0 && cv === 0) cost += W_VERTICAL;
+  // Stopping one axis while the other carries on is a lesser change.
+  if (dh === ch && dh !== 0) cost *= 0.6;
+  return cost;
+}
+
+/**
+ * The commitment cost of every plan, given the stick as it is: its first
+ * change (from the stick to d1) and its second (d1 to d2, early if it
+ * comes within HOLD frames). Charging the second one too matters: with
+ * only the first, "wait a frame, then go" always looked cheaper than
+ * "go", and the fighter waited for ever.
+ * @param {Steer} steer @param {Plan[]} plans @param {Float64Array} out
+ */
+export function planCosts(steer, plans, out) {
+  for (let i = 0; i < plans.length; i += 1) {
+    const { d1, k, d2 } = plans[i];
+    let cost = changeCost(steer.dir, d1, steer.signH, steer.signV, steer.since < HOLD);
+    if (d2 !== d1) {
+      const [h1, v1] = DIRS[d1];
+      cost += changeCost(d1, d2, h1 !== 0 ? h1 : steer.signH, v1 !== 0 ? v1 : steer.signV,
+        k < HOLD);
+    }
+    out[i] = cost;
+  }
+}
 /** Room from the side walls wanted, pixels. */
 const WALL_ROOM = 20;
 /** No tie-break offsets. */
@@ -105,6 +178,8 @@ export class Planner {
     this.count = 0;
     /** Scratch. */
     this.pos = new Float64Array(2);
+    /** Commitment cost per plan, this frame. */
+    this.costs = new Float64Array(this.plans.length);
     /** Diagnostics. */
     this.lastScore = 0;
   }
@@ -148,18 +223,24 @@ export class Planner {
    *   oldest first (they move the fighter before any plan does)
    * @param {(h: number, v: number) => number} value worth of ending at
    *   (h, v), 0-1 (the aim map and the home row)
-   * @param {number} lastDir the direction sent last frame
+   * @param {Steer} [steer] the stick as it is (commitment costs)
    * @param {ArrayLike<number>} [bias] per first direction, a small score
    *   offset (the benchmark's seeded tie-breaks; none by default)
    * @returns {Move}
    */
-  choose(w, queued, value, lastDir, bias = NO_BIAS) {
+  choose(w, queued, value, steer = STILL, bias = NO_BIAS) {
+    planCosts(steer, this.plans, this.costs);
+    // In a challenging stage every hit counts and nothing can hit back:
+    // commitment gives way to chasing (in full it cost a third of the
+    // hits).
+    if (w.challenge) for (let i = 0; i < this.costs.length; i += 1) this.costs[i] *= CHALLENGE_COMMIT;
     const H = this.horizon;
     const ship = { h: w.h, v: w.v };
     let best = -Infinity;
     /** @type {Move} */
     const move = { dir: 0, tDeath: H + 1, h: w.h, v: w.v };
-    for (const plan of this.plans) {
+    for (let pi = 0; pi < this.plans.length; pi += 1) {
+      const plan = this.plans[pi];
       ship.h = w.h;
       ship.v = w.v;
       // First frame a threat's widened box covers the fighter (possibly
@@ -205,8 +286,8 @@ export class Planner {
       // Doomed plans stop sampling at the hit; the survivors' worth is the
       // mean of their samples.
       if (tSure > H) score += (tSafe > H ? 1 : 0.5) * worth / Math.floor(H / VALUE_EVERY);
-      // Keep going the way it was going: a reversal must earn its place.
-      if (lastDir !== 0 && plan.d1 === lastDir) score += W_KEEP;
+      // Keep going the way it was going: a change must earn its place.
+      score -= this.costs[pi];
       score += bias[plan.d1];
       if (score > best) {
         best = score;
@@ -218,6 +299,25 @@ export class Planner {
     }
     this.lastScore = best;
     return move;
+  }
+
+  /**
+   * How long holding `dir` for the whole horizon stays clear: the first
+   * frame a threat's widened box covers the fighter (horizon + 1: never).
+   * The minimum-hold rule (autoplay.js) asks this of the direction it is
+   * holding before overruling the search.
+   * @param {World} w @param {number[]} queued @param {number} dir
+   * @returns {number}
+   */
+  survives(w, queued, dir) {
+    const H = this.horizon;
+    if (!w.danger) return H + 1;
+    const ship = { h: w.h, v: w.v };
+    for (let t = 1; t <= H; t += 1) {
+      stepShip(ship, t - 1 < queued.length ? queued[t - 1] : dir, w);
+      if (this.test(ship, t) < 0) return t;
+    }
+    return H + 1;
   }
 
   /**
@@ -246,12 +346,14 @@ export class Planner {
 }
 
 /**
- * 1 at the home row, falling off linearly over 96 pixels.
+ * 1 at the home row (give or take HOME_BAND), falling off linearly over
+ * 48 pixels beyond.
  * @param {number} v @param {World} w @returns {number}
  */
 function homeValue(v, w) {
   const home = w.vHome ?? v;
-  return 1 - Math.min(1, Math.abs(v - home) / 96);
+  // Flat within HOME_BAND of the row: no tiny vertical corrections.
+  return 1 - Math.min(1, Math.max(0, Math.abs(v - home) - HOME_BAND) / 48);
 }
 
 /**

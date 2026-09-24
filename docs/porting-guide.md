@@ -15,7 +15,7 @@ in JavaScript**, not emulated. Every routine of the three MC6809 programs
 gets a JS function that does the same thing to the same memory. Game state
 lives at the addresses the original used, in `Machine.mem`
 (`src/machine/machine.js`), so a test can run the real ROM on the emulated
-board (`test/m6809/`) next to the port and require that **every byte of RAM
+board (`src/emu/`) next to the port and require that **every byte of RAM
 matches**.
 
 Fidelity is the whole point. "Plays about the same" is a failure. The bar
@@ -266,10 +266,14 @@ for any CPU (`cpu` is `'main' | 'sub' | 'sound'`).
   (`mainRom`, `subRom`, `soundRom`, `mainWord`, ...; words big-endian), or
   through `read(cpu, a)` when a pointer may be ROM or RAM. Never copy a
   table into a JS array by hand. RAM holds ROM pointers, so the addresses
-  must be real. For now every ROM byte is readable. Once the listing has
-  separated code from data, reading a code byte throws. Code that the game
-  also reads as data (checksums, noise) must then be whitelisted in the
-  listing tool, with a comment.
+  must be real. Reading a code byte (an instruction byte in the listing
+  trace) throws. Code the game genuinely reads as data is whitelisted,
+  with its reader and reason, in `tools/gen-romdata.mjs` `READ_AS_DATA`
+  (the sub noise at $DF80-$E07F, the boss bonus overrun, ...). The
+  whole-ROM loops (checksums, the service RAM test's pattern) are
+  `SWEEPS`: their port wraps each read in `romSweep(cpu, fn)`. Oracle
+  tests that run routines from random RAM may call `allowCodeReads(true)`;
+  the port never does.
 * **I/O chips are memory**: the game code pokes commands and peeks
   results at `$6800-$682F` exactly as the ROM does
   (`m.poke(0x6808, 4)`, `m.peek(0x6800) & 0x0f`). The chips' once-per-frame
@@ -284,14 +288,15 @@ exempt** from RAM comparison. Their locations come from the ROMs' `LDS`
 instructions. The lowest S was measured on the oracle board
 (`tools/coverage.mjs`, `board.trackStack`) over ~78,000 frames: 20,000
 of attract, 1P and 2P games to game over, the challenging stage, PARSEC
-11, a high-score entry, the service mode and the operator-stats DIP
-(docs/oracle-notes.md):
+11, a high-score entry, the service mode and the operator-stats DIP,
+then over 128 games with Round Advance to every PARSEC from 1 to 64
+(docs/oracle-notes.md section 7):
 
 | CPU   | `LDS` (ROM)                     | S top   | lowest S | exempt (`mem`)  |
 |-------|---------------------------------|---------|----------|-----------------|
 | main  | `$E00F`, `$B705`, `$D152`       | `$1600` | `$15E2`  | `$15E2-$15FF`   |
-| sub   | `$E006`, `$E181`                | `$1D80` | `$1D74`  | `$1D74-$1D7F`   |
-| sound | `$E047`                         | `$0400` | `$03EC`  | `$63EC-$63FF`   |
+| sub   | `$E006`, `$E181`                | `$1D80` | `$1D70`  | `$1D70-$1D7F`   |
+| sound | `$E047`                         | `$0400` | `$03EB`  | `$63EB-$63FF`   |
 
 (`STACKS` in `machine.js`; `test/oracle/board.test.mjs` checks them.
 Main reaches `$15E2` when the vblank IRQ lands inside `$D07A`'s calls at
@@ -344,8 +349,14 @@ yields); a chunk is atomic and happens at the CPU time where it starts.
 **The 56XX/58XX run** lands at vblank + 76.8 cycles, as in MAME: the
 scheduler delivers it before the first main-CPU access to `$6800-$681F`
 at or after that instant (the charged cycles give the time of the
-access), else at the end of that slice. Code does nothing for it: it
-just charges its cycles (6.4). Handlers read `$6816` at cycle 41,
+instruction; its access is 4 cycles in for extended addressing), else
+at the end of that slice. Code does nothing for it: it just charges its
+cycles (6.4), except where the access is not an extended instruction's
+5th cycle: `LDA ,U` (cycle index 3), `,U+`/`,X+` (5), the second byte
+of `LDD`/`STD` (5), `CLR` (6). Those use `timing.js` `ioRead` /
+`ioStore`, which state the cycle; the 62XX bang trigger (`$6829`) does
+too, so the port reports it at the ROM engine's cycle. Handlers read
+`$6816` at cycle 41,
 `$6805` at ~50 (SW1:6 on), `$6814` at 67, `$6800/$6801` at 79/80.
 
 **Measured timing** (oracle, docs/oracle-notes.md): every handler starts

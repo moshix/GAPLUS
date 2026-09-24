@@ -70,10 +70,10 @@ export function* sub_B014(m) {
       c(6);
       yield SYNC;
       inc(s, 0x1096);
-      c(6 + 2 + 3);
+      c(6); c(2); c(3);
       if (a & 0x02) break;
       // cmpx #$188D / bne (4 + 3)
-      c(4 + 3);
+      c(4); c(3);
       if (x === 0x188d) {
         // $B023: ldx #$1860 (3) / stx <formation_ptr (5)
         c(3);
@@ -88,7 +88,7 @@ export function* sub_B014(m) {
         // inc <sub_task (6) / jmp task_dispatch_sub (4)
         yield SYNC;
         inc(s, 0x107a);
-        c(6 + 4);
+        c(6); c(4);
         return;
       }
     }
@@ -105,7 +105,7 @@ export function* sub_B014(m) {
     // The `leax a,x` / `leax b,x` offsets are signed (disp8).
     // aslb (2) / ldx #$0E30 (3) / leax b,x (5) / stx <$84 (5)
     let p = disp8(0x0e30, ib);
-    c(2 + 3 + 5);
+    c(2); c(3); c(5);
     yield SYNC;
     s.poke16(0x1084, p);
     c(5);
@@ -135,7 +135,7 @@ export function* sub_B014(m) {
     c(5);
     // ldx #$1920 / leax b,x (3 + 5) / stx <$88 (5)
     p = disp8(0x1920, ib);
-    c(3 + 5);
+    c(3); c(5);
     yield SYNC;
     s.poke16(0x1088, p);
     c(5);
@@ -150,7 +150,7 @@ export function* sub_B014(m) {
       [0x10ad, 0x18c0, ia], [0x10cb, 0x18f0, ia], [0x1099, 0x19e0, ia],
       [0x1092, 0x1980, ia], [0x108e, 0x1b00, ib]];
     for (const [v, base, i] of rest) {
-      c(3 + 5);
+      c(3); c(5);
       yield SYNC;
       s.poke16(v, disp8(base, i));
       c(5);
@@ -167,12 +167,12 @@ export function* sub_B014(m) {
     let f = (x - 1) & 0xffff;
     yield* syncAt(f);
     a = s.peek(f);
-    c(5 + 2 + 3);
+    c(5); c(2); c(3);
     if ((a & 0x80) === 0) {
       // First visit: lda -1,x (5) / adda #$80 (2) / sta -1,x (5)
       yield* syncAt(f);
       a = (s.peek(f) + 0x80) & 0xff;
-      c(5 + 2);
+      c(5); c(2);
       yield* syncAt(f);
       s.poke(f, a);
       c(5);
@@ -198,14 +198,14 @@ export function* sub_B014(m) {
     f = (x - 1) & 0xffff;
     yield* syncAt(f);
     a = s.peek(f);
-    c(5 + 2);
+    c(5); c(2);
     // lbne sub_B014 (6 taken, 5 not)
     if (a & 0x40) { c(6); continue; }
     c(5);
     // lda -1,x (5) / anda #$20 (2) / bne (3)
     yield* syncAt(f);
     a = s.peek(f);
-    c(5 + 2 + 3);
+    c(5); c(2); c(3);
     if ((a & 0x20) === 0) {
       // jsr sub_B0D4 (8) / jmp sub_B014 (4)
       c(8);
@@ -216,7 +216,7 @@ export function* sub_B014(m) {
     // $B0C6: lda -1,x (5) / anda #$10 (2) / lbne sub_B014 (6 / 5)
     yield* syncAt(f);
     a = s.peek(f);
-    c(5 + 2);
+    c(5); c(2);
     if (a & 0x10) { c(6); continue; }
     c(5);
     // jsr sub_B242 (8) / jmp sub_B014 (4)
@@ -251,7 +251,7 @@ export function* sub_B0D4(m) {
     c(9);
     yield SYNC;
     const cs = a < ldInd(s, 0x10ad);
-    c(9 + 3);
+    c(9); c(3);
     if (!cs) {
       // suba [$10AD] (9) / sta [$1090] (9)
       yield SYNC;
@@ -295,12 +295,12 @@ export function* sub_B0D4(m) {
     // lda [$1090] (9) / beq (3)
     yield SYNC;
     a = ldInd(s, 0x1090);
-    c(9 + 3);
+    c(9); c(3);
     if (a !== 0) {
       // sta <$98 (4) / bsr sub_B163 (7)
       yield SYNC;
       s.poke(0x1098, a);
-      c(4 + 7);
+      c(4); c(7);
       yield* sub_B163(m);
     }
     // $B111: lda #$28 (2) / sta [$1090] (9)
@@ -311,21 +311,21 @@ export function* sub_B0D4(m) {
     // ldx [$108C] (10) / leax 1,x (5) / stx [$108C] (10)
     yield SYNC;
     let x = add16w(ldInd16(s, 0x108c), 1);
-    c(10 + 5);
+    c(10); c(5);
     yield SYNC;
     stInd16(s, 0x108c, x);
     c(10);
     // lda ,x (4) / cmpa #$F0 / beq (2 + 3)
     yield* syncAt(x);
     a = s.peek(x);
-    c(4 + 2 + 3);
+    c(4); c(2); c(3);
     if (a === 0xf0) {
       // $B155: lda #1 (2) / ldx <formation_ptr (5) / cmpx #$188B /
       // bne (4 + 3) / [sta ,x (4)] / sta -1,x (5) / rts (5)
       c(2);
       yield SYNC;
       const fp = s.peek16(FORMATION_PTR);
-      c(5 + 4 + 3);
+      c(5); c(4); c(3);
       if (fp === 0x188b) {
         yield* syncAt(fp);
         s.poke(fp, 1);
@@ -333,13 +333,13 @@ export function* sub_B0D4(m) {
       }
       yield* syncAt(fp - 1);
       s.poke((fp - 1) & 0xffff, 1);
-      c(5 + 5);
+      c(5); c(5);
       return;
     }
     // adda #1 / beq (2 + 3): $FF; adda #1 / bne (2 + 3): not $FE
-    c(2 + 3);
+    c(2); c(3);
     if (a !== 0xff) {
-      c(2 + 3);
+      c(2); c(3);
       if (a !== 0xfe) {
         c(4); // $B152: jmp sub_B0D4
         continue;
@@ -348,7 +348,7 @@ export function* sub_B0D4(m) {
       // clr [$10A2] (11)
       yield SYNC;
       a = ldInd(s, 0x10a6) & 0xfe;
-      c(9 + 2);
+      c(9); c(2);
       yield SYNC;
       stInd(s, 0x10a6, a);
       c(9);
@@ -378,10 +378,10 @@ export function* sub_B0D4(m) {
     c(5);
     yield* syncAt(f);
     a = s.peek(f) | 0x20;
-    c(5 + 2);
+    c(5); c(2);
     yield* syncAt(f);
     s.poke(f, a);
-    c(5 + 5);
+    c(5); c(5);
     return;
   }
 }
@@ -413,7 +413,7 @@ export function* sub_B163(m) {
   c(5);
   yield* syncAt(fp - 1);
   const free = (s.peek((fp - 1) & 0xffff) & 0x20) !== 0;
-  c(5 + 2 + 3);
+  c(5); c(2); c(3);
   if (!free) {
     // ldx [$108C] (10) / lda ,x (4)
     yield SYNC;
@@ -425,7 +425,7 @@ export function* sub_B163(m) {
   }
   // $B175: ldb #4 (2) / mul (11) / ldx #dat_AAFF (3) / leax d,x (8)
   const x = (0xaaff + a * 4) & 0xffff;
-  c(2 + 11 + 3 + 8);
+  c(2); c(11); c(3); c(8);
   // ldd 1,x (6) / std <$9E (5)
   yield* syncAt(x + 1, x + 2);
   const dd = s.peek16((x + 1) & 0xffff);
@@ -436,7 +436,7 @@ export function* sub_B163(m) {
   // lda <$98 (4) / clrb (2)
   yield SYNC;
   a = s.peek(0x1098);
-  c(4 + 2);
+  c(4); c(2);
   // $B184: incb / suba #8 / bcs / bne (2 + 2 + 3 + 3): B = ceil(A / 8),
   // at least 1
   let b = 0;
@@ -444,7 +444,7 @@ export function* sub_B163(m) {
     b = (b + 1) & 0xff;
     const r = sub8(a, 8);
     a = r.v;
-    c(2 + 2 + 3);
+    c(2); c(2); c(3);
     if (r.cf) break;
     c(3);
     if (a === 0) break;
@@ -455,7 +455,7 @@ export function* sub_B163(m) {
   c(4);
   yield SYNC;
   let p = mul(s.peek(0x109e), b);
-  c(4 + 11);
+  c(4); c(11);
   yield SYNC;
   s.poke(0x109c, p.a);
   c(4);
@@ -468,7 +468,7 @@ export function* sub_B163(m) {
   c(4);
   yield SYNC;
   p = mul(s.peek(0x109f), b);
-  c(4 + 11);
+  c(4); c(11);
   yield SYNC;
   s.poke(0x109d, p.a);
   c(4);
@@ -478,7 +478,7 @@ export function* sub_B163(m) {
   // $B19D: lda ,x (4) / anda #$80 / bne (2 + 3)
   yield* syncAt(x);
   const up = (s.peek(x) & 0x80) !== 0;
-  c(4 + 2 + 3);
+  c(4); c(2); c(3);
   // ldd [$1088] (10): B = the byte after the Y fraction (the X fraction),
   // which the X part below uses.
   yield SYNC;
@@ -502,7 +502,7 @@ export function* sub_B163(m) {
     c(4);
     yield SYNC;
     stInd(s, 0x10a0, r2.v);
-    c(9 + 3);
+    c(9); c(3);
   } else {
     // $B1B9: the same with suba / sbca (no bra)
     yield SYNC;
@@ -524,7 +524,7 @@ export function* sub_B163(m) {
   // $B1CD: lda ,x (4) / anda #$08 / bne (2 + 3)
   yield* syncAt(x);
   const left = (s.peek(x) & 0x08) !== 0;
-  c(4 + 2 + 3);
+  c(4); c(2); c(3);
   // addb / subb <$9F (4) / stb [$108A] (9) / ldb [$10A2] (9) /
   // adcb / sbcb <$9D (4) / stb [$10A2] (9) / bcc (3)
   yield SYNC;
@@ -542,13 +542,13 @@ export function* sub_B163(m) {
   c(4);
   yield SYNC;
   stInd(s, 0x10a2, r2.v);
-  c(9 + 3);
+  c(9); c(3);
   if (r2.cf) {
     // ldb [$10A6] (9) / orb #1 or andb #$FE (2) / stb [$10A6] (9): the X
     // bit 8
     yield SYNC;
     const v = ldInd(s, 0x10a6);
-    c(9 + 2);
+    c(9); c(2);
     yield SYNC;
     stInd(s, 0x10a6, left ? v & 0xfe : v | 0x01);
     c(9);
@@ -574,7 +574,7 @@ export function* sub_B20D(m, { x }) {
   // lda [$1084] (9) / anda #$F0 (2) / sta [$1084] (9)
   yield SYNC;
   let a = ldInd(s, 0x1084) & 0xf0;
-  c(9 + 2);
+  c(9); c(2);
   yield SYNC;
   stInd(s, 0x1084, a);
   c(9);
@@ -596,11 +596,11 @@ export function* sub_B20D(m, { x }) {
   // ldb [$10A4] (9) / andb #$40 (2)
   yield SYNC;
   let b = ldInd(s, 0x10a4) & 0x40;
-  c(9 + 2);
+  c(9); c(2);
   // lda 3,x (5) / anda #$30 (2) / lsra x 4 (8) / sta [$10A4] (9)
   yield* syncAt(x3);
   a = (s.peek(x3) & 0x30) >> 4;
-  c(5 + 2 + 8);
+  c(5); c(2); c(8);
   yield SYNC;
   stInd(s, 0x10a4, a);
   c(9);
@@ -610,7 +610,7 @@ export function* sub_B20D(m, { x }) {
   c(9);
   yield SYNC;
   stInd(s, 0x10a4, b);
-  c(9 + 5);
+  c(9); c(5);
 }
 
 /**
@@ -635,20 +635,20 @@ export function* sub_B242(m) {
   // $B242: ldd [$108E] (10) / suba #4 (2) / cmpa [$10A0] (9) / bcc (3)
   yield SYNC;
   const t = ldInd16(s, 0x108e);
-  c(10 + 2);
+  c(10); c(2);
   let a = ((t >> 8) - 4) & 0xff;
   let b = t & 0xff;
   let near = false;
   yield SYNC;
   let far = a >= ldInd(s, 0x10a0);
-  c(9 + 3);
+  c(9); c(3);
   if (!far) {
     // adda #8 (2) / cmpa [$10A0] (9) / bcs (3)
     a = (a + 8) & 0xff;
     c(2);
     yield SYNC;
     far = a < ldInd(s, 0x10a0);
-    c(9 + 3);
+    c(9); c(3);
   }
   if (!far) {
     // subb #4 (2) / cmpb [$10A2] (9) / bcc (3)
@@ -656,7 +656,7 @@ export function* sub_B242(m) {
     c(2);
     yield SYNC;
     far = b >= ldInd(s, 0x10a2);
-    c(9 + 3);
+    c(9); c(3);
   }
   if (!far) {
     // addb #8 (2) / cmpb [$10A2] (9) / bcs (3)
@@ -664,17 +664,17 @@ export function* sub_B242(m) {
     c(2);
     yield SYNC;
     near = b >= ldInd(s, 0x10a2);
-    c(9 + 3);
+    c(9); c(3);
   }
   if (near) {
     // lda $112A (5) / bne (3) / lda <$F8 (4) / bne (3)
     yield SYNC;
     let arrive = s.peek(0x112a) !== 0;
-    c(5 + 3);
+    c(5); c(3);
     if (!arrive) {
       yield SYNC;
       arrive = s.peek(0x10f8) === 0;
-      c(4 + 3);
+      c(4); c(3);
     }
     if (arrive) {
       // $B26F: ldd [$108E] (10) / std [$10A0] (10) / lda #$10 (2) /
@@ -684,7 +684,7 @@ export function* sub_B242(m) {
       c(10);
       yield SYNC;
       stInd16(s, 0x10a0, d);
-      c(10 + 2);
+      c(10); c(2);
       yield SYNC;
       const f = (s.peek16(FORMATION_PTR) - 1) & 0xffff;
       c(5);
@@ -693,7 +693,7 @@ export function* sub_B242(m) {
       c(5);
       yield* syncAt(f);
       s.poke(f, a);
-      c(5 + 5);
+      c(5); c(5);
       return;
     }
     // $B280: ldx <formation_ptr (5) / lda -1,x (5) / anda #$DF (2) /
@@ -704,7 +704,7 @@ export function* sub_B242(m) {
     const f = (fp - 1) & 0xffff;
     yield* syncAt(f);
     a = s.peek(f) & 0xdf;
-    c(5 + 2);
+    c(5); c(2);
     yield* syncAt(f);
     s.poke(f, a);
     c(5);
@@ -720,7 +720,7 @@ export function* sub_B242(m) {
     c(10);
     yield* syncAt(k);
     a = s.peek(k) & 0x03;
-    c(8 + 2 + 3);
+    c(8); c(2); c(3);
     if (a !== 0) {
       // lda <$11 (4) / sta [$1099] (9) / rts (5)
       yield SYNC;
@@ -728,17 +728,17 @@ export function* sub_B242(m) {
       c(4);
       yield SYNC;
       stInd(s, 0x1099, a);
-      c(9 + 5);
+      c(9); c(5);
       return;
     }
     // $B2A0: lda <$21 (4) / bne (3) / lda <$20 (4) / beq (3)
     yield SYNC;
     let go = s.peek(0x1021) === 0;
-    c(4 + 3);
+    c(4); c(3);
     if (go) {
       yield SYNC;
       go = s.peek(0x1020) !== 0;
-      c(4 + 3);
+      c(4); c(3);
     }
     if (go) {
       // ldd #$DD44 (3) / std [$108C] (10) / sta <$21 (4) (A = $DD)
@@ -754,7 +754,7 @@ export function* sub_B242(m) {
     c(2);
     yield SYNC;
     stInd(s, 0x1099, 0x40);
-    c(9 + 5);
+    c(9); c(5);
     return;
   }
   // $B2B8: lda [$1099] (9) / sta [$10AD] (9) / lsra / lsra (4) /
@@ -764,11 +764,11 @@ export function* sub_B242(m) {
   c(9);
   yield SYNC;
   stInd(s, 0x10ad, a);
-  c(9 + 4);
+  c(9); c(4);
   a >>= 2;
   yield SYNC;
   s.poke(0x10a8, a);
-  c(4 + 2);
+  c(4); c(2);
   a >>= 1;
   yield SYNC;
   s.poke(0x10a9, a);
@@ -779,12 +779,12 @@ export function* sub_B242(m) {
   c(10);
   yield SYNC;
   const below = (d >> 8) < ldInd(s, 0x108e);
-  c(9 + 3);
+  c(9); c(3);
   let tbl;
   // cmpb [$1094] (9) / bcs (3)
   yield SYNC;
   const leftOf = (d & 0xff) < ldInd(s, 0x1094);
-  c(9 + 3);
+  c(9); c(3);
   if (!below && !leftOf) {
     // ldd [$10A0] (10) / subd [$108E] (11) / ldx #dat_A9D6 (3) / bra (3)
     yield SYNC;
@@ -792,7 +792,7 @@ export function* sub_B242(m) {
     c(10);
     yield SYNC;
     d = (d - ldInd16(s, 0x108e)) & 0xffff;
-    c(11 + 3 + 3);
+    c(11); c(3); c(3);
     tbl = 0xa9d6;
   } else if (!below) {
     // $B2FF: lda [$10A0] (9) / suba [$108E] (9) / ldb [$108E] (9) /
@@ -808,7 +808,7 @@ export function* sub_B242(m) {
     c(9);
     yield SYNC;
     b = (b - ldInd(s, 0x10a2)) & 0xff;
-    c(9 + 3 + 3);
+    c(9); c(3); c(3);
     d = (a << 8) | b;
     tbl = 0xaa39;
   } else if (!leftOf) {
@@ -825,7 +825,7 @@ export function* sub_B242(m) {
     c(9);
     yield SYNC;
     b = (b - ldInd(s, 0x1094)) & 0xff;
-    c(9 + 3 + 3);
+    c(9); c(3); c(3);
     d = (a << 8) | b;
     tbl = 0xa96a;
   } else {
@@ -835,14 +835,14 @@ export function* sub_B242(m) {
     c(10);
     yield SYNC;
     d = (d - ldInd16(s, 0x10a0)) & 0xffff;
-    c(11 + 3);
+    c(11); c(3);
     tbl = 0xaa9c;
   }
   // $B31F: lsra / anda #$FE / lsrb / andb #$FE (8); cmpa #$10 / bcs (5)
   // [lda #$10 (2)]; cmpb #$10 / bcs (5) [ldb #$10 (2)]; lsrb (2)
   a = ((d >> 8) >> 1) & 0xfe;
   b = ((d & 0xff) >> 1) & 0xfe;
-  c(8 + 5);
+  c(8); c(5);
   if (a >= 0x10) { a = 0x10; c(2); }
   c(5);
   if (b >= 0x10) { b = 0x10; c(2); }
@@ -864,7 +864,7 @@ export function* sub_B242(m) {
   // cmpa [$1092] (9) / bcs (3)
   yield SYNC;
   const lower = a < ldInd(s, 0x1092);
-  c(9 + 3);
+  c(9); c(3);
   if (!lower) {
     // $B33E: lda <$AA (4) / suba [$1092] (9) / cmpa <$A8 (4) / bcc (3)
     yield SYNC;
@@ -875,7 +875,7 @@ export function* sub_B242(m) {
     c(9);
     yield SYNC;
     const big = a >= s.peek(0x10a8);
-    c(4 + 3);
+    c(4); c(3);
     if (!big) {
       // lda <$AA (4) / sta [$1092] (9) / bra (3)
       yield SYNC;
@@ -883,7 +883,7 @@ export function* sub_B242(m) {
       c(4);
       yield SYNC;
       stInd(s, 0x1092, a);
-      c(9 + 3);
+      c(9); c(3);
     } else {
       // $B350: lda [$1092] (9) / adda <$A9 (4) / sta [$1092] (9) /
       // bra (3)
@@ -895,7 +895,7 @@ export function* sub_B242(m) {
       c(4);
       yield SYNC;
       stInd(s, 0x1092, a);
-      c(9 + 3);
+      c(9); c(3);
     }
   } else {
     // $B35C: lda [$1092] (9) / suba <$AA (4) / cmpa <$A8 (4) / bcc (3)
@@ -907,7 +907,7 @@ export function* sub_B242(m) {
     c(4);
     yield SYNC;
     const big = a >= s.peek(0x10a8);
-    c(4 + 3);
+    c(4); c(3);
     if (!big) {
       // lda <$AA (4) / sta [$1092] (9) / bra (3)
       yield SYNC;
@@ -915,7 +915,7 @@ export function* sub_B242(m) {
       c(4);
       yield SYNC;
       stInd(s, 0x1092, a);
-      c(9 + 3);
+      c(9); c(3);
     } else {
       // $B36E: lda [$1092] (9) / suba <$A9 (4) / sta [$1092] (9)
       yield SYNC;
@@ -936,7 +936,7 @@ export function* sub_B242(m) {
   c(9);
   yield SYNC;
   s.poke(0x1098, a);
-  c(4 + 8);
+  c(4); c(8);
   const x = (yield* sub_B163(m)).x;
   c(8);
   yield* sub_B20D(m, { x });
@@ -960,7 +960,7 @@ export function* sub_B385(m) {
   // $B385: lda <$D6 (4) / bne (3)
   yield SYNC;
   let busy = s.peek(0x10d6) !== 0;
-  c(4 + 3);
+  c(4); c(3);
   let allow = false;
   if (!busy) {
     // inc $1128 (7) / lda $1128 (5) / anda #$3F / bne (2 + 3)
@@ -969,7 +969,7 @@ export function* sub_B385(m) {
     c(7);
     yield SYNC;
     const t = s.peek(0x1128) & 0x3f;
-    c(5 + 2 + 3);
+    c(5); c(2); c(3);
     if (t !== 0) {
       yield* endTask(m);
       return;
@@ -988,10 +988,10 @@ export function* sub_B385(m) {
     c(5);
     if (a >= 0x08) {
       b += 1;
-      c(2 + 5);
+      c(2); c(5);
       if (a >= 0x18) {
         b += 1;
-        c(2 + 5);
+        c(2); c(5);
         if (a >= 0x20) {
           b += 1;
           c(2);
@@ -1005,7 +1005,7 @@ export function* sub_B385(m) {
     c(3);
     yield SYNC;
     b = s.peek(0x1036 + b);
-    c(5 + 3);
+    c(5); c(3);
     // $B3B4: lda ,x+ (6) / cmpx #$188C / beq (4 + 3) / anda #2 / beq
     // (2 + 3) / decb / bne (2 + 3); B counts down (8-bit, 0 = 256)
     let x = 0x1860;
@@ -1013,12 +1013,12 @@ export function* sub_B385(m) {
       yield* syncAt(x);
       const f = s.peek(x);
       x = (x + 1) & 0xffff;
-      c(6 + 4 + 3);
+      c(6); c(4); c(3);
       if (x === 0x188c) { busy = true; break; }
-      c(2 + 3);
+      c(2); c(3);
       if ((f & 0x02) === 0) continue;
       b = (b - 1) & 0xff;
-      c(2 + 3);
+      c(2); c(3);
       if (b !== 0) continue;
       allow = true;
       break;
@@ -1029,7 +1029,7 @@ export function* sub_B385(m) {
     c(2);
     yield SYNC;
     s.poke(0x112a, 0x55);
-    c(5 + 3);
+    c(5); c(3);
   } else {
     // $B3C9: clr $112A (7)
     yield SYNC;
@@ -1065,11 +1065,11 @@ export function* task_formation_init(m) {
   const c = (n) => s.charge(n);
   // ldx #$1860 / lda #1 / ldb #$2C (3 + 2 + 2); 44 x (sta ,x+ (6) /
   // decb / bne (2 + 3))
-  c(3 + 2 + 2);
+  c(3); c(2); c(2);
   for (let i = 0; i < 0x2c; i += 1) {
     yield SYNC;
     s.poke(0x1860 + i, 1);
-    c(6 + 2 + 3);
+    c(6); c(2); c(3);
   }
   // ldd #$ADCF (3) / std <$82 (5)
   c(3);
@@ -1105,5 +1105,5 @@ export function* task_formation_init(m) {
   // clr <sub_task (6) / jmp task_dispatch_sub (4)
   yield SYNC;
   s.poke(0x107a, 0);
-  c(6 + 4);
+  c(6); c(4);
 }

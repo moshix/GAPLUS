@@ -38,7 +38,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadGaplus, ROOT } from './romset.mjs';
 import { disasm, hex } from './m6809dis.mjs';
-import { loadJsRoutines } from './js-routines.mjs';
+import { loadJsRoutines, JS_CPUS } from './js-routines.mjs';
 
 export const REF = join(ROOT, 'reference');
 export const ANN_DIR = join(REF, 'annotations');
@@ -274,6 +274,27 @@ export function decodeText(bytes) {
  *   by canonical (main CPU) address
  * @property {number|null} defaultDp DP for coverage roots
  * @property {string[]} header extra lines for the listing header
+ * @property {SoundAnn|null} sounds the sound CPU's sound tables (decoded
+ *   by soundData), from the `sounds` key
+ */
+
+/**
+ * The `sounds` key of sound.json: where the sound driver's tables are and
+ * what each sound is. Every address is a ROM address of the sound CPU.
+ * @typedef {object} SoundAnn
+ * @property {number} headers pointer table: sound n -> its header
+ * @property {number} voices first WSG voice of each sound (bytes)
+ * @property {number} tempo tempo of each sound (bytes)
+ * @property {number} channels channel block address of each sound (words)
+ * @property {number} envelopes pointer table of the volume envelopes
+ * @property {number} envCount number of envelopes
+ * @property {number} freqTables pointer table of the frequency tables
+ * @property {number} freqCount number of frequency tables
+ * @property {Set<number>} retriggered sounds a new request restarts
+ * @property {Array<{name: string, doc: string[]}>} names per sound
+ * @property {string[]} freqNames label of each frequency table
+ * @property {number[]} orphans streams no header points to (decoded and
+ *   labelled `unused_XXXX`)
  */
 
 /** @param {string|number} v @returns {number} */
@@ -311,7 +332,7 @@ export function loadAnnotations(cpu, dir = ANN_DIR) {
   const ann = {
     labels: new Map(), comments: new Map(), blocks: new Map(), data: [],
     dp: new Map(), noreturn: new Set(), inline: new Map(), tables: new Map(),
-    ram: new Map(), defaultDp: null, header: [],
+    ram: new Map(), defaultDp: null, header: [], sounds: null,
   };
   /** @param {unknown} v @returns {Record<string, unknown>} */
   const obj = (v) => /** @type {Record<string, unknown>} */ (v ?? {});
@@ -362,6 +383,24 @@ export function loadAnnotations(cpu, dir = ANN_DIR) {
     }
   }
   ann.data.sort((a, b) => a.lo - b.lo);
+  if (j.sounds) {
+    const o = obj(j.sounds);
+    const names = /** @type {Record<string, unknown>[]} */ (o.names ?? []);
+    ann.sounds = {
+      headers: num(/** @type {string} */ (o.headers)),
+      voices: num(/** @type {string} */ (o.voices)),
+      tempo: num(/** @type {string} */ (o.tempo)),
+      channels: num(/** @type {string} */ (o.channels)),
+      envelopes: num(/** @type {string} */ (o.envelopes)),
+      envCount: Number(o.env_count),
+      freqTables: num(/** @type {string} */ (o.freq_tables)),
+      freqCount: Number(o.freq_count),
+      retriggered: new Set(/** @type {unknown[]} */ (o.retriggered ?? []).map(Number)),
+      names: names.map((v) => ({ name: String(v.name), doc: lines(v.doc) })),
+      freqNames: lines(o.freq_names),
+      orphans: /** @type {unknown[]} */ (o.orphans ?? []).map((v) => num(/** @type {string} */ (v))),
+    };
+  }
   for (const [k, v] of Object.entries(obj(j.ram))) {
     const o = typeof v === 'string' ? { name: v } : obj(v);
     ann.ram.set(canonRam(cpu, num(k)), {
@@ -908,6 +947,254 @@ function sizeTables(t, mem, lo, ann, isData) {
 }
 
 // ---------------------------------------------------------------------------
+// Sound CPU data: headers, note streams, envelopes, frequency tables
+
+/**
+ * One decoded item of the sound data, listed as one FCB/FDB line (or,
+ * with `pack`, several consecutive items on one FCB line).
+ * @typedef {object} SndEvent
+ * @property {number} len bytes
+ * @property {boolean} fdb list as FDB (a stream pointer: its label)
+ * @property {string} text comment
+ * @property {boolean} pack may share a line with neighbouring notes
+ */
+
+/** Pitch names of frequency table entries 0-11 (entry 0 is an A). */
+const PITCH = ['A', 'A#', 'B', 'C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#'];
+
+/**
+ * Name of a note: table entry `p` (0 = A7 at shift 0, 3520 Hz in the
+ * A440 table) shifted right `shift` octaves. C starts a new octave number.
+ * @param {number} p 0-11 @param {number} shift 0-15 @returns {string}
+ */
+export function noteName(p, shift) {
+  return `${PITCH[p]}${(p < 3 ? 7 : 8) - shift}`;
+}
+
+/**
+ * Decode a volume envelope (sound CPU $E285 envelope_step): levels 0-$F,
+ * one a frame, and the ops $10 sustain (keep the last level), $12 sustain
+ * but no louder than the frames left in the note (a fade at its end), $14
+ * repeat from the start, $16 n ramp: one step a frame from the previous
+ * level - 1 down to n + 1, then the byte n itself is played as a level.
+ * @param {(a: number) => number} read @param {number} a
+ * @returns {{len: number, text: string}}
+ */
+export function decodeEnvelope(read, a) {
+  const parts = [];
+  let i = a;
+  for (let guard = 0; guard < 64; guard += 1) {
+    const v = read(i);
+    if (v < 0x10) { parts.push(v.toString(16).toUpperCase()); i += 1; continue; }
+    if (v === 0x16) {
+      parts.push(`ramp to ${read(i + 1).toString(16).toUpperCase()}`);
+      // The ramp ends by playing its argument as a level (the position
+      // moves onto it), then the next byte is read.
+      i += 2;
+      continue;
+    }
+    i += 1;
+    if (v === 0x10) parts.push('sustain');
+    else if (v === 0x12) parts.push('sustain, fade out');
+    else if (v === 0x14) parts.push('repeat');
+    else parts.push(`bad op ${hex(v)}`);
+    break;
+  }
+  return { len: i - a, text: parts.join(' ') };
+}
+
+/**
+ * Lengths of the note stream commands $F0-$F7 (sound CPU stream_ops).
+ * @type {readonly number[]}
+ */
+const STREAM_CMD_LEN = [1, 2, 2, 4, 2, 4, 4, 3];
+
+/**
+ * Walk the sound driver's data from its pointer tables (docs/disassembly-
+ * notes.md, sound driver): the sound headers, every note stream they point
+ * to and every stream reached from those through jumps and loops, the
+ * volume envelopes and the frequency tables. Everything found becomes a
+ * labelled region of SndEvents, so the listing shows notes and commands
+ * instead of bytes.
+ * @param {(a: number) => number} read ROM of the sound CPU
+ * @param {SoundAnn} s
+ * @returns {{labels: Map<number, {name: string, doc: string[]}>,
+ *   regions: Region[], refs: Map<number, number[]>}}
+ */
+export function soundData(read, s) {
+  const word = (/** @type {number} */ a) => read(a) << 8 | read(a + 1);
+  /** @type {Map<number, SndEvent>} */
+  const ev = new Map();
+  /** @type {Map<number, {name: string, doc: string[]}>} */
+  const labels = new Map();
+  /** @type {Map<number, number[]>} */
+  const refs = new Map();
+  /** Start of the event covering each byte (to catch misaligned walks). */
+  /** @type {Map<number, number>} */
+  const cover = new Map();
+  /** @param {number} a @param {SndEvent} e */
+  const put = (a, e) => {
+    for (let k = 0; k < e.len; k += 1) {
+      const c = cover.get(a + k);
+      if (c !== undefined && c !== a) {
+        throw new Error(`sound data: ${hex(a, 4)} overlaps ${hex(c, 4)}`);
+      }
+      cover.set(a + k, a);
+    }
+    ev.set(a, e);
+  };
+  /** @param {number} to @param {number} from */
+  const ref = (to, from) => {
+    const l = refs.get(to) ?? [];
+    l.push(from);
+    refs.set(to, l);
+  };
+  /** @param {number} a @param {string} name @param {string[]} [doc] */
+  const label = (a, name, doc = []) => {
+    if (!labels.has(a)) labels.set(a, { name, doc });
+    return /** @type {{name: string}} */ (labels.get(a)).name;
+  };
+  const hx = (/** @type {number} */ v) => hex(v).slice(1);
+
+  // Frequency tables: 12 notes of 3 bytes (freq bits 16-19, 8-15, 0-7),
+  // A up to G#; the tone is freq * 24000 / 2^20 Hz (src/audio/wsg15xx.js).
+  for (let i = 0; i < s.freqCount; i += 1) {
+    const t = word(s.freqTables + 2 * i);
+    label(t, s.freqNames[i] ?? `freq_${i}`);
+    for (let p = 0; p < 12; p += 1) {
+      const a = t + 3 * p;
+      const f = (read(a) & 0x0f) << 16 | read(a + 1) << 8 | read(a + 2);
+      const hz = (f * 24000) / 2 ** 20;
+      put(a, { len: 3, fdb: false, pack: false, text: `${noteName(p, 0)} ${hz.toFixed(1)} Hz` });
+    }
+  }
+
+  // Envelopes.
+  for (let i = 0; i < s.envCount; i += 1) {
+    const a = word(s.envelopes + 2 * i);
+    label(a, `env_${i}`);
+    if (ev.has(a)) continue;
+    const d = decodeEnvelope(read, a);
+    put(a, { len: d.len, fdb: false, pack: false, text: d.text });
+  }
+
+  // Headers and streams. A stream starts with two bytes (waveform bits,
+  // envelope) when a header points to it; jump and loop targets have
+  // none.
+  /** @type {Array<{a: number, pre: boolean, n: number}>} */
+  const todo = [];
+  const count = s.names.length;
+  for (let n = 0; n < count; n += 1) {
+    const nm = s.names[n].name;
+    let h = word(s.headers + 2 * n);
+    const v0 = read(s.voices + n);
+    const facts = [];
+    let k = 0;
+    const hdr = h;
+    for (; read(h) !== 0x11 && k < 16; k += 1, h += 3) {
+      const st = word(h);
+      const tbl = read(h + 2);
+      const sl = label(st, `${nm}_v${k}`);
+      ref(st, h);
+      put(h, { len: 2, fdb: true, pack: false, text: `voice ${k}: WSG voice ${v0 + k}` });
+      put(h + 2, {
+        len: 1, fdb: false, pack: false,
+        text: `frequency table ${tbl} (${s.freqNames[tbl] ?? `freq_${tbl}`})`,
+      });
+      todo.push({ a: st, pre: true, n });
+      facts.push(sl);
+    }
+    put(h, { len: 1, fdb: false, pack: false, text: 'end of header' });
+    const kind = s.retriggered.has(n)
+      ? 'retriggered (a new request restarts it)'
+      : 'held (plays while requested; op_end clears the request)';
+    label(hdr, `hdr_${nm}`, [
+      `Sound ${n} ($${hx(n)}), snd_request+${n} (main $${hex(0x6040 + n, 4).slice(1)}): ` +
+        `${nm}.`,
+      ...s.names[n].doc,
+      `WSG voices ${v0}-${v0 + k - 1}, tempo ${read(s.tempo + n)}, channel ` +
+        `blocks at $${hex(word(s.channels + 2 * n), 4).slice(1)}; ${kind}.`,
+    ]);
+  }
+  for (const a of s.orphans) {
+    label(a, `unused_${hex(a, 4).slice(1)}`, ['No header points to this stream: it is never played.']);
+    todo.push({ a, pre: true, n: -1 });
+  }
+  while (todo.length) {
+    const w = /** @type {{a: number, pre: boolean, n: number}} */ (todo.shift());
+    let a = w.a;
+    if (w.pre) {
+      if (ev.has(a)) continue;
+      const wave = read(a);
+      put(a, {
+        len: 2, fdb: false, pack: false,
+        text: `waveform ${(wave >> 4) & 7}, envelope ${read(a + 1)}`,
+      });
+      a += 2;
+    }
+    // Orphan streams (n = -1) have no tempo: no length check.
+    const tempo = w.n < 0 ? 1 : read(s.tempo + w.n);
+    for (;;) {
+      if (ev.has(a)) break; // joins a stream decoded already
+      const v = read(a);
+      if (v < 0xf0) {
+        const len = read(a + 1);
+        // Frames = low byte of length x tempo (MUL); 0 plays 256 frames.
+        const fr = (len * tempo) & 0xff || 256;
+        const odd = (len * tempo) > 0xff || len === 0 ? ` (${fr} fr!)` : '';
+        const hi = v >> 4;
+        let text;
+        if (hi === 0x0c) text = `-:${len}`;
+        else if (hi > 0x0b) text = `?${hx(v)}:${len}`;
+        else text = `${noteName(hi, v & 0x0f)}:${len}`;
+        put(a, { len: 2, fdb: false, pack: true, text: text + odd });
+        a += 2;
+        continue;
+      }
+      const op = v & 0x0f;
+      if (op > 7) throw new Error(`sound stream: bad command ${hex(v)} at ${hex(a, 4)}`);
+      const len = STREAM_CMD_LEN[op];
+      const b = read(a + 1);
+      let text = '';
+      if (op === 0) text = 'end: clear the request (op_end)';
+      else if (op === 1) text = `waveform ${(b >> 4) & 7}`;
+      else if (op === 2) text = `envelope ${b}`;
+      else if (op === 4) text = `set +D = ${b} (op_loop_c passes)`;
+      else {
+        const to = op === 7 ? word(a + 1) : word(a + 2);
+        const tl = label(to, `l${hex(to, 4).slice(1)}`);
+        ref(to, a);
+        todo.push({ a: to, pre: false, n: w.n });
+        if (op === 7) text = `jump ${tl}`;
+        else if (op === 3) text = `repeat from ${tl}: ${b} passes (+C)`;
+        else if (op === 5) text = `to ${tl} on pass ${b} only (+E)`;
+        else text = `to ${tl} every ${b} passes (+F)`;
+      }
+      put(a, { len, fdb: false, pack: false, text });
+      a += len;
+      if (op === 0 || op === 7) break;
+    }
+  }
+
+  // Contiguous runs of events become regions.
+  const starts = [...ev.keys()].sort((x, y) => x - y);
+  /** @type {Region[]} */
+  const regions = [];
+  for (const a of starts) {
+    const last = regions[regions.length - 1];
+    const e = /** @type {SndEvent} */ (ev.get(a));
+    if (last && last.hi === a) last.hi = a + e.len;
+    else {
+      regions.push({
+        lo: a, hi: a + e.len, type: 'sound', per: 1, comment: '', term: -1,
+        head: 0, tag: '', events: ev,
+      });
+    }
+  }
+  return { labels, regions, refs };
+}
+
+// ---------------------------------------------------------------------------
 // Listing
 
 /**
@@ -920,6 +1207,8 @@ function sizeTables(t, mem, lo, ann, isData) {
  * @property {number} head
  * @property {boolean=} reverse
  * @property {string} tag note appended to every line ('' or '[unreached]')
+ * @property {Map<number, SndEvent>=} events type 'sound': the decoded
+ *   items (soundData)
  */
 
 /** @param {number[]} b @returns {string} */
@@ -993,6 +1282,9 @@ export function generate(cpu, mem, ann, ram, cov, js = new Map()) {
   /** @type {Region[]} */
   const regions = [];
   for (const d of ann.data) regions.push({ ...d, tag: '' });
+  // The sound CPU's headers, note streams, envelopes and frequency tables.
+  const snd = ann.sounds ? soundData(read, ann.sounds) : null;
+  if (snd) regions.push(...snd.regions);
   for (const tb of t.tables.values()) {
     if (ann.data.some((d) => d.lo < tb.hi && tb.lo < d.hi)) continue;
     regions.push({
@@ -1012,6 +1304,13 @@ export function generate(cpu, mem, ann, ram, cov, js = new Map()) {
   /** @type {Set<number>} routine starts (get a header) */
   const routines = new Set();
   for (const [a, l] of ann.labels) labels.set(a, l.name);
+  // Sound data labels (an annotation label for the same address wins); their
+  // docs go with the annotation docs so labelLine prints them.
+  for (const [a, l] of snd?.labels ?? []) {
+    if (labels.has(a)) continue;
+    labels.set(a, l.name);
+    if (l.doc.length) ann.labels.set(a, { name: l.name, doc: l.doc, entry: false, dp: null });
+  }
   for (const [v, name] of VECTORS) {
     if (v === 0xfff0) continue;
     const a = read(v) << 8 | read(v + 1);
@@ -1069,11 +1368,25 @@ export function generate(cpu, mem, ann, ram, cov, js = new Map()) {
       if (!labels.has(v)) labels.set(v, `dat_${hex(v, 4).slice(1)}`);
     }
   }
+  for (const [to, list] of snd?.refs ?? []) {
+    dataRefs.set(to, [...(dataRefs.get(to) ?? []), ...list]);
+  }
   const routineList = [...routines].sort((a, b) => a - b);
-  /** @param {number} a @returns {string} routine containing a */
+  /**
+   * The routine containing a, or for an address inside a data region (a
+   * pointer table, a sound header) the nearest data label before it that
+   * is not a branch-style `lXXXX` label.
+   * @param {number} a @returns {string}
+   */
   const within = (a) => {
     let best = -1;
     for (const r of routineList) { if (r <= a) best = r; else break; }
+    if (inRegion[a]) {
+      for (let d = a; d > best && d >= lo; d -= 1) {
+        const l = labels.get(d);
+        if (l && !/^l[0-9A-F]{4}$/.test(l)) return l;
+      }
+    }
     return best < 0 ? '' : labels.get(best) ?? '';
   };
 
@@ -1311,7 +1624,10 @@ export function generate(cpu, mem, ann, ram, cov, js = new Map()) {
   if (usedRam.size) {
     out.push('; RAM (addresses in this CPU\'s space)');
     for (const c of [...usedRam].sort((x, y) => x - y)) {
-      const r = ram.get(c);
+      // This CPU's own annotation describes the variable from its side
+      // (the sound CPU's request bytes, say); else the shared entry.
+      const mine = ann.ram.get(c);
+      const r = mine && mine.comment ? mine : ram.get(c);
       if (!r) continue;
       const own = cpu === 'sound' && c >= 0x6000 && c < 0x6400 ? c - 0x6000 : c;
       const size = r.size > 1 ? ` (${r.size} bytes)` : '';
@@ -1454,6 +1770,7 @@ function dataLine(out, a, bytes, op, arg, note) {
  * @returns {number}
  */
 function renderRegion(r, out, ctx) {
+  if (r.type === 'sound') return renderSound(r, out, ctx);
   const { read, labels } = ctx;
   const word = (/** @type {number} */ a) => read(a) << 8 | read(a + 1);
   ctx.labelLine(r.lo);
@@ -1556,8 +1873,71 @@ function renderRegion(r, out, ctx) {
   return r.hi;
 }
 
+/**
+ * Render a run of decoded sound data (soundData): one line per item, a
+ * stream pointer as FDB with its label, consecutive notes packed up to 8
+ * bytes a line, items longer than 8 bytes split with the comment on the
+ * first line. Returns the region's end.
+ * @param {Region} r @param {string[]} out @param {Ctx} ctx
+ * @returns {number}
+ */
+function renderSound(r, out, ctx) {
+  const { read, labels, ann } = ctx;
+  const ev = /** @type {Map<number, SndEvent>} */ (r.events);
+  /** Does something start at q that must begin a new line? */
+  const breakAt = (/** @type {number} */ q) => labels.has(q) || ann.blocks.has(q) || ann.comments.has(q);
+  ctx.labelLine(r.lo);
+  let p = r.lo;
+  while (p < r.hi) {
+    if (p !== r.lo && (labels.has(p) || ann.blocks.has(p))) {
+      out.push('');
+      ctx.blockLines(p);
+      ctx.labelLine(p);
+    }
+    const e = /** @type {SndEvent} */ (ev.get(p));
+    const extra = ann.comments.get(p) ?? '';
+    if (e.fdb) {
+      const w = read(p) << 8 | read(p + 1);
+      dataLine(out, p, [read(p), read(p + 1)], 'FDB', labels.get(w) ?? hex(w, 4),
+        [e.text, extra].filter(Boolean).join(' '));
+      p += 2;
+      continue;
+    }
+    // Pack following notes onto this line while they fit in 8 bytes.
+    let q = p + e.len;
+    const texts = [e.text];
+    while (e.pack && q < r.hi && !breakAt(q)) {
+      const f = ev.get(q);
+      if (!f || !f.pack || q + f.len - p > 8) break;
+      texts.push(f.text);
+      q += f.len;
+    }
+    const note = [texts.join(' '), extra].filter(Boolean).join(' ');
+    for (let k = p; k < q; k += 8) {
+      const bytes = [];
+      for (let i = k; i < Math.min(q, k + 8); i += 1) bytes.push(read(i));
+      dataLine(out, k, bytes, 'FCB', bytes.map((x) => hex(x)).join(','), k === p ? note : '');
+    }
+    p = q;
+  }
+  return r.hi;
+}
+
 // ---------------------------------------------------------------------------
 // Driver
+
+/**
+ * The sound CPU's routines (src/game/sound, registry SOUND / SOUND_AT).
+ * tools/js-routines.mjs predates the sound port and lists main and sub
+ * only; the same loader works once the registry names are known.
+ * @returns {Promise<Map<number, import('./js-routines.mjs').JsRoutine>>}
+ */
+async function loadSoundRoutines() {
+  /** @type {Record<string, {byName: string, byAddr: string}>} */
+  const cpus = JS_CPUS;
+  if (!cpus.sound) cpus.sound = { byName: 'SOUND', byAddr: 'SOUND_AT' };
+  return loadJsRoutines(/** @type {'main'} */ ('sound'));
+}
 
 /**
  * The port's routines, loaded once (the listings depend on them only
@@ -1567,6 +1947,7 @@ function renderRegion(r, out, ctx) {
 export const JS_ROUTINES = {
   main: await loadJsRoutines('main'),
   sub: await loadJsRoutines('sub'),
+  sound: await loadSoundRoutines(),
 };
 
 /**

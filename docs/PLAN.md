@@ -62,7 +62,10 @@ src/game/      main/ sub/ sound/ -- one module per ROM chip, plus the
 src/video/     tilemap, sprites, starfield, palette (generated from PROMs)
 src/audio/     WSG synthesis (+ samples if the board uses them)
 src/input/     keyboard / gamepad mux and remapping dialog
-test/m6809/    the MC6809 core and the three-CPU board running the real ROM
+src/emu/       the MC6809 core and the three-CPU board running the real ROM
+               (.js like the rest of src/: the ROM engine ships it, and the
+               tests use it as their oracle)
+test/m6809/    cyclemodel.mjs: test-only cycle predictor for the core
 test/oracle/   routine-by-routine and lockstep comparisons against the ROM
 test/unit/     unit tests
 test/browser/  headless Chrome smoke test (CDP over WebSocket, no deps)

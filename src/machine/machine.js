@@ -112,20 +112,23 @@ export const RAM_REGIONS = Object.freeze([
  * `top` is the initial S from the ROMs' LDS instructions ([ROM]: main
  * $E00F/$B705/$D152 `LDS #$1600`, sub $E006/$E181 `LDS #$1D80`, sound
  * $E047 `LDS #$0400`); S grows down from it. `low` is the lowest S seen:
- * measured on the oracle board (test/m6809/board.mjs, tools/coverage.mjs)
- * over ~78,000 frames: 20,000 of attract, random-input 1P and 2P games to
- * game over, the challenging stage, PARSEC 11, a high-score entry, the
- * service mode and the operator-stats DIP. Main reaches $15E2 when the
- * vblank IRQ (12 bytes) lands inside $D07A's call chain at game start
- * (an earlier 16,000-frame measurement had $15E4); the service mode only
- * reaches $15FA. The stack occupies [low, top). `mainTop`/`mainLow`
- * are the same addresses in main-CPU space, i.e. indices into `mem`.
- * No code path executed PSHU/PULU, so U is never a stack.
+ * measured on the oracle board (src/emu/board.js `trackStack`) over the
+ * coverage sessions (~78,000 frames: attract, 1P and 2P games to game
+ * over, the challenging stage, a high-score entry, the service mode, the
+ * operator-stats DIP) plus 128 games of 6,000-12,000 frames with Round
+ * Advance to every PARSEC from 1 to 64. Main reaches $15E2 when the
+ * vblank IRQ (12 bytes) lands inside $D07A's call chain at game start;
+ * the service mode only reaches $15FA. The sub reaches $1D70 in later
+ * stages (from PARSEC 3 on: an IRQ frame 4 bytes deeper than in stage
+ * 1, where it stops at $1D74), the sound CPU $03EB once (PARSEC 33).
+ * The stack occupies [low, top). `mainTop`/`mainLow` are the same
+ * addresses in main-CPU space, i.e. indices into `mem`. No code path
+ * executed PSHU/PULU, so U is never a stack.
  */
 export const STACKS = Object.freeze({
   main: Object.freeze({ top: 0x1600, low: 0x15e2, mainTop: 0x1600, mainLow: 0x15e2 }),
-  sub: Object.freeze({ top: 0x1d80, low: 0x1d74, mainTop: 0x1d80, mainLow: 0x1d74 }),
-  sound: Object.freeze({ top: 0x0400, low: 0x03ec, mainTop: 0x6400, mainLow: 0x63ec }),
+  sub: Object.freeze({ top: 0x1d80, low: 0x1d70, mainTop: 0x1d80, mainLow: 0x1d70 }),
+  sound: Object.freeze({ top: 0x0400, low: 0x03eb, mainTop: 0x6400, mainLow: 0x63eb }),
 });
 
 /**
@@ -284,6 +287,15 @@ export class Machine extends CpuView {
 
     /** @type {MachineHooks} */
     this.hooks = {};
+    /**
+     * Cycle, from the start of the ported main-CPU instruction, of its
+     * access to the 56XX/58XX that is about to happen: 4 (extended
+     * addressing) unless ported code whose access comes on another
+     * cycle sets its own around it (src/game/timing.js ioRead,
+     * ioStore). The scheduler delivers the chips' vblank run by it, and
+     * the port reports the bang trigger's cycle by it.
+     */
+    this.ioDataCycle = 4;
 
     this.initLatches();
   }

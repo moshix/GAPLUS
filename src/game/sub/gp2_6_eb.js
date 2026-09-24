@@ -60,7 +60,7 @@ function* stageTable(s, wing, a3, a8, aList, list, byLevel) {
     const st = yield* rd(s, 0x1035, 4); // cmp <stage
     s.charge(3); // beq / bne
     if (v === st) {
-      if (wing) s.charge(4 + 3); // ldy #aList / bra
+      if (wing) { s.charge(4); s.charge(3); } // ldy #aList / bra
       return aList;
     }
     if (!wing) s.charge(3); // bra

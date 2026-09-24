@@ -2,25 +2,56 @@
  "cpu": "sound",
  "default_dp": "00",
  "header": [
-  "Sound CPU: a sequencer for the 8-voice 15XX WSG. The main CPU requests",
-  "sound n by writing non-zero to $0040+n (main $6040+n); the IRQ plays",
-  "every requested sound one step per frame and copies a shadow of the",
-  "voice registers ($0080) into the WSG. DP stays 0 (never set)."
+  "Sound CPU: a sequencer for the 8-voice 15XX WSG (ported as",
+  "src/game/sound/gp2_1.js; docs/disassembly-notes.md, sound driver).",
+  "",
+  "REQUESTS. The main CPU asks for sound n (0-25) by writing 1 to",
+  "snd_request+n ($0040+n here, main $6040+n); the sub CPU cannot reach",
+  "this RAM and queues its requests in $0840+n, which the main task",
+  "task_sound_queue ($D8B0) forwards once a frame. Sound $16 (coin) is a",
+  "count (INC), every other request byte is a flag. Retriggered sounds",
+  "(1, 7, $0A-$0E) restart on every new request; the others play while",
+  "their request byte is set, and op_end clears it when the stream ends.",
+  "The main CPU stops a sound early by clearing snd_request+n and",
+  "snd_active+n (sound_all_off $DF19 clears them all).",
+  "",
+  "EACH FRAME (irq_sound): the voice shadow $0080 (vol, freq lo, mid,",
+  "hi|wave per voice) goes to the WSG and is cleared; then sounds 0-25 in",
+  "order each run one frame (play_sound); a later sound overwrites the",
+  "shadow of a voice it shares with an earlier one, so it wins. A sound",
+  "owns WSG voices sound_voice[n].., a 17-byte channel block per voice",
+  "(sound_channels[n]) and a header (sound_headers[n]) of note streams.",
+  "Every voice steps a volume envelope and a note stream (next_note).",
+  "DP stays 0 (never set)."
  ],
  "labels": {
   "E000": {
    "name": "reset_sound",
    "doc": [
-    "Power-on: mask the IRQ latch; spin (kicking the watchdog) until the",
-    "main CPU writes $11 to $0040; checksum $E000-$FFFF (non-zero sum ->",
-    "$0380 = 1); answer $22 in $0040; clear $0000-$02FF (the WSG",
-    "registers and the handshake byte too, about 700 cycles after the",
-    "$22 was written: the main CPU must have seen it by then); copy the",
-    "32 tempo bytes $E3EF-$E40E to $00A0; S = $0400; enable the IRQ and",
-    "idle in BRA * - all further work happens in irq_sound."
+    "Power-on of the sound CPU (released by the main CPU's SRESET write):",
+    "mask the IRQ latch; spin (kicking the watchdog) until the main CPU",
+    "writes $11 to $0040; checksum $E000-$FFFF (non-zero sum -> $0380 =",
+    "1); answer $22 in $0040; clear $0000-$02FF (the WSG registers and",
+    "the handshake byte too, about 700 cycles after the $22 was written:",
+    "the main CPU must have seen it by then); copy the 32 tempo bytes",
+    "$E3EF-$E40E to $00A0; S = $0400; enable the IRQ and idle in BRA *",
+    "- all further work happens in irq_sound.",
+    "QUIRK: the watchdog kick at $E050 uses the odd address $2007 (any",
+    "$2000-$3FFF access kicks it); LDY $3000 at $E02D kicks it twice."
    ]
   },
-  "E053": "idle_forever",
+  "E003": "wait_handshake",
+  "E010": "checksum_loop",
+  "E020": "store_rom_error",
+  "E02D": "clear_ram_loop",
+  "E03E": "copy_tempo_loop",
+  "E053": {
+   "name": "idle_forever",
+   "doc": [
+    "BRA *: the CPU only runs its IRQ from now on (3 cycles a pass,",
+    "which sets the IRQ's entry latency)."
+   ]
+  },
   "E055": {
    "name": "irq_sound",
    "doc": [
@@ -30,229 +61,527 @@
     "    shadow bytes vol, freq lo, freq mid, freq hi|wave go to WSG",
     "    registers 8v+3..8v+6, then clear the shadow (silence unless a",
     "    sound writes it again this frame);",
-    " 3. for each sound n = 0..25 in priority order: if its request byte",
-    "    $0040+n is set, run play_sound with $00C0 = n (later sounds",
-    "    overwrite the shadow of the voices they share, so they win);",
-    "    otherwise clear $0060+n so the sound restarts next time. Sounds",
-    "    1, 7 and $0A-$0E are retriggered instead: a request clears both",
-    "    bytes (restart) and the sound runs on from $0060+n until op_end;",
-    " 4. $00C2 = 1, re-enable the IRQ latch, RTI."
+    " 3. for each sound n = 0..25 in order (one unrolled slot each): a",
+    "    held sound runs play_sound while snd_request+n is set, else its",
+    "    snd_active+n is cleared so it starts from the top next time; a",
+    "    retriggered sound (1, 7, $0A-$0E) clears both bytes on a request",
+    "    (a restart) and runs while snd_active+n is set. Later sounds win",
+    "    the voices they share;",
+    " 4. snd_irq_done = 1, re-enable the IRQ latch, RTI.",
+    "The port charges the MAME cycle of every instruction and yields",
+    "before each access to $0040-$007F, which the main CPU shares."
    ]
   },
+  "E061": "shadow_to_wsg",
+  "E074": "clear_shadow",
+  "E07B": "slot_start_tune",
+  "E08A": "slot_shot",
+  "E09F": "slot_challenge_tune",
+  "E0AE": "slot_entry_tune_1st",
+  "E0BD": "slot_entry_tune",
+  "E0CC": "slot_stage_tune",
+  "E0DB": "slot_payout_tune",
+  "E0EA": "slot_shot_upgraded",
+  "E0FF": "slot_button_wait",
+  "E10E": "slot_formation_hum",
+  "E11D": "slot_hit_challenge",
+  "E132": "slot_hit",
+  "E147": "slot_flyin",
+  "E15C": "slot_dive",
+  "E171": "slot_special_object",
+  "E186": "slot_object_spawn",
+  "E195": "slot_capture",
+  "E1A4": "slot_effect_rise",
+  "E1B3": "slot_effect_spread",
+  "E1C2": "slot_powerup",
+  "E1D1": "slot_player_explode",
+  "E1E0": "slot_extra_ship",
+  "E1EF": "slot_coin",
+  "E1FE": "slot_count_tick",
+  "E20D": "slot_star_warp",
+  "E21C": "slot_bonus_ship",
   "E22B": "irq_sound_done",
   "E233": {
    "name": "play_sound",
    "doc": [
-    "Run sound $00C0 for one frame.",
-    "  $00C1 = first WSG voice of the sound (sound_voice[n]);",
-    "  X = its channel blocks (sound_channels[n]), 17 bytes per voice:",
-    "    +0/1 note stream pointer   +2 frequency table (x2)",
-    "    +3 waveform (freq-hi bits)  +4 volume envelope number",
-    "    +5 current volume ($F0 = rest)  +6/7/8 frequency hi/mid/lo",
-    "    +9 note time left  +A envelope position  +B envelope hold",
-    "    +C..+F loop counters   +$10 = $11 after the last voice",
-    "On the first frame ($0060+n clear) the blocks are initialised from",
-    "the sound's header (sound_headers[n]): per voice a stream pointer",
-    "and a frequency table number, ended by $11."
+    "Run sound snd_current (n) for one frame. snd_voice = its first WSG",
+    "voice (sound_voice[n]); X = its channel blocks (sound_channels[n]),",
+    "17 bytes per voice:",
+    "  +0/1 note stream pointer   +2 frequency table number x 2",
+    "  +3 waveform (bits 4-6, ORed into freq hi)  +4 envelope number",
+    "  +5 volume ($F0 = resting)  +6/7/8 frequency hi|wave / mid / lo",
+    "  +9 frames left in the note  +A envelope position",
+    "  +B ramp counter ($FF = idle)  +C/+E/+F loop counters (F3/F5/F6)",
+    "  +D flag set by F4 (F3 loops pass straight through)",
+    "  +$10 = $11 in the last block of the sound",
+    "On the first frame (snd_active+n = 0) set snd_active+n and build the",
+    "blocks from the header (sound_headers[n]): per voice a stream",
+    "pointer (the stream's first two bytes are the waveform and the",
+    "envelope) and a frequency table number, until $11; each voice",
+    "fetches its first note (next_note) and its loop counters start at 0.",
+    "Then play_voice runs every voice once.",
+    "QUIRK: if a stream ended (op_end) during this set-up, op_end's",
+    "PULS X,U / RTS would pop the X pushed at $E252 as a return address",
+    "and run RAM; no stream in the ROM does that (the port throws)."
    ]
   },
+  "E254": "build_blocks",
+  "E27B": "blocks_done",
   "E27F": {
    "name": "play_voice",
    "doc": [
-    "One voice: step the volume envelope, write volume and frequency",
-    "into the shadow, count down the note and fetch the next one."
+    "Play every voice of the sound for one frame, from block X and voice",
+    "snd_voice on: step the volume envelope (skipped while resting: +5 =",
+    "$F0 is written as the volume, whose low nibble 0 is silence), write",
+    "volume and frequency to the shadow (write_shadow), count the note",
+    "down and fetch the next one. Returns after the block whose +$10 is",
+    "$11, or straight to irq_sound when a stream ends (op_end)."
    ]
   },
-  "E285": "envelope_step",
+  "E285": {
+   "name": "envelope_step",
+   "doc": [
+    "One step of voice X's volume envelope: the byte at position +A of",
+    "envelope +4 (envelopes table) is a level 0-$F (play it, advance)",
+    "or an op $10-$16, dispatched on its low nibble through envelope_ops",
+    "with U = the op's address. next_note restarts the envelope (+A = 0)",
+    "for every note and rest."
+   ]
+  },
   "E29F": {
    "name": "envelope_ops",
    "doc": [
-    "Envelope bytes $10-$16 (the low nibble is the byte offset into this",
-    "table, so only even values are used)."
+    "Envelope ops $10 sustain, $12 sustain and fade out, $14 repeat, $16",
+    "ramp (the low nibble is the byte offset into this table, so only",
+    "even values are valid)."
    ]
   },
   "E2A7": {
-   "name": "env_op_hold",
+   "name": "env_op_ramp",
    "doc": [
-    "Envelope byte $16 n: repeat the previous level n more frames."
+    "Envelope op $16 n: a linear decay. The first frame (+B = $FF) takes",
+    "the previous level - 1 as the counter +B; each frame plays the",
+    "counter and lowers it; once it reaches n + 1 it is played again,",
+    "+B goes back to $FF and the position moves onto n, which the next",
+    "frame plays as an ordinary level (e.g. 7 7 16 00 10: 7 7 6 5 4 3 2",
+    "1 1 0 0 ...). Named 'hold' in the port.",
+    "QUIRK: with n >= previous level - 1 the counter would pass n + 1,",
+    "wrap to $FF (full volume) and restart; no envelope in the ROM does."
    ]
   },
+  "E2BC": "ramp_down",
+  "E2C1": "ramp_start",
   "E2C8": {
    "name": "env_op_loop",
    "doc": [
-    "Envelope byte $14: restart the envelope from its first level."
+    "Envelope op $14: repeat the envelope from its first level."
    ]
   },
   "E2CC": {
    "name": "env_op_keep",
    "doc": [
-    "Envelope byte $10: keep the previous level (end of envelope)."
+    "Envelope op $10: sustain - play the level before it for the rest",
+    "of the note."
    ]
   },
   "E2D0": {
    "name": "env_op_limit",
    "doc": [
-    "Envelope byte $12: previous level, but no higher than the note",
-    "time left (+9): a decay at the end of the note."
+    "Envelope op $12: sustain the level before it, but no louder than the",
+    "frames left in the note (+9): the note fades out over its last 15",
+    "frames."
    ]
   },
+  "E2DA": "env_advance",
   "E2DC": {
    "name": "write_shadow",
    "doc": [
-    "Store volume and frequency of voice $00C1 into the shadow",
-    "$0080 + 4 x voice (vol, freq lo, freq mid, freq hi|wave)."
+    "Store voice X's volume (A -> +5) and frequency in the shadow at",
+    "$0080 + 4 x snd_voice: vol, freq lo, freq mid, freq hi|wave (the",
+    "order of WSG registers 3-6). Entered at $E2DA (env_advance) the",
+    "envelope position +A is advanced first. Then count the note down",
+    "(+9) and fetch the next event when it runs out; RTS after the last",
+    "voice, else on to the next block (+$11) and voice."
    ]
   },
+  "E2F9": "voice_done",
+  "E301": "next_voice",
   "E309": {
    "name": "next_note",
    "doc": [
-    "Fetch the next event of the voice's note stream.",
-    "  $00-$BF: note (high nibble = pitch in the frequency table, low",
-    "           nibble = octave shift right) and a length byte, scaled",
-    "           by the sound's tempo ($00A0+n) with MUL;",
-    "  $Cx:     rest;",
-    "  $Fx:     command, low nibble through stream_ops.",
-    "The 3-byte frequency (20 bits + waveform) comes from",
-    "freq_tables[+2]; each octave shift halves it."
+    "Fetch the next event of voice X's note stream (pointer at +0/1):",
+    "  $00-$BF n, len: a note. High nibble = pitch, the entry of the",
+    "           voice's frequency table (+2: 0 = A ... 11 = G#), low",
+    "           nibble = octave shift (the 20-bit frequency is shifted",
+    "           right that many times, one octave each); the waveform",
+    "           bits +3 are ORed into the top byte;",
+    "  $Cx len:  a rest (+5 = $F0);",
+    "  $F0-$F7:  a command through stream_ops (op_end ends the sound).",
+    "The length byte times the sound's tempo (snd_tempo+n, MUL, low byte",
+    "only) is the note's duration in frames (+9); the envelope restarts",
+    "(+A = 0, +B = $FF).",
+    "QUIRK: only the low byte of the MUL is kept (length x tempo above",
+    "255 wraps, 0 plays 256 frames); pitch nibbles $D/$E would read past",
+    "the 12-entry table. No stream does either."
    ]
   },
-  "E369": "stream_command",
-  "E376": "stream_ops",
+  "E30B": "next_event",
+  "E338": "octave_shift",
+  "E341": "or_waveform",
+  "E349": "rest",
+  "E34D": "note_length",
+  "E369": {
+   "name": "stream_command",
+   "doc": [
+    "Stream byte $F0-$F7: dispatch its low nibble through stream_ops,",
+    "with U = the stream pointer and B = the byte after the command.",
+    "Every op but op_end continues at set_stream_ptr (next event).",
+    "QUIRK: $F8-$FF would jump through the code after the table; no",
+    "stream uses them."
+   ]
+  },
+  "E376": {
+   "name": "stream_ops",
+   "doc": [
+    "Note stream commands $F0-$F7."
+   ]
+  },
   "E386": {
    "name": "op_jump",
    "doc": [
-    "$F7: jump to the address that follows."
+    "$F7 addr: continue the stream at addr."
    ]
   },
   "E38A": {
    "name": "op_wave",
    "doc": [
-    "$F1 n: set the waveform bits (+3)."
+    "$F1 n: waveform bits (+3); n >> 4 is the WSG waveform 0-7."
    ]
   },
   "E38E": {
    "name": "op_envelope",
    "doc": [
-    "$F2 n: set the volume envelope (+4)."
+    "$F2 n: volume envelope n (+4), from the next note on."
    ]
   },
   "E392": {
    "name": "op_set_d",
    "doc": [
-    "$F4 n: set the flag at +D."
+    "$F4 n: set the flag +D; while it is non-zero every $F3 loop passes",
+    "straight through. Unused by the ROM's streams."
    ]
   },
+  "E394": "op_skip2",
   "E398": {
    "name": "op_loop_c",
    "doc": [
-    "$F3 n, addr: jump to addr until this has run n times (counter",
-    "+C); passes straight through when +D is set."
+    "$F3 n, addr: repeat - jump to addr until the counter +C, counted up",
+    "on every pass, equals n (the section runs n times); passes straight",
+    "through while +D is set.",
+    "QUIRK: +C is never reset, so a second $F3 in the same voice would",
+    "count on from n (256 - n more passes); no stream has two."
    ]
   },
   "E3A4": {
    "name": "op_loop_f",
    "doc": [
-    "$F6 n, addr: loop with counter +F."
+    "$F6 n, addr: count +F up; on its n-th pass clear it and jump to",
+    "addr, else go on (a jump taken every n-th time)."
    ]
   },
   "E3AE": {
    "name": "op_loop_e",
    "doc": [
-    "$F5 n, addr: loop with counter +E."
+    "$F5 n, addr: count +E up; jump to addr on the pass where it equals",
+    "n (only once: +E is not cleared), else go on."
    ]
   },
+  "E3B4": "op_take_jump",
+  "E3B8": "op_skip_jump",
+  "E3BA": "set_stream_ptr",
   "E3BF": {
    "name": "op_end",
    "doc": [
-    "$F0: end of the sound. Clear its request (sound $16, the coin",
-    "sound, is a counter and is decremented instead) and its active",
-    "flag, then return straight to irq_sound: PULS X,U drops next_note's",
-    "saved U and the return into play_sound."
+    "$F0: end of the sound. Clear its request byte (sound $16, the coin",
+    "sound, counts coins and is decremented instead, so it plays once",
+    "per coin) and its active byte, then return straight to irq_sound:",
+    "PULS X,U drops next_note's saved U and its return into write_shadow",
+    "(voice_done), and the RTS leaves play_sound. The first voice to",
+    "reach $F0 ends the whole sound: the voices after it are not played",
+    "this frame, and none of them is played again."
    ]
   },
+  "E3CD": "coin_count_down",
+  "E3CF": "clear_active",
   "E3D5": {
    "name": "sound_voice",
    "doc": [
-    "First WSG voice used by each sound 0-25."
+    "First WSG voice (0-7) used by each sound 0-25; voice k of the",
+    "sound's header plays on WSG voice sound_voice[n] + k."
    ]
   },
   "E3EF": {
    "name": "tempo_init",
    "doc": [
-    "Tempo per sound (32 bytes, copied to $00A0 at boot). The last six",
-    "bytes overlap the start of sound_channels."
+    "Tempo per sound 0-25: the frames per unit of note length (copied",
+    "with 6 more bytes to snd_tempo at boot).",
+    "QUIRK: the copy is 32 bytes; the last six (tempos of sounds 26-31,",
+    "never played) are the first bytes of sound_channels."
    ]
   },
   "E409": {
    "name": "sound_channels",
    "doc": [
-    "Channel block address in RAM for each sound 0-25."
+    "Channel block address in RAM of each sound 0-25 (17 bytes per",
+    "voice, $0100-$0352). Sounds that should never play together share",
+    "blocks: the tunes 0, 2-6, 8, $12, $14, $17, $18 all start at $0100;",
+    "1/7, 9/$0A, $0F/$19, $11/$13 and $15/$16 are pairs.",
+    "QUIRK: when two sounds sharing blocks do play at once, the second",
+    "one's first frame rebuilds the blocks from its own header, and from",
+    "then on both step the same streams each frame until one ends: a coin",
+    "($16) 10 frames into the extra-ship jingle ($15) makes the pair last",
+    "119 frames instead of 71 and 73, garbled."
+   ]
+  },
+  "E40F": {
+   "name": "tempo_copy_end",
+   "doc": [
+    "End of the 32-byte tempo copy (the CMPX at $E042): the seventh",
+    "byte of sound_channels."
    ]
   },
   "E43D": {
    "name": "sound_headers",
    "doc": [
-    "Header of each sound 0-25: per voice a note stream pointer and a",
-    "frequency table number, $11 ends the list."
+    "Header of each sound 0-25 (hdr_<name> below): per voice a note",
+    "stream pointer and a frequency table number, $11 ends the list."
    ]
   },
   "E5D2": {
    "name": "envelopes",
    "doc": [
-    "Volume envelope pointers: an envelope is a list of levels 0-$F",
-    "played one per frame, then an envelope_ops byte ($10-$16)."
+    "The 31 volume envelopes (env_0 ... env_30 below): levels 0-$F, one",
+    "a frame, then an op: $10 sustain the last level, $12 sustain but",
+    "fade out with the note's last frames, $14 repeat, $16 n ramp down",
+    "one step a frame to n (see env_op_ramp). Each line below shows the",
+    "decoded envelope."
    ]
   },
   "E6D2": {
    "name": "freq_tables",
    "doc": [
-    "Three frequency tables (pointers), 3 bytes per note:",
-    "freq hi (b0-3; b4-6 wave come from +3), mid, lo."
+    "The three frequency tables, 12 notes A..G# of 3 bytes each (freq",
+    "bits 16-19, 8-15, 0-7; the tone is freq x 24000 / 2^20 Hz); an",
+    "unused $00 follows each. A stream's octave shift divides by 2^n."
+   ]
+  },
+  "E6D8": {
+   "name": "freq_low",
+   "doc": [
+    "Frequency table 0: A7 = 3496 Hz, 12 cents below A440 pitch (the",
+    "detuned twin of freq_a440 for chorus voices)."
+   ]
+  },
+  "E6FD": {
+   "name": "freq_a440",
+   "doc": [
+    "Frequency table 1: equal temperament at A440 pitch, A7 = 3520 Hz."
+   ]
+  },
+  "E722": {
+   "name": "freq_high",
+   "doc": [
+    "Frequency table 2: A7 = 3544 Hz, 12 cents above A440 pitch."
    ]
   },
   "FFEF": {
    "name": "checksum_E000",
    "doc": [
-    "Checksum adjust: the byte sum of $E000-$FFFF is 0 (tested at",
-    "boot or in the service mode)."
+    "Checksum adjust: the byte sum of $E000-$FFFF is 0 (tested by",
+    "reset_sound; an error is reported to the main CPU in $0380)."
    ]
   }
  },
  "comments": {
   "E000": "IRQ latch off",
   "E003": "wait for the main CPU's $11",
+  "E005": "watchdog",
   "E00C": "checksum the whole ROM",
-  "E020": "ROM error flag",
+  "E01A": "sum 0 = good",
+  "E020": "ROM error flag (0 or 1)",
   "E023": "handshake answer",
-  "E027": "clear $0000-$02FF",
+  "E027": "clear $0000-$02FF (WSG, requests, blocks)",
+  "E02D": "reads $3000/$3001: two watchdog kicks",
   "E038": "tempo table to $00A0",
+  "E042": "32 bytes: 6 past the 26 tempos",
   "E047": "stack below $0400",
+  "E04B": "unmask IRQ",
   "E04D": "IRQ latch on",
   "E050": "watchdog (odd address)",
   "E055": "acknowledge",
   "E058": "watchdog",
   "E05B": "shadow -> WSG, 8 voices",
+  "E05E": "voice v: registers 8v+3..8v+6",
+  "E069": "next voice's registers",
   "E071": "clear the shadow",
-  "E07B": "sound 0 requested?",
-  "E22B": "IRQ done flag",
+  "E08A": "retriggered: a request restarts",
+  "E08E": "consume the request",
+  "E090": "and restart from the top",
+  "E094": "still playing?",
+  "E22B": "IRQ done flag (never read)",
   "E22F": "IRQ latch on",
   "E233": "first voice of this sound",
   "E23C": "its channel blocks",
   "E242": "first frame of this sound?",
+  "E24A": "mark it started",
   "E24C": "header -> channel blocks",
+  "E252": "keep the first block",
   "E256": "$11 ends the header",
+  "E25A": "+0/1 stream pointer",
+  "E25F": "+2 frequency table x 2",
+  "E264": "+3 waveform, +4 envelope",
+  "E268": "stream now past those two bytes",
+  "E26B": "first note of the voice",
+  "E26E": "+C..+F loop counters, +$10",
+  "E27B": "last block's +$10 = $11",
   "E27F": "resting?",
+  "E285": "envelope +4",
+  "E28D": "position +A",
+  "E291": "a level?",
   "E297": "envelope op in the low nibble",
-  "E2DC": "shadow address = $0080 + 4 x voice",
+  "E2A9": "ramp not started yet?",
+  "E2AD": "end of the ramp: n + 1",
+  "E2B6": "ramp done: idle, move onto n",
+  "E2C1": "previous level - 1",
+  "E2CC": "the level before the op",
+  "E2D2": "no louder than the frames left",
+  "E2DA": "next envelope position",
+  "E2DC": "+5 volume",
+  "E2DE": "shadow address = $0080 + 4 x voice",
+  "E2E7": "+5 vol, +6 freq hi|wave",
+  "E2ED": "+7 freq mid, +8 freq lo",
   "E2F3": "note finished?",
   "E2F9": "last voice of the sound?",
+  "E301": "next WSG voice",
+  "E303": "next channel block",
   "E30B": "next stream byte",
   "E30F": "$F0-$FF: command",
   "E313": "$Cx: rest",
+  "E317": "volume 0 = not resting",
+  "E319": "frequency table +2",
   "E320": "pitch x 3: frequency entry",
+  "E32A": "freq hi, mid",
+  "E32E": "freq lo",
   "E332": "octave shift count",
+  "E338": "20-bit frequency / 2",
+  "E341": "waveform into freq hi",
+  "E349": "rest: volume $F0",
   "E34D": "length x tempo",
-  "E3C5": "sound $16 (coin) counts down"
+  "E359": "low byte only",
+  "E35A": "frames left",
+  "E35C": "past the event",
+  "E360": "restart the envelope",
+  "E362": "ramp idle",
+  "E36B": "the byte after the command",
+  "E371": "command number x 2",
+  "E3A0": "n passes done: fall through",
+  "E3B2": "jump only on the n-th pass",
+  "E3BA": "stream pointer",
+  "E3BF": "request byte of this sound",
+  "E3C5": "sound $16 (coin) counts down",
+  "E3CF": "snd_active+n",
+  "E3D2": "drop next_note's U and the return to play_voice: RTS goes back to irq_sound"
+ },
+ "blocks": {
+  "E07B": [
+   "sound 0 ($00) start_tune: held"
+  ],
+  "E08A": [
+   "sound 1 ($01) shot: retriggered"
+  ],
+  "E09F": [
+   "sound 2 ($02) challenge_tune: held"
+  ],
+  "E0AE": [
+   "sound 3 ($03) entry_tune_1st: held"
+  ],
+  "E0BD": [
+   "sound 4 ($04) entry_tune: held"
+  ],
+  "E0CC": [
+   "sound 5 ($05) stage_tune: held"
+  ],
+  "E0DB": [
+   "sound 6 ($06) payout_tune: held"
+  ],
+  "E0EA": [
+   "sound 7 ($07) shot_upgraded: retriggered"
+  ],
+  "E0FF": [
+   "sound 8 ($08) button_wait: held"
+  ],
+  "E10E": [
+   "sound 9 ($09) formation_hum: held"
+  ],
+  "E11D": [
+   "sound 10 ($0A) hit_challenge: retriggered"
+  ],
+  "E132": [
+   "sound 11 ($0B) hit: retriggered"
+  ],
+  "E147": [
+   "sound 12 ($0C) flyin: retriggered"
+  ],
+  "E15C": [
+   "sound 13 ($0D) dive: retriggered"
+  ],
+  "E171": [
+   "sound 14 ($0E) special_object: retriggered"
+  ],
+  "E186": [
+   "sound 15 ($0F) object_spawn: held"
+  ],
+  "E195": [
+   "sound 16 ($10) capture: held"
+  ],
+  "E1A4": [
+   "sound 17 ($11) effect_rise: held"
+  ],
+  "E1B3": [
+   "sound 18 ($12) effect_spread: held"
+  ],
+  "E1C2": [
+   "sound 19 ($13) powerup: held"
+  ],
+  "E1D1": [
+   "sound 20 ($14) player_explode: held"
+  ],
+  "E1E0": [
+   "sound 21 ($15) extra_ship: held"
+  ],
+  "E1EF": [
+   "sound 22 ($16) coin: held"
+  ],
+  "E1FE": [
+   "sound 23 ($17) count_tick: held"
+  ],
+  "E20D": [
+   "sound 24 ($18) star_warp: held"
+  ],
+  "E21C": [
+   "sound 25 ($19) bonus_ship: held"
+  ],
+  "E047": [
+   "All further work is irq_sound's."
+  ],
+  "E747": [
+   "NOTE STREAMS ($E747-$FA3D). A stream starts with its waveform byte",
+   "(bits 4-6) and its envelope number; then notes $pn,len (pitch p of",
+   "the voice's frequency table, n octaves down), rests $Cx,len and",
+   "commands $F0-$F7 (stream_ops). Shown as pitch:length, e.g. C6:4 =",
+   "C6 for 4 x tempo frames; -:6 = a rest of 6. Labels: <sound>_v<k> =",
+   "voice k of that sound's header; lXXXX = a jump or loop target."
+  ]
  },
  "data": [
   {
@@ -288,42 +617,247 @@
    "len": 6,
    "type": "ptrs",
    "per": 1
+  },
+  {
+   "addr": "FA3E",
+   "end": "FA5B",
+   "type": "text",
+   "name": "copyright_text",
+   "doc": [
+    "Copyright text, never read."
+   ]
   }
  ],
+ "sounds": {
+  "headers": "E43D",
+  "voices": "E3D5",
+  "tempo": "E3EF",
+  "channels": "E409",
+  "envelopes": "E5D2",
+  "env_count": 31,
+  "freq_tables": "E6D2",
+  "freq_count": 3,
+  "freq_names": [
+   "freq_low",
+   "freq_a440",
+   "freq_high"
+  ],
+  "retriggered": [
+   1,
+   7,
+   10,
+   11,
+   12,
+   13,
+   14
+  ],
+  "names": [
+   {
+    "name": "start_tune",
+    "doc": [
+     "Game start music: start_game ($CE17), the main CPU waits for the request to clear ($CE7F); also the demo's start. 384 frames."
+    ]
+   },
+   {
+    "name": "shot",
+    "doc": [
+     "Fighter shot, normal fighter picture $2F (task_player_fire $D1B5). 18 frames."
+    ]
+   },
+   {
+    "name": "challenge_tune",
+    "doc": [
+     "Challenging stage tune: task_stage_clear ($D6E3) when the next stage is a challenging stage (dat_D6E8). 144 frames."
+    ]
+   },
+   {
+    "name": "entry_tune_1st",
+    "doc": [
+     "TOP 5 name entry music for a new best score (rank 1, $B52F via entry_music_ptr). 576 frames."
+    ]
+   },
+   {
+    "name": "entry_tune",
+    "doc": [
+     "TOP 5 name entry music for ranks 2-5 ($B542-$B57B). 960 frames."
+    ]
+   },
+   {
+    "name": "stage_tune",
+    "doc": [
+     "Stage start (\"PARSEC nn\") jingle: after the start tune ($CE92), at a stage clear ($D6BB), after a lost ship or a player change ($DCFF, $DDE8) and after the challenging-stage results ($E3EC). 108 frames."
+    ]
+   },
+   {
+    "name": "payout_tune",
+    "doc": [
+     "Challenging-stage results pay-out: a component moving into place (payout_lucky) or dropping (payout_byebye). 280 frames."
+    ]
+   },
+   {
+    "name": "shot_upgraded",
+    "doc": [
+     "The fighter's shot when its picture ($0EA2) is not $2F, i.e. after an upgrade (task_player_fire $D1BB; the main listing calls it the dual fighter's); never requested together with sound 1. 31 frames."
+    ]
+   },
+   {
+    "name": "button_wait",
+    "doc": [
+     "Results bonus: requested every frame while the screen waits for a fire press (results_show_bonus $E35F), stopped with snd_active by the press. 20 frames a pass."
+    ]
+   },
+   {
+    "name": "formation_hum",
+    "doc": [
+     "The formation's background hum: sub task_formation_anim ($E34B, via the queue) every frame while the formation is assembled and no refill is flying in. 168 frames a pass."
+    ]
+   },
+   {
+    "name": "hit_challenge",
+    "doc": [
+     "Enemy hit in a challenging stage (task_shot_hits $D3F1 with $115F set), sub bonus_fly ($BDC5) and the last hit counted on the results screen ($E2C4). 39 frames."
+    ]
+   },
+   {
+    "name": "hit",
+    "doc": [
+     "Enemy hit in a normal stage (task_shot_hits $D3F8); a captured ship hit by an enemy shot (task_shot_collisions $FA57). 28 frames."
+    ]
+   },
+   {
+    "name": "flyin",
+    "doc": [
+     "An enemy flying into the formation: sub task_formation_refill ($EA75) and task_escort_flyin_a ($EC5A). 87 frames."
+    ]
+   },
+   {
+    "name": "dive",
+    "doc": [
+     "Enemies leaving the formation to attack: sub launch_group1_tail ($FBF0), launch_group2_tail ($FCE6), task_launch_trio ($FDC5) and formation_home ($B28A). 104 frames."
+    ]
+   },
+   {
+    "name": "special_object",
+    "doc": [
+     "The object at formation_flags+42 starts (sub task_start_188A_object $FE71). 89 frames."
+    ]
+   },
+   {
+    "name": "object_spawn",
+    "doc": [
+     "An object placed at a pseudo-random position (sub object_spawn_random $B967). 120 frames."
+    ]
+   },
+   {
+    "name": "capture",
+    "doc": [
+     "Sub task_capture_steer ($E6C3) every frame while it moves the fighter and the beam sprite (capture_state 1), and bonus_seq_fall ($F6DB). 120 frames a pass."
+    ]
+   },
+   {
+    "name": "effect_rise",
+    "doc": [
+     "Power-up effect 0, six rising sprites (sub effect_rising $B5BA); irq_main clears it at $C07A when a coin ends the demo. 120 frames a pass."
+    ]
+   },
+   {
+    "name": "effect_spread",
+    "doc": [
+     "Power-up effect 1, six sprites spread along the ship (sub effect_sequence $B3F4). 120 frames."
+    ]
+   },
+   {
+    "name": "powerup",
+    "doc": [
+     "Fighter upgrade and power-up effects 2-5 (sub effect_setup $B87B). 72 frames."
+    ]
+   },
+   {
+    "name": "player_explode",
+    "doc": [
+     "The fighter explodes (player_dies $DA0B; the main CPU waits for it at $DA16); task_sound_queue keeps it while player_dying. 540 frames."
+    ]
+   },
+   {
+    "name": "extra_ship",
+    "doc": [
+     "Extra fighter: bonus life (bonus_first/second/every_p1/p2), results pay-out (payout_extend), the bonus ship caught (task_bonus_ship $FE99), sub bonus_seq_extend ($F789). 72 frames."
+    ]
+   },
+   {
+    "name": "coin",
+    "doc": [
+     "Coin: irq_main INCs it per credit ($C05C); op_end counts it down, so it plays once per coin. 74 frames."
+    ]
+   },
+   {
+    "name": "count_tick",
+    "doc": [
+     "Challenging-stage results: one hit counted, every other frame (results_count_hits $E2B2). 4 frames."
+    ]
+   },
+   {
+    "name": "star_warp",
+    "doc": [
+     "Starfield event: stage_event1_step0 ($EAD7, every frame for 60 frames in mode 1) and stage_event5_step0 ($EBA0). 960 frames."
+    ]
+   },
+   {
+    "name": "bonus_ship",
+    "doc": [
+     "The bonus ship appears (task_bonus_ship $FE6A). 35 frames."
+    ]
+   }
+  ],
+  "orphans": [
+   "F0FE",
+   "F194",
+   "F1BE",
+   "F1E8",
+   "F212"
+  ]
+ },
  "ram": {
   "0040": {
    "name": "snd_request",
    "size": 32,
-   "comment": "sound n requested (main $6040+n)"
+   "comment": "sound n requested: main writes 1 ($16 coin: a count), op_end clears; +0 is also the boot handshake ($11 / $22)"
   },
   "0060": {
    "name": "snd_active",
    "size": 32,
-   "comment": "sound n started"
+   "comment": "sound n started: play_sound sets it on the first frame; cleared by op_end, by the IRQ when a held sound is no longer requested and on a retrigger"
   },
   "0080": {
    "name": "wsg_shadow",
    "size": 32,
-   "comment": "per voice: vol, f lo, f mid, f hi|wave"
+   "comment": "voice shadow, 4 bytes per voice: vol, freq lo, mid, hi|wave; to WSG regs 8v+3..8v+6 and cleared every IRQ"
   },
   "00A0": {
    "name": "snd_tempo",
    "size": 32,
-   "comment": "tempo per sound"
+   "comment": "frames per note length unit of each sound (tempo_init)"
   },
   "00C0": {
    "name": "snd_current",
-   "comment": "sound being played"
+   "comment": "sound being played (play_sound's n)"
   },
   "00C1": {
    "name": "snd_voice",
-   "comment": "voice being played"
+   "comment": "WSG voice being played (sound_voice[n] + k)"
   },
   "00C2": {
-   "name": "snd_irq_done"
+   "name": "snd_irq_done",
+   "comment": "set to 1 at the end of every IRQ; nothing reads it"
   },
   "00C3": {
-   "name": "snd_temp"
+   "name": "snd_temp",
+   "comment": "scratch: pitch x 2 (next_note), ramp end n + 1 (env_op_ramp)"
+  },
+  "0100": {
+   "name": "snd_blocks",
+   "size": 595,
+   "comment": "channel blocks, 17 bytes per voice (sound_channels, play_sound), $0100-$0352"
   },
   "0380": {
    "name": "snd_rom_error",

@@ -7,9 +7,8 @@
  * lists by name, so the lists have to be complete -- hence generating them
  * from what is actually on disk rather than maintaining them by hand.
  *
- *   MODULES  every .js file under src/, relative to src/
- *   ORACLE   every .mjs file under test/m6809/, relative to the project
- *            root: the oracle board the emulated preview runs
+ *   MODULES  every .js file under src/, relative to src/ -- including the
+ *            MC6809 board emulator in src/emu/ that the ROM engine runs
  *
  * Usage: node tools/gen-index.mjs
  */
@@ -42,11 +41,6 @@ export function listModules(dir = join(ROOT, 'src')) {
   return listFiles(dir, '.js', join(ROOT, 'src'));
 }
 
-/** @returns {string[]} oracle modules, relative to the project root */
-export function listOracleModules() {
-  return listFiles(join(ROOT, 'test', 'm6809'), '.mjs', ROOT);
-}
-
 /**
  * Replace the lines between `    /* NAME:BEGIN *\/` and `    /* NAME:END *\/`.
  * @param {string} html @param {string} name @param {string[]} paths
@@ -66,11 +60,9 @@ function main() {
   const path = join(ROOT, 'index.html');
   let html = readFileSync(path, 'utf8');
   const modules = listModules();
-  const oracle = listOracleModules();
   html = fillBlock(html, 'MODULES', modules);
-  html = fillBlock(html, 'ORACLE', oracle);
   writeFileSync(path, html);
-  console.log(`index.html: ${modules.length} modules, ${oracle.length} oracle modules`);
+  console.log(`index.html: ${modules.length} modules`);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) main();

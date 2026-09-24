@@ -33,6 +33,7 @@ import { SUB, SUB_AT, subAt } from './routines.js';
 import { call } from '../call.js';
 import { poll } from '../timing.js';
 import { disp8 } from '../m6809ops.js';
+import { romSweep } from '../romdata.js';
 import {
   SPIN, RENDEZVOUS, BUSY, SYNC, rd, rd16, wr, wr16, rmw, CLR,
 } from './gp2_6_state.js';
@@ -129,7 +130,8 @@ function romSum(s, from, to) {
   let a = 0;
   let x = from;
   do {
-    a = (a + s.read(x)) & 0xff;
+    // code bytes too: a whole-ROM sweep (romdata.js SWEEPS)
+    a = (a + romSweep('sub', () => s.read(x))) & 0xff;
     x = (x + 1) & 0xffff;
   } while (x !== to);
   return a;
@@ -175,7 +177,7 @@ export function* irq_sub(m) {
     // leau 2,u (5) / bra (3)
     const used = yield* rd(s, u + 0x1001, 8);
     s.charge(2); s.charge(3);
-    if ((used & 0x80) === 0) { s.charge(5 + 3); u += 2; continue; }
+    if ((used & 0x80) === 0) { s.charge(5); s.charge(3); u += 2; continue; }
     const flip = yield* rd(s, 0x102c, 4); // flip_screen
     s.charge(3);
     if (flip !== 0) {

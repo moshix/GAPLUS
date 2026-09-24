@@ -50,7 +50,7 @@ import { call } from '../call.js';
 import { add8, daa } from '../m6809ops.js';
 import { mainRom } from '../romdata.js';
 import { BUSY, busy, requestJump } from './gp2_3b_state.js';
-import { poll, SYNC } from '../timing.js';
+import { poll, SYNC, ioRead } from '../timing.js';
 
 /** @typedef {import('../../machine/machine.js').Machine} Machine */
 
@@ -135,8 +135,10 @@ export function* irq_main(m) {
   m.charge(5); // lbne not taken
   // $C01A: ldd $6800 / anda #$0F / andb #$0F / subd #$0A0A / lbcc
   // coin_jammed. A 16-bit compare: (tens << 8 | units) >= $0A0A.
+  // (LDD reads $6800 on cycle index 4 and $6801 on 5: the chips' run
+  // may come between the two.)
   const tens = m.peek(0x6800) & 0x0f;
-  const units = m.peek(0x6801) & 0x0f;
+  const units = ioRead(m, 0x6801, 5) & 0x0f;
   m.charge(6); m.charge(2); m.charge(2); m.charge(4);
   if (((tens << 8) | units) >= 0x0a0a) {
     m.charge(6); // lbcc taken

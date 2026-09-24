@@ -3,12 +3,29 @@
 ; reference/annotations/sound.json. Do not edit: edit the annotations.
 ; Columns: address, bytes, instruction, comment. Direct-page operands
 ; and named symbols show the resolved address in [brackets].
-; Sound CPU: a sequencer for the 8-voice 15XX WSG. The main CPU requests
-; sound n by writing non-zero to $0040+n (main $6040+n); the IRQ plays
-; every requested sound one step per frame and copies a shadow of the
-; voice registers ($0080) into the WSG. DP stays 0 (never set).
-; 957 code bytes, 7235 data bytes, 18 routines, 2 dispatch tables.
-; Coverage input: 431 executed addresses.
+; Sound CPU: a sequencer for the 8-voice 15XX WSG (ported as
+; src/game/sound/gp2_1.js; docs/disassembly-notes.md, sound driver).
+;
+; REQUESTS. The main CPU asks for sound n (0-25) by writing 1 to
+; snd_request+n ($0040+n here, main $6040+n); the sub CPU cannot reach
+; this RAM and queues its requests in $0840+n, which the main task
+; task_sound_queue ($D8B0) forwards once a frame. Sound $16 (coin) is a
+; count (INC), every other request byte is a flag. Retriggered sounds
+; (1, 7, $0A-$0E) restart on every new request; the others play while
+; their request byte is set, and op_end clears it when the stream ends.
+; The main CPU stops a sound early by clearing snd_request+n and
+; snd_active+n (sound_all_off $DF19 clears them all).
+;
+; EACH FRAME (irq_sound): the voice shadow $0080 (vol, freq lo, mid,
+; hi|wave per voice) goes to the WSG and is cleared; then sounds 0-25 in
+; order each run one frame (play_sound); a later sound overwrites the
+; shadow of a voice it shares with an earlier one, so it wins. A sound
+; owns WSG voices sound_voice[n].., a 17-byte channel block per voice
+; (sound_channels[n]) and a header (sound_headers[n]) of note streams.
+; Every voice steps a volume envelope and a note stream (next_note).
+; DP stays 0 (never set).
+; 957 code bytes, 7235 data bytes, 21 routines, 2 dispatch tables.
+; Coverage input: 439 executed addresses.
 
 ; Hardware (docs/hardware.md section 3)
 WSG              EQU   $0000                 ; 15XX sound registers
@@ -17,198 +34,242 @@ IRQ_ON_SOUND     EQU   $4000                 ; sound IRQ enable
 IRQ_OFF_SOUND    EQU   $6000                 ; sound IRQ disable + clear
 
 ; RAM (addresses in this CPU's space)
-snd_request      EQU   $0040                 ; sound n: main writes 1 (sound:
-                                             ; boot handshake at +0) (32 bytes)
-snd_active       EQU   $0060                 ; sound n started (32 bytes)
-wsg_shadow       EQU   $0080                 ; per voice: vol, f lo, f mid, f
-                                             ; hi|wave (32 bytes)
-snd_tempo        EQU   $00A0                 ; tempo per sound (32 bytes)
-snd_current      EQU   $00C0                 ; sound being played
-snd_voice        EQU   $00C1                 ; voice being played
-snd_irq_done     EQU   $00C2
-snd_temp         EQU   $00C3
+snd_request      EQU   $0040                 ; sound n requested: main writes 1
+                                             ; ($16 coin: a count), op_end
+                                             ; clears; +0 is also the boot
+                                             ; handshake ($11 / $22) (32 bytes)
+snd_active       EQU   $0060                 ; sound n started: play_sound sets
+                                             ; it on the first frame; cleared
+                                             ; by op_end, by the IRQ when a
+                                             ; held sound is no longer
+                                             ; requested and on a retrigger (32
+                                             ; bytes)
+wsg_shadow       EQU   $0080                 ; voice shadow, 4 bytes per voice:
+                                             ; vol, freq lo, mid, hi|wave; to
+                                             ; WSG regs 8v+3..8v+6 and cleared
+                                             ; every IRQ (32 bytes)
+snd_tempo        EQU   $00A0                 ; frames per note length unit of
+                                             ; each sound (tempo_init) (32
+                                             ; bytes)
+snd_current      EQU   $00C0                 ; sound being played (play_sound's
+                                             ; n)
+snd_voice        EQU   $00C1                 ; WSG voice being played
+                                             ; (sound_voice[n] + k)
+snd_irq_done     EQU   $00C2                 ; set to 1 at the end of every
+                                             ; IRQ; nothing reads it
+snd_temp         EQU   $00C3                 ; scratch: pitch x 2 (next_note),
+                                             ; ramp end n + 1 (env_op_ramp)
 snd_rom_error    EQU   $0380                 ; 1 = sound ROM checksum error
 
 
 ;------------------------------------------------------------------------------
 ; reset_sound  ($E000)
-; Power-on: mask the IRQ latch; spin (kicking the watchdog) until the
-; main CPU writes $11 to $0040; checksum $E000-$FFFF (non-zero sum ->
-; $0380 = 1); answer $22 in $0040; clear $0000-$02FF (the WSG
-; registers and the handshake byte too, about 700 cycles after the
-; $22 was written: the main CPU must have seen it by then); copy the
-; 32 tempo bytes $E3EF-$E40E to $00A0; S = $0400; enable the IRQ and
-; idle in BRA * - all further work happens in irq_sound.
+; -> src/game/sound/gp2_1.js
+; Power-on of the sound CPU (released by the main CPU's SRESET write):
+; mask the IRQ latch; spin (kicking the watchdog) until the main CPU
+; writes $11 to $0040; checksum $E000-$FFFF (non-zero sum -> $0380 =
+; 1); answer $22 in $0040; clear $0000-$02FF (the WSG registers and
+; the handshake byte too, about 700 cycles after the $22 was written:
+; the main CPU must have seen it by then); copy the 32 tempo bytes
+; $E3EF-$E40E to $00A0; S = $0400; enable the IRQ and idle in BRA *
+; - all further work happens in irq_sound.
+; QUIRK: the watchdog kick at $E050 uses the odd address $2007 (any
+; $2000-$3FFF access kicks it); LDY $3000 at $E02D kicks it twice.
 ; Vector: RESET
 ;------------------------------------------------------------------------------
 reset_sound:
 E000: B7 60 00        STA    IRQ_OFF_SOUND   ; IRQ latch off [$6000]
 
-lE003:
+wait_handshake:
 E003: 96 40           LDA    <snd_request    ; wait for the main CPU's $11
                                              ; [$0040]
-E005: B7 30 00        STA    WATCHDOG        ; [$3000]
+E005: B7 30 00        STA    WATCHDOG        ; watchdog [$3000]
 E008: 81 11           CMPA   #$11
-E00A: 26 F7           BNE    lE003
+E00A: 26 F7           BNE    wait_handshake
 E00C: 4F              CLRA                   ; checksum the whole ROM
 E00D: 8E E0 00        LDX    #reset_sound
 
-lE010:
+checksum_loop:
 E010: B7 30 00        STA    WATCHDOG        ; [$3000]
 E013: AB 80           ADDA   ,X+
 E015: 8C 00 00        CMPX   #$0000
-E018: 26 F6           BNE    lE010
-E01A: 81 00           CMPA   #$00
-E01C: 27 02           BEQ    lE020
+E018: 26 F6           BNE    checksum_loop
+E01A: 81 00           CMPA   #$00            ; sum 0 = good
+E01C: 27 02           BEQ    store_rom_error
 E01E: 86 01           LDA    #$01
 
-lE020:
-E020: B7 03 80        STA    snd_rom_error   ; ROM error flag [$0380]
+store_rom_error:
+E020: B7 03 80        STA    snd_rom_error   ; ROM error flag (0 or 1) [$0380]
 E023: 86 22           LDA    #$22            ; handshake answer
 E025: 97 40           STA    <snd_request    ; [$0040]
-E027: 8E 00 00        LDX    #$0000          ; clear $0000-$02FF
+E027: 8E 00 00        LDX    #$0000          ; clear $0000-$02FF (WSG,
+                                             ; requests, blocks)
 E02A: CC 00 00        LDD    #$0000
 
-lE02D:
-E02D: 10 BE 30 00     LDY    WATCHDOG        ; [$3000]
+clear_ram_loop:
+E02D: 10 BE 30 00     LDY    WATCHDOG        ; reads $3000/$3001: two watchdog
+                                             ; kicks [$3000]
 E031: ED 81           STD    ,X++
 E033: 8C 03 00        CMPX   #$0300
-E036: 25 F5           BCS    lE02D
+E036: 25 F5           BCS    clear_ram_loop
 E038: 8E E3 EF        LDX    #tempo_init     ; tempo table to $00A0
 E03B: CE 00 A0        LDU    #snd_tempo      ; [#$00A0]
 
-lE03E:
+copy_tempo_loop:
 E03E: EC 81           LDD    ,X++
 E040: ED C1           STD    ,U++
-E042: 8C E4 0F        CMPX   #dat_E40F
-E045: 25 F7           BCS    lE03E
+E042: 8C E4 0F        CMPX   #tempo_copy_end ; 32 bytes: 6 past the 26 tempos
+E045: 25 F7           BCS    copy_tempo_loop
+
+; All further work is irq_sound's.
 E047: 10 CE 04 00     LDS    #$0400          ; stack below $0400
-E04B: 1C EF           ANDCC  #$EF
+E04B: 1C EF           ANDCC  #$EF            ; unmask IRQ
 E04D: B7 40 00        STA    IRQ_ON_SOUND    ; IRQ latch on [$4000]
 E050: B7 20 07        STA    WATCHDOG        ; watchdog (odd address) [$2007]
 
+;------------------------------------------------------------------------------
+; idle_forever  ($E053)
+; BRA *: the CPU only runs its IRQ from now on (3 cycles a pass,
+; which sets the IRQ's entry latency).
+; Jumped to from: $E053
+;------------------------------------------------------------------------------
 idle_forever:
 E053: 20 FE           BRA    idle_forever
 
 ;------------------------------------------------------------------------------
 ; irq_sound  ($E055)
+; -> src/game/sound/gp2_1.js
 ; Sound CPU vblank IRQ.
 ;  1. acknowledge (IRQ latch off) and kick the watchdog;
 ;  2. copy the voice shadow $0080-$009F into the WSG: per voice v,
 ;     shadow bytes vol, freq lo, freq mid, freq hi|wave go to WSG
 ;     registers 8v+3..8v+6, then clear the shadow (silence unless a
 ;     sound writes it again this frame);
-;  3. for each sound n = 0..25 in priority order: if its request byte
-;     $0040+n is set, run play_sound with $00C0 = n (later sounds
-;     overwrite the shadow of the voices they share, so they win);
-;     otherwise clear $0060+n so the sound restarts next time. Sounds
-;     1, 7 and $0A-$0E are retriggered instead: a request clears both
-;     bytes (restart) and the sound runs on from $0060+n until op_end;
-;  4. $00C2 = 1, re-enable the IRQ latch, RTI.
+;  3. for each sound n = 0..25 in order (one unrolled slot each): a
+;     held sound runs play_sound while snd_request+n is set, else its
+;     snd_active+n is cleared so it starts from the top next time; a
+;     retriggered sound (1, 7, $0A-$0E) clears both bytes on a request
+;     (a restart) and runs while snd_active+n is set. Later sounds win
+;     the voices they share;
+;  4. snd_irq_done = 1, re-enable the IRQ latch, RTI.
+; The port charges the MAME cycle of every instruction and yields
+; before each access to $0040-$007F, which the main CPU shares.
 ; Vector: IRQ
 ;------------------------------------------------------------------------------
 irq_sound:
 E055: B7 60 00        STA    IRQ_OFF_SOUND   ; acknowledge [$6000]
 E058: B7 30 00        STA    WATCHDOG        ; watchdog [$3000]
 E05B: 8E 00 80        LDX    #wsg_shadow     ; shadow -> WSG, 8 voices [#$0080]
-E05E: CE 00 03        LDU    #WSG+$03        ; [#$0003] WSG voice 0 vol
+E05E: CE 00 03        LDU    #WSG+$03        ; voice v: registers 8v+3..8v+6
+                                             ; [#$0003] WSG voice 0 vol
 
-lE061:
+shadow_to_wsg:
 E061: EC 81           LDD    ,X++
 E063: ED C1           STD    ,U++
 E065: EC 81           LDD    ,X++
 E067: ED C4           STD    ,U
-E069: 33 46           LEAU   $6,U
+E069: 33 46           LEAU   $6,U            ; next voice's registers
 E06B: 11 83 00 43     CMPU   #$0043
-E06F: 26 F0           BNE    lE061
+E06F: 26 F0           BNE    shadow_to_wsg
 E071: 8E 00 80        LDX    #wsg_shadow     ; clear the shadow [#$0080]
 
-lE074:
+clear_shadow:
 E074: 6F 80           CLR    ,X+
 E076: 8C 00 A0        CMPX   #$00A0
-E079: 26 F9           BNE    lE074
-E07B: 96 40           LDA    <snd_request    ; sound 0 requested? [$0040]
+E079: 26 F9           BNE    clear_shadow
+
+; sound 0 ($00) start_tune: held
+slot_start_tune:
+E07B: 96 40           LDA    <snd_request    ; [$0040]
 E07D: 27 09           BEQ    lE088
 E07F: 86 00           LDA    #$00
 E081: 97 C0           STA    <snd_current    ; [$00C0]
 E083: BD E2 33        JSR    play_sound
-E086: 20 02           BRA    lE08A
+E086: 20 02           BRA    slot_shot
 
 lE088:
 E088: 0F 60           CLR    <snd_active     ; [$0060]
 
-lE08A:
-E08A: 96 41           LDA    <snd_request+1  ; [$0041]
+; sound 1 ($01) shot: retriggered
+slot_shot:
+E08A: 96 41           LDA    <snd_request+1  ; retriggered: a request restarts
+                                             ; [$0041]
 E08C: 27 06           BEQ    lE094
-E08E: 0F 41           CLR    <snd_request+1  ; [$0041]
-E090: 0F 61           CLR    <snd_active+1   ; [$0061]
+E08E: 0F 41           CLR    <snd_request+1  ; consume the request [$0041]
+E090: 0F 61           CLR    <snd_active+1   ; and restart from the top [$0061]
 E092: 20 04           BRA    lE098
 
 lE094:
-E094: 96 61           LDA    <snd_active+1   ; [$0061]
-E096: 27 07           BEQ    lE09F
+E094: 96 61           LDA    <snd_active+1   ; still playing? [$0061]
+E096: 27 07           BEQ    slot_challenge_tune
 
 lE098:
 E098: 86 01           LDA    #$01
 E09A: 97 C0           STA    <snd_current    ; [$00C0]
 E09C: BD E2 33        JSR    play_sound
 
-lE09F:
+; sound 2 ($02) challenge_tune: held
+slot_challenge_tune:
 E09F: 96 42           LDA    <snd_request+2  ; [$0042]
 E0A1: 27 09           BEQ    lE0AC
 E0A3: 86 02           LDA    #$02
 E0A5: 97 C0           STA    <snd_current    ; [$00C0]
 E0A7: BD E2 33        JSR    play_sound
-E0AA: 20 02           BRA    lE0AE
+E0AA: 20 02           BRA    slot_entry_tune_1st
 
 lE0AC:
 E0AC: 0F 62           CLR    <snd_active+2   ; [$0062]
 
-lE0AE:
+; sound 3 ($03) entry_tune_1st: held
+slot_entry_tune_1st:
 E0AE: 96 43           LDA    <snd_request+3  ; [$0043]
 E0B0: 27 09           BEQ    lE0BB
 E0B2: 86 03           LDA    #$03
 E0B4: 97 C0           STA    <snd_current    ; [$00C0]
 E0B6: BD E2 33        JSR    play_sound
-E0B9: 20 02           BRA    lE0BD
+E0B9: 20 02           BRA    slot_entry_tune
 
 lE0BB:
 E0BB: 0F 63           CLR    <snd_active+3   ; [$0063]
 
-lE0BD:
+; sound 4 ($04) entry_tune: held
+slot_entry_tune:
 E0BD: 96 44           LDA    <snd_request+4  ; [$0044]
 E0BF: 27 09           BEQ    lE0CA
 E0C1: 86 04           LDA    #$04
 E0C3: 97 C0           STA    <snd_current    ; [$00C0]
 E0C5: BD E2 33        JSR    play_sound
-E0C8: 20 02           BRA    lE0CC
+E0C8: 20 02           BRA    slot_stage_tune
 
 lE0CA:
 E0CA: 0F 64           CLR    <snd_active+4   ; [$0064]
 
-lE0CC:
+; sound 5 ($05) stage_tune: held
+slot_stage_tune:
 E0CC: 96 45           LDA    <snd_request+5  ; [$0045]
 E0CE: 27 09           BEQ    lE0D9
 E0D0: 86 05           LDA    #$05
 E0D2: 97 C0           STA    <snd_current    ; [$00C0]
 E0D4: BD E2 33        JSR    play_sound
-E0D7: 20 02           BRA    lE0DB
+E0D7: 20 02           BRA    slot_payout_tune
 
 lE0D9:
 E0D9: 0F 65           CLR    <snd_active+5   ; [$0065]
 
-lE0DB:
+; sound 6 ($06) payout_tune: held
+slot_payout_tune:
 E0DB: 96 46           LDA    <snd_request+6  ; [$0046]
 E0DD: 27 09           BEQ    lE0E8
 E0DF: 86 06           LDA    #$06
 E0E1: 97 C0           STA    <snd_current    ; [$00C0]
 E0E3: BD E2 33        JSR    play_sound
-E0E6: 20 02           BRA    lE0EA
+E0E6: 20 02           BRA    slot_shot_upgraded
 
 lE0E8:
 E0E8: 0F 66           CLR    <snd_active+6   ; [$0066]
 
-lE0EA:
+; sound 7 ($07) shot_upgraded: retriggered
+slot_shot_upgraded:
 E0EA: 96 47           LDA    <snd_request+7  ; [$0047]
 E0EC: 27 06           BEQ    lE0F4
 E0EE: 0F 47           CLR    <snd_request+7  ; [$0047]
@@ -217,36 +278,39 @@ E0F2: 20 04           BRA    lE0F8
 
 lE0F4:
 E0F4: 96 67           LDA    <snd_active+7   ; [$0067]
-E0F6: 27 07           BEQ    lE0FF
+E0F6: 27 07           BEQ    slot_button_wait
 
 lE0F8:
 E0F8: 86 07           LDA    #$07
 E0FA: 97 C0           STA    <snd_current    ; [$00C0]
 E0FC: BD E2 33        JSR    play_sound
 
-lE0FF:
+; sound 8 ($08) button_wait: held
+slot_button_wait:
 E0FF: 96 48           LDA    <snd_request+8  ; [$0048]
 E101: 27 09           BEQ    lE10C
 E103: 86 08           LDA    #$08
 E105: 97 C0           STA    <snd_current    ; [$00C0]
 E107: BD E2 33        JSR    play_sound
-E10A: 20 02           BRA    lE10E
+E10A: 20 02           BRA    slot_formation_hum
 
 lE10C:
 E10C: 0F 68           CLR    <snd_active+8   ; [$0068]
 
-lE10E:
+; sound 9 ($09) formation_hum: held
+slot_formation_hum:
 E10E: 96 49           LDA    <snd_request+9  ; [$0049]
 E110: 27 09           BEQ    lE11B
 E112: 86 09           LDA    #$09
 E114: 97 C0           STA    <snd_current    ; [$00C0]
 E116: BD E2 33        JSR    play_sound
-E119: 20 02           BRA    lE11D
+E119: 20 02           BRA    slot_hit_challenge
 
 lE11B:
 E11B: 0F 69           CLR    <snd_active+9   ; [$0069]
 
-lE11D:
+; sound 10 ($0A) hit_challenge: retriggered
+slot_hit_challenge:
 E11D: 96 4A           LDA    <snd_request+10 ; [$004A]
 E11F: 27 06           BEQ    lE127
 E121: 0F 4A           CLR    <snd_request+10 ; [$004A]
@@ -255,14 +319,15 @@ E125: 20 04           BRA    lE12B
 
 lE127:
 E127: 96 6A           LDA    <snd_active+10  ; [$006A]
-E129: 27 07           BEQ    lE132
+E129: 27 07           BEQ    slot_hit
 
 lE12B:
 E12B: 86 0A           LDA    #$0A
 E12D: 97 C0           STA    <snd_current    ; [$00C0]
 E12F: BD E2 33        JSR    play_sound
 
-lE132:
+; sound 11 ($0B) hit: retriggered
+slot_hit:
 E132: 96 4B           LDA    <snd_request+11 ; [$004B]
 E134: 27 06           BEQ    lE13C
 E136: 0F 4B           CLR    <snd_request+11 ; [$004B]
@@ -271,14 +336,15 @@ E13A: 20 04           BRA    lE140
 
 lE13C:
 E13C: 96 6B           LDA    <snd_active+11  ; [$006B]
-E13E: 27 07           BEQ    lE147
+E13E: 27 07           BEQ    slot_flyin
 
 lE140:
 E140: 86 0B           LDA    #$0B
 E142: 97 C0           STA    <snd_current    ; [$00C0]
 E144: BD E2 33        JSR    play_sound
 
-lE147:
+; sound 12 ($0C) flyin: retriggered
+slot_flyin:
 E147: 96 4C           LDA    <snd_request+12 ; [$004C]
 E149: 27 06           BEQ    lE151
 E14B: 0F 4C           CLR    <snd_request+12 ; [$004C]
@@ -287,14 +353,15 @@ E14F: 20 04           BRA    lE155
 
 lE151:
 E151: 96 6C           LDA    <snd_active+12  ; [$006C]
-E153: 27 07           BEQ    lE15C
+E153: 27 07           BEQ    slot_dive
 
 lE155:
 E155: 86 0C           LDA    #$0C
 E157: 97 C0           STA    <snd_current    ; [$00C0]
 E159: BD E2 33        JSR    play_sound
 
-lE15C:
+; sound 13 ($0D) dive: retriggered
+slot_dive:
 E15C: 96 4D           LDA    <snd_request+13 ; [$004D]
 E15E: 27 06           BEQ    lE166
 E160: 0F 4D           CLR    <snd_request+13 ; [$004D]
@@ -303,14 +370,15 @@ E164: 20 04           BRA    lE16A
 
 lE166:
 E166: 96 6D           LDA    <snd_active+13  ; [$006D]
-E168: 27 07           BEQ    lE171
+E168: 27 07           BEQ    slot_special_object
 
 lE16A:
 E16A: 86 0D           LDA    #$0D
 E16C: 97 C0           STA    <snd_current    ; [$00C0]
 E16E: BD E2 33        JSR    play_sound
 
-lE171:
+; sound 14 ($0E) special_object: retriggered
+slot_special_object:
 E171: 96 4E           LDA    <snd_request+14 ; [$004E]
 E173: 27 06           BEQ    lE17B
 E175: 0F 4E           CLR    <snd_request+14 ; [$004E]
@@ -319,124 +387,135 @@ E179: 20 04           BRA    lE17F
 
 lE17B:
 E17B: 96 6E           LDA    <snd_active+14  ; [$006E]
-E17D: 27 07           BEQ    lE186
+E17D: 27 07           BEQ    slot_object_spawn
 
 lE17F:
 E17F: 86 0E           LDA    #$0E
 E181: 97 C0           STA    <snd_current    ; [$00C0]
 E183: BD E2 33        JSR    play_sound
 
-lE186:
+; sound 15 ($0F) object_spawn: held
+slot_object_spawn:
 E186: 96 4F           LDA    <snd_request+15 ; [$004F]
 E188: 27 09           BEQ    lE193
 E18A: 86 0F           LDA    #$0F
 E18C: 97 C0           STA    <snd_current    ; [$00C0]
 E18E: BD E2 33        JSR    play_sound
-E191: 20 02           BRA    lE195
+E191: 20 02           BRA    slot_capture
 
 lE193:
 E193: 0F 6F           CLR    <snd_active+15  ; [$006F]
 
-lE195:
+; sound 16 ($10) capture: held
+slot_capture:
 E195: 96 50           LDA    <snd_request+16 ; [$0050]
 E197: 27 09           BEQ    lE1A2
 E199: 86 10           LDA    #$10
 E19B: 97 C0           STA    <snd_current    ; [$00C0]
 E19D: BD E2 33        JSR    play_sound
-E1A0: 20 02           BRA    lE1A4
+E1A0: 20 02           BRA    slot_effect_rise
 
 lE1A2:
 E1A2: 0F 70           CLR    <snd_active+16  ; [$0070]
 
-lE1A4:
+; sound 17 ($11) effect_rise: held
+slot_effect_rise:
 E1A4: 96 51           LDA    <snd_request+17 ; [$0051]
 E1A6: 27 09           BEQ    lE1B1
 E1A8: 86 11           LDA    #$11
 E1AA: 97 C0           STA    <snd_current    ; [$00C0]
 E1AC: BD E2 33        JSR    play_sound
-E1AF: 20 02           BRA    lE1B3
+E1AF: 20 02           BRA    slot_effect_spread
 
 lE1B1:
 E1B1: 0F 71           CLR    <snd_active+17  ; [$0071]
 
-lE1B3:
+; sound 18 ($12) effect_spread: held
+slot_effect_spread:
 E1B3: 96 52           LDA    <snd_request+18 ; [$0052]
 E1B5: 27 09           BEQ    lE1C0
 E1B7: 86 12           LDA    #$12
 E1B9: 97 C0           STA    <snd_current    ; [$00C0]
 E1BB: BD E2 33        JSR    play_sound
-E1BE: 20 02           BRA    lE1C2
+E1BE: 20 02           BRA    slot_powerup
 
 lE1C0:
 E1C0: 0F 72           CLR    <snd_active+18  ; [$0072]
 
-lE1C2:
+; sound 19 ($13) powerup: held
+slot_powerup:
 E1C2: 96 53           LDA    <snd_request+19 ; [$0053]
 E1C4: 27 09           BEQ    lE1CF
 E1C6: 86 13           LDA    #$13
 E1C8: 97 C0           STA    <snd_current    ; [$00C0]
 E1CA: BD E2 33        JSR    play_sound
-E1CD: 20 02           BRA    lE1D1
+E1CD: 20 02           BRA    slot_player_explode
 
 lE1CF:
 E1CF: 0F 73           CLR    <snd_active+19  ; [$0073]
 
-lE1D1:
+; sound 20 ($14) player_explode: held
+slot_player_explode:
 E1D1: 96 54           LDA    <snd_request+20 ; [$0054]
 E1D3: 27 09           BEQ    lE1DE
 E1D5: 86 14           LDA    #$14
 E1D7: 97 C0           STA    <snd_current    ; [$00C0]
 E1D9: BD E2 33        JSR    play_sound
-E1DC: 20 02           BRA    lE1E0
+E1DC: 20 02           BRA    slot_extra_ship
 
 lE1DE:
 E1DE: 0F 74           CLR    <snd_active+20  ; [$0074]
 
-lE1E0:
+; sound 21 ($15) extra_ship: held
+slot_extra_ship:
 E1E0: 96 55           LDA    <snd_request+21 ; [$0055]
 E1E2: 27 09           BEQ    lE1ED
 E1E4: 86 15           LDA    #$15
 E1E6: 97 C0           STA    <snd_current    ; [$00C0]
 E1E8: BD E2 33        JSR    play_sound
-E1EB: 20 02           BRA    lE1EF
+E1EB: 20 02           BRA    slot_coin
 
 lE1ED:
 E1ED: 0F 75           CLR    <snd_active+21  ; [$0075]
 
-lE1EF:
+; sound 22 ($16) coin: held
+slot_coin:
 E1EF: 96 56           LDA    <snd_request+22 ; [$0056]
 E1F1: 27 09           BEQ    lE1FC
 E1F3: 86 16           LDA    #$16
 E1F5: 97 C0           STA    <snd_current    ; [$00C0]
 E1F7: BD E2 33        JSR    play_sound
-E1FA: 20 02           BRA    lE1FE
+E1FA: 20 02           BRA    slot_count_tick
 
 lE1FC:
 E1FC: 0F 76           CLR    <snd_active+22  ; [$0076]
 
-lE1FE:
+; sound 23 ($17) count_tick: held
+slot_count_tick:
 E1FE: 96 57           LDA    <snd_request+23 ; [$0057]
 E200: 27 09           BEQ    lE20B
 E202: 86 17           LDA    #$17
 E204: 97 C0           STA    <snd_current    ; [$00C0]
 E206: BD E2 33        JSR    play_sound
-E209: 20 02           BRA    lE20D
+E209: 20 02           BRA    slot_star_warp
 
 lE20B:
 E20B: 0F 77           CLR    <snd_active+23  ; [$0077]
 
-lE20D:
+; sound 24 ($18) star_warp: held
+slot_star_warp:
 E20D: 96 58           LDA    <snd_request+24 ; [$0058]
 E20F: 27 09           BEQ    lE21A
 E211: 86 18           LDA    #$18
 E213: 97 C0           STA    <snd_current    ; [$00C0]
 E215: BD E2 33        JSR    play_sound
-E218: 20 02           BRA    lE21C
+E218: 20 02           BRA    slot_bonus_ship
 
 lE21A:
 E21A: 0F 78           CLR    <snd_active+24  ; [$0078]
 
-lE21C:
+; sound 25 ($19) bonus_ship: held
+slot_bonus_ship:
 E21C: 96 59           LDA    <snd_request+25 ; [$0059]
 E21E: 27 09           BEQ    lE229
 E220: 86 19           LDA    #$19
@@ -448,24 +527,33 @@ lE229:
 E229: 0F 79           CLR    <snd_active+25  ; [$0079]
 
 irq_sound_done:
-E22B: 86 01           LDA    #$01            ; IRQ done flag
+E22B: 86 01           LDA    #$01            ; IRQ done flag (never read)
 E22D: 97 C2           STA    <snd_irq_done   ; [$00C2]
 E22F: B7 40 00        STA    IRQ_ON_SOUND    ; IRQ latch on [$4000]
 E232: 3B              RTI
 
 ;------------------------------------------------------------------------------
 ; play_sound  ($E233)
-; Run sound $00C0 for one frame.
-;   $00C1 = first WSG voice of the sound (sound_voice[n]);
-;   X = its channel blocks (sound_channels[n]), 17 bytes per voice:
-;     +0/1 note stream pointer +2 frequency table (x2)
-;     +3 waveform (freq-hi bits) +4 volume envelope number
-;     +5 current volume ($F0 = rest) +6/7/8 frequency hi/mid/lo
-;     +9 note time left +A envelope position +B envelope hold
-;     +C..+F loop counters +$10 = $11 after the last voice
-; On the first frame ($0060+n clear) the blocks are initialised from
-; the sound's header (sound_headers[n]): per voice a stream pointer
-; and a frequency table number, ended by $11.
+; -> src/game/sound/gp2_1.js
+; Run sound snd_current (n) for one frame. snd_voice = its first WSG
+; voice (sound_voice[n]); X = its channel blocks (sound_channels[n]),
+; 17 bytes per voice:
+;   +0/1 note stream pointer +2 frequency table number x 2
+;   +3 waveform (bits 4-6, ORed into freq hi) +4 envelope number
+;   +5 volume ($F0 = resting) +6/7/8 frequency hi|wave / mid / lo
+;   +9 frames left in the note +A envelope position
+;   +B ramp counter ($FF = idle) +C/+E/+F loop counters (F3/F5/F6)
+;   +D flag set by F4 (F3 loops pass straight through)
+;   +$10 = $11 in the last block of the sound
+; On the first frame (snd_active+n = 0) set snd_active+n and build the
+; blocks from the header (sound_headers[n]): per voice a stream
+; pointer (the stream's first two bytes are the waveform and the
+; envelope) and a frequency table number, until $11; each voice
+; fetches its first note (next_note) and its loop counters start at 0.
+; Then play_voice runs every voice once.
+; QUIRK: if a stream ended (op_end) during this set-up, op_end's
+; PULS X,U / RTS would pop the X pushed at $E252 as a return address
+; and run RAM; no stream in the ROM does that (the port throws).
 ; Called from: $E083 irq_sound, $E09C irq_sound, $E0A7 irq_sound, $E0B6
 ; irq_sound, $E0C5 irq_sound, $E0D4 irq_sound, $E0E3 irq_sound, $E0FC
 ; irq_sound, $E107 irq_sound, $E116 irq_sound, $E12F irq_sound, $E144
@@ -487,102 +575,127 @@ E242: CE 00 60        LDU    #snd_active     ; first frame of this sound?
 E245: 54              LSRB
 E246: A6 C5           LDA    B,U
 E248: 26 35           BNE    play_voice
-E24A: 6C C5           INC    B,U
+E24A: 6C C5           INC    B,U             ; mark it started
 E24C: CE E4 3D        LDU    #sound_headers  ; header -> channel blocks
 E24F: 58              ASLB
 E250: EE C5           LDU    B,U
-E252: 34 10           PSHS   X
+E252: 34 10           PSHS   X               ; keep the first block
 
-lE254:
+build_blocks:
 E254: EC C1           LDD    ,U++
 E256: 81 11           CMPA   #$11            ; $11 ends the header
-E258: 27 21           BEQ    lE27B
-E25A: ED 84           STD    ,X
+E258: 27 21           BEQ    blocks_done
+E25A: ED 84           STD    ,X              ; +0/1 stream pointer
 E25C: 10 AE 84        LDY    ,X
-E25F: A6 C0           LDA    ,U+
+E25F: A6 C0           LDA    ,U+             ; +2 frequency table x 2
 E261: 48              ASLA
 E262: A7 02           STA    $2,X
-E264: EC A1           LDD    ,Y++
+E264: EC A1           LDD    ,Y++            ; +3 waveform, +4 envelope
 E266: ED 03           STD    $3,X
-E268: 10 AF 84        STY    ,X
-E26B: BD E3 09        JSR    next_note
-E26E: 30 0C           LEAX   $C,X
+E268: 10 AF 84        STY    ,X              ; stream now past those two bytes
+E26B: BD E3 09        JSR    next_note       ; first note of the voice
+E26E: 30 0C           LEAX   $C,X            ; +C..+F loop counters, +$10
 E270: CC 00 00        LDD    #$0000
 E273: ED 81           STD    ,X++
 E275: ED 81           STD    ,X++
 E277: A7 80           STA    ,X+
-E279: 20 D9           BRA    lE254
+E279: 20 D9           BRA    build_blocks
 
-lE27B:
-E27B: A7 1F           STA    -$1,X
+blocks_done:
+E27B: A7 1F           STA    -$1,X           ; last block's +$10 = $11
 E27D: 35 10           PULS   X
 
 ;------------------------------------------------------------------------------
 ; play_voice  ($E27F)
-; One voice: step the volume envelope, write volume and frequency
-; into the shadow, count down the note and fetch the next one.
+; -> src/game/sound/gp2_1.js
+; Play every voice of the sound for one frame, from block X and voice
+; snd_voice on: step the volume envelope (skipped while resting: +5 =
+; $F0 is written as the volume, whose low nibble 0 is silence), write
+; volume and frequency to the shadow (write_shadow), count the note
+; down and fetch the next one. Returns after the block whose +$10 is
+; $11, or straight to irq_sound when a stream ends (op_end).
 ; Jumped to from: $E248, $E306
 ;------------------------------------------------------------------------------
 play_voice:
 E27F: A6 05           LDA    $5,X            ; resting?
 E281: 81 F0           CMPA   #$F0
-E283: 27 55           BEQ    lE2DA
+E283: 27 55           BEQ    env_advance
 
+;------------------------------------------------------------------------------
+; envelope_step  ($E285)
+; -> src/game/sound/gp2_1.js
+; One step of voice X's volume envelope: the byte at position +A of
+; envelope +4 (envelopes table) is a level 0-$F (play it, advance)
+; or an op $10-$16, dispatched on its low nibble through envelope_ops
+; with U = the op's address. next_note restarts the envelope (+A = 0)
+; for every note and rest.
+; Jumped to from: $E2CA
+;------------------------------------------------------------------------------
 envelope_step:
-E285: CE E5 D2        LDU    #envelopes
+E285: CE E5 D2        LDU    #envelopes      ; envelope +4
 E288: A6 04           LDA    $4,X
 E28A: 48              ASLA
 E28B: EE C6           LDU    A,U
-E28D: E6 0A           LDB    $A,X
+E28D: E6 0A           LDB    $A,X            ; position +A
 E28F: A6 C5           LDA    B,U
-E291: 81 10           CMPA   #$10
-E293: 25 45           BCS    lE2DA
+E291: 81 10           CMPA   #$10            ; a level?
+E293: 25 45           BCS    env_advance
 E295: 33 C5           LEAU   B,U
 E297: 84 0F           ANDA   #$0F            ; envelope op in the low nibble
 E299: 10 8E E2 9F     LDY    #envelope_ops
 E29D: 6E B6           JMP    [A,Y]           ; [table envelope_ops]
 
-; Envelope bytes $10-$16 (the low nibble is the byte offset into this
-; table, so only even values are used).
-; Referenced from: $E299 play_voice
+; Envelope ops $10 sustain, $12 sustain and fade out, $14 repeat, $16
+; ramp (the low nibble is the byte offset into this table, so only
+; even values are valid).
+; Referenced from: $E299 envelope_step
 envelope_ops:
 E29F: E2 CC                    FDB    env_op_keep ; [0] $E2CC
 E2A1: E2 D0                    FDB    env_op_limit ; [1] $E2D0
 E2A3: E2 C8                    FDB    env_op_loop ; [2] $E2C8
-E2A5: E2 A7                    FDB    env_op_hold ; [3] $E2A7
+E2A5: E2 A7                    FDB    env_op_ramp ; [3] $E2A7
 
 ;------------------------------------------------------------------------------
-; env_op_hold  ($E2A7)
-; Envelope byte $16 n: repeat the previous level n more frames.
+; env_op_ramp  ($E2A7) ; JS: env_op_hold
+; -> src/game/sound/gp2_1.js
+; Envelope op $16 n: a linear decay. The first frame (+B = $FF) takes
+; the previous level - 1 as the counter +B; each frame plays the
+; counter and lowers it; once it reaches n + 1 it is played again,
+; +B goes back to $FF and the position moves onto n, which the next
+; frame plays as an ordinary level (e.g. 7 7 16 00 10: 7 7 6 5 4 3 2
+; 1 1 0 0 ...). Named 'hold' in the port.
+; QUIRK: with n >= previous level - 1 the counter would pass n + 1,
+; wrap to $FF (full volume) and restart; no envelope in the ROM does.
 ; Table entry at: $E2A5
 ;------------------------------------------------------------------------------
-env_op_hold:
+env_op_ramp:
 E2A7: A6 0B           LDA    $B,X
-E2A9: 81 FF           CMPA   #$FF
-E2AB: 27 14           BEQ    lE2C1
-E2AD: E6 41           LDB    $1,U
+E2A9: 81 FF           CMPA   #$FF            ; ramp not started yet?
+E2AB: 27 14           BEQ    ramp_start
+E2AD: E6 41           LDB    $1,U            ; end of the ramp: n + 1
 E2AF: 5C              INCB
 E2B0: D7 C3           STB    <snd_temp       ; [$00C3]
 E2B2: 91 C3           CMPA   <snd_temp       ; [$00C3]
-E2B4: 26 06           BNE    lE2BC
-E2B6: C6 FF           LDB    #$FF
+E2B4: 26 06           BNE    ramp_down
+E2B6: C6 FF           LDB    #$FF            ; ramp done: idle, move onto n
 E2B8: E7 0B           STB    $B,X
-E2BA: 20 1E           BRA    lE2DA
+E2BA: 20 1E           BRA    env_advance
 
-lE2BC:
+ramp_down:
 E2BC: 4A              DECA
 E2BD: A7 0B           STA    $B,X
 E2BF: 20 1B           BRA    write_shadow
 
-lE2C1:
-E2C1: A6 5F           LDA    -$1,U
+ramp_start:
+E2C1: A6 5F           LDA    -$1,U           ; previous level - 1
 E2C3: 4A              DECA
 E2C4: A7 0B           STA    $B,X
 E2C6: 20 14           BRA    write_shadow
 
 ;------------------------------------------------------------------------------
 ; env_op_loop  ($E2C8)
-; Envelope byte $14: restart the envelope from its first level.
+; -> src/game/sound/gp2_1.js
+; Envelope op $14: repeat the envelope from its first level.
 ; Table entry at: $E2A3
 ;------------------------------------------------------------------------------
 env_op_loop:
@@ -591,88 +704,104 @@ E2CA: 20 B9           BRA    envelope_step
 
 ;------------------------------------------------------------------------------
 ; env_op_keep  ($E2CC)
-; Envelope byte $10: keep the previous level (end of envelope).
+; -> src/game/sound/gp2_1.js
+; Envelope op $10: sustain - play the level before it for the rest
+; of the note.
 ; Table entry at: $E29F
 ;------------------------------------------------------------------------------
 env_op_keep:
-E2CC: A6 5F           LDA    -$1,U
+E2CC: A6 5F           LDA    -$1,U           ; the level before the op
 E2CE: 20 0C           BRA    write_shadow
 
 ;------------------------------------------------------------------------------
 ; env_op_limit  ($E2D0)
-; Envelope byte $12: previous level, but no higher than the note
-; time left (+9): a decay at the end of the note.
+; -> src/game/sound/gp2_1.js
+; Envelope op $12: sustain the level before it, but no louder than the
+; frames left in the note (+9): the note fades out over its last 15
+; frames.
 ; Table entry at: $E2A1
 ;------------------------------------------------------------------------------
 env_op_limit:
 E2D0: A6 5F           LDA    -$1,U
-E2D2: A1 09           CMPA   $9,X
+E2D2: A1 09           CMPA   $9,X            ; no louder than the frames left
 E2D4: 23 06           BLS    write_shadow
 E2D6: A6 09           LDA    $9,X
 E2D8: 20 02           BRA    write_shadow
 
-lE2DA:
-E2DA: 6C 0A           INC    $A,X
+env_advance:
+E2DA: 6C 0A           INC    $A,X            ; next envelope position
 
 ;------------------------------------------------------------------------------
 ; write_shadow  ($E2DC)
-; Store volume and frequency of voice $00C1 into the shadow
-; $0080 + 4 x voice (vol, freq lo, freq mid, freq hi|wave).
+; -> src/game/sound/gp2_1.js
+; Store voice X's volume (A -> +5) and frequency in the shadow at
+; $0080 + 4 x snd_voice: vol, freq lo, freq mid, freq hi|wave (the
+; order of WSG registers 3-6). Entered at $E2DA (env_advance) the
+; envelope position +A is advanced first. Then count the note down
+; (+9) and fetch the next event when it runs out; RTS after the last
+; voice, else on to the next block (+$11) and voice.
 ; Jumped to from: $E2BF, $E2C6, $E2CE, $E2D4, $E2D8
 ;------------------------------------------------------------------------------
 write_shadow:
-E2DC: A7 05           STA    $5,X            ; shadow address = $0080 + 4 x
-                                             ; voice
-E2DE: CE 00 80        LDU    #wsg_shadow     ; [#$0080]
+E2DC: A7 05           STA    $5,X            ; +5 volume
+E2DE: CE 00 80        LDU    #wsg_shadow     ; shadow address = $0080 + 4 x
+                                             ; voice [#$0080]
 E2E1: D6 C1           LDB    <snd_voice      ; [$00C1]
 E2E3: 58              ASLB
 E2E4: 58              ASLB
 E2E5: 33 C5           LEAU   B,U
-E2E7: EC 05           LDD    $5,X
+E2E7: EC 05           LDD    $5,X            ; +5 vol, +6 freq hi|wave
 E2E9: A7 C4           STA    ,U
 E2EB: E7 43           STB    $3,U
-E2ED: EC 07           LDD    $7,X
+E2ED: EC 07           LDD    $7,X            ; +7 freq mid, +8 freq lo
 E2EF: A7 42           STA    $2,U
 E2F1: E7 41           STB    $1,U
 E2F3: 6A 09           DEC    $9,X            ; note finished?
-E2F5: 26 02           BNE    lE2F9
+E2F5: 26 02           BNE    voice_done
 E2F7: 8D 10           BSR    next_note
 
-lE2F9:
+voice_done:
 E2F9: A6 88 10        LDA    $10,X           ; last voice of the sound?
 E2FC: 81 11           CMPA   #$11
-E2FE: 26 01           BNE    lE301
+E2FE: 26 01           BNE    next_voice
 E300: 39              RTS
 
-lE301:
-E301: 0C C1           INC    <snd_voice      ; [$00C1]
-E303: 30 88 11        LEAX   $11,X
+next_voice:
+E301: 0C C1           INC    <snd_voice      ; next WSG voice [$00C1]
+E303: 30 88 11        LEAX   $11,X           ; next channel block
 E306: 7E E2 7F        JMP    play_voice
 
 ;------------------------------------------------------------------------------
 ; next_note  ($E309)
-; Fetch the next event of the voice's note stream.
-;   $00-$BF: note (high nibble = pitch in the frequency table, low
-;            nibble = octave shift right) and a length byte, scaled
-;            by the sound's tempo ($00A0+n) with MUL;
-;   $Cx: rest;
-;   $Fx: command, low nibble through stream_ops.
-; The 3-byte frequency (20 bits + waveform) comes from
-; freq_tables[+2]; each octave shift halves it.
+; -> src/game/sound/gp2_1.js
+; Fetch the next event of voice X's note stream (pointer at +0/1):
+;   $00-$BF n, len: a note. High nibble = pitch, the entry of the
+;            voice's frequency table (+2: 0 = A ... 11 = G#), low
+;            nibble = octave shift (the 20-bit frequency is shifted
+;            right that many times, one octave each); the waveform
+;            bits +3 are ORed into the top byte;
+;   $Cx len: a rest (+5 = $F0);
+;   $F0-$F7: a command through stream_ops (op_end ends the sound).
+; The length byte times the sound's tempo (snd_tempo+n, MUL, low byte
+; only) is the note's duration in frames (+9); the envelope restarts
+; (+A = 0, +B = $FF).
+; QUIRK: only the low byte of the MUL is kept (length x tempo above
+; 255 wraps, 0 plays 256 frames); pitch nibbles $D/$E would read past
+; the 12-entry table. No stream does either.
 ; Called from: $E26B play_sound, $E2F7 write_shadow
 ;------------------------------------------------------------------------------
 next_note:
 E309: 34 40           PSHS   U
 
-lE30B:
+next_event:
 E30B: A6 94           LDA    [,X]            ; next stream byte
 E30D: 81 F0           CMPA   #$F0
 E30F: 24 58           BCC    stream_command  ; $F0-$FF: command
 E311: 84 F0           ANDA   #$F0
 E313: 81 C0           CMPA   #$C0            ; $Cx: rest
-E315: 27 32           BEQ    lE349
-E317: 6F 05           CLR    $5,X
-E319: CE E6 D2        LDU    #freq_tables
+E315: 27 32           BEQ    rest
+E317: 6F 05           CLR    $5,X            ; volume 0 = not resting
+E319: CE E6 D2        LDU    #freq_tables    ; frequency table +2
 E31C: E6 02           LDB    $2,X
 E31E: EE C5           LDU    B,U
 E320: 44              LSRA                   ; pitch x 3: frequency entry
@@ -682,56 +811,67 @@ E323: 97 C3           STA    <snd_temp       ; [$00C3]
 E325: 44              LSRA
 E326: 9B C3           ADDA   <snd_temp       ; [$00C3]
 E328: 33 C6           LEAU   A,U
-E32A: EC C4           LDD    ,U
+E32A: EC C4           LDD    ,U              ; freq hi, mid
 E32C: ED 06           STD    $6,X
-E32E: A6 42           LDA    $2,U
+E32E: A6 42           LDA    $2,U            ; freq lo
 E330: A7 08           STA    $8,X
 E332: A6 94           LDA    [,X]            ; octave shift count
 E334: 84 0F           ANDA   #$0F
-E336: 27 09           BEQ    lE341
+E336: 27 09           BEQ    or_waveform
 
-lE338:
-E338: 64 06           LSR    $6,X
+octave_shift:
+E338: 64 06           LSR    $6,X            ; 20-bit frequency / 2
 E33A: 66 07           ROR    $7,X
 E33C: 66 08           ROR    $8,X
 E33E: 4A              DECA
-E33F: 26 F7           BNE    lE338
+E33F: 26 F7           BNE    octave_shift
 
-lE341:
-E341: A6 03           LDA    $3,X
+or_waveform:
+E341: A6 03           LDA    $3,X            ; waveform into freq hi
 E343: AA 06           ORA    $6,X
 E345: A7 06           STA    $6,X
-E347: 20 04           BRA    lE34D
+E347: 20 04           BRA    note_length
 
-lE349:
-E349: 86 F0           LDA    #$F0
+rest:
+E349: 86 F0           LDA    #$F0            ; rest: volume $F0
 E34B: A7 05           STA    $5,X
 
-lE34D:
+note_length:
 E34D: EE 84           LDU    ,X              ; length x tempo
 E34F: 10 8E 00 A0     LDY    #snd_tempo      ; [#$00A0]
 E353: D6 C0           LDB    <snd_current    ; [$00C0]
 E355: A6 A5           LDA    B,Y
 E357: E6 41           LDB    $1,U
-E359: 3D              MUL
-E35A: E7 09           STB    $9,X
-E35C: 33 42           LEAU   $2,U
+E359: 3D              MUL                    ; low byte only
+E35A: E7 09           STB    $9,X            ; frames left
+E35C: 33 42           LEAU   $2,U            ; past the event
 E35E: EF 84           STU    ,X
-E360: 6F 0A           CLR    $A,X
-E362: 86 FF           LDA    #$FF
+E360: 6F 0A           CLR    $A,X            ; restart the envelope
+E362: 86 FF           LDA    #$FF            ; ramp idle
 E364: A7 0B           STA    $B,X
 E366: 35 40           PULS   U
 E368: 39              RTS
 
+;------------------------------------------------------------------------------
+; stream_command  ($E369)
+; -> src/game/sound/gp2_1.js
+; Stream byte $F0-$F7: dispatch its low nibble through stream_ops,
+; with U = the stream pointer and B = the byte after the command.
+; Every op but op_end continues at set_stream_ptr (next event).
+; QUIRK: $F8-$FF would jump through the code after the table; no
+; stream uses them.
+; Jumped to from: $E30F
+;------------------------------------------------------------------------------
 stream_command:
 E369: EE 84           LDU    ,X
-E36B: E6 41           LDB    $1,U
+E36B: E6 41           LDB    $1,U            ; the byte after the command
 E36D: 10 8E E3 76     LDY    #stream_ops
-E371: 84 0F           ANDA   #$0F
+E371: 84 0F           ANDA   #$0F            ; command number x 2
 E373: 48              ASLA
 E374: 6E B6           JMP    [A,Y]           ; [table stream_ops]
 
-; Referenced from: $E36D next_note
+; Note stream commands $F0-$F7.
+; Referenced from: $E36D stream_command
 stream_ops:
 E376: E3 BF                    FDB    op_end ; [0] $E3BF
 E378: E3 8A                    FDB    op_wave ; [1] $E38A
@@ -744,116 +884,137 @@ E384: E3 86                    FDB    op_jump ; [7] $E386
 
 ;------------------------------------------------------------------------------
 ; op_jump  ($E386)
-; $F7: jump to the address that follows.
+; -> src/game/sound/gp2_1.js
+; $F7 addr: continue the stream at addr.
 ; Table entry at: $E384
 ;------------------------------------------------------------------------------
 op_jump:
 E386: EE 41           LDU    $1,U
-E388: 20 30           BRA    lE3BA
+E388: 20 30           BRA    set_stream_ptr
 
 ;------------------------------------------------------------------------------
 ; op_wave  ($E38A)
-; $F1 n: set the waveform bits (+3).
+; -> src/game/sound/gp2_1.js
+; $F1 n: waveform bits (+3); n >> 4 is the WSG waveform 0-7.
 ; Table entry at: $E378
 ;------------------------------------------------------------------------------
 op_wave:
 E38A: E7 03           STB    $3,X
-E38C: 20 06           BRA    lE394
+E38C: 20 06           BRA    op_skip2
 
 ;------------------------------------------------------------------------------
 ; op_envelope  ($E38E)
-; $F2 n: set the volume envelope (+4).
+; -> src/game/sound/gp2_1.js
+; $F2 n: volume envelope n (+4), from the next note on.
 ; Table entry at: $E37A
 ;------------------------------------------------------------------------------
 op_envelope:
 E38E: E7 04           STB    $4,X
-E390: 20 02           BRA    lE394
+E390: 20 02           BRA    op_skip2
 
 ;------------------------------------------------------------------------------
 ; op_set_d  ($E392)
-; $F4 n: set the flag at +D.
+; -> src/game/sound/gp2_1.js
+; $F4 n: set the flag +D; while it is non-zero every $F3 loop passes
+; straight through. Unused by the ROM's streams.
 ; Table entry at: $E37E
 ;------------------------------------------------------------------------------
 op_set_d:
 E392: E7 0D           STB    $D,X
 
-lE394:
+op_skip2:
 E394: 33 42           LEAU   $2,U
-E396: 20 22           BRA    lE3BA
+E396: 20 22           BRA    set_stream_ptr
 
 ;------------------------------------------------------------------------------
 ; op_loop_c  ($E398)
-; $F3 n, addr: jump to addr until this has run n times (counter
-; +C); passes straight through when +D is set.
+; -> src/game/sound/gp2_1.js
+; $F3 n, addr: repeat - jump to addr until the counter +C, counted up
+; on every pass, equals n (the section runs n times); passes straight
+; through while +D is set.
+; QUIRK: +C is never reset, so a second $F3 in the same voice would
+; count on from n (256 - n more passes); no stream has two.
 ; Table entry at: $E37C
 ;------------------------------------------------------------------------------
 op_loop_c:
 E398: A6 0D           LDA    $D,X
-E39A: 26 1C           BNE    lE3B8
+E39A: 26 1C           BNE    op_skip_jump
 E39C: 6C 0C           INC    $C,X
 E39E: E1 0C           CMPB   $C,X
-E3A0: 27 16           BEQ    lE3B8
-E3A2: 20 10           BRA    lE3B4
+E3A0: 27 16           BEQ    op_skip_jump    ; n passes done: fall through
+E3A2: 20 10           BRA    op_take_jump
 
 ;------------------------------------------------------------------------------
 ; op_loop_f  ($E3A4)
-; $F6 n, addr: loop with counter +F.
+; -> src/game/sound/gp2_1.js
+; $F6 n, addr: count +F up; on its n-th pass clear it and jump to
+; addr, else go on (a jump taken every n-th time).
 ; Table entry at: $E382
 ;------------------------------------------------------------------------------
 op_loop_f:
 E3A4: 6C 0F           INC    $F,X
 E3A6: E1 0F           CMPB   $F,X
-E3A8: 26 0E           BNE    lE3B8
+E3A8: 26 0E           BNE    op_skip_jump
 E3AA: 6F 0F           CLR    $F,X
-E3AC: 20 06           BRA    lE3B4
+E3AC: 20 06           BRA    op_take_jump
 
 ;------------------------------------------------------------------------------
 ; op_loop_e  ($E3AE)
-; $F5 n, addr: loop with counter +E.
+; -> src/game/sound/gp2_1.js
+; $F5 n, addr: count +E up; jump to addr on the pass where it equals
+; n (only once: +E is not cleared), else go on.
 ; Table entry at: $E380
 ;------------------------------------------------------------------------------
 op_loop_e:
 E3AE: 6C 0E           INC    $E,X
 E3B0: E1 0E           CMPB   $E,X
-E3B2: 26 04           BNE    lE3B8
+E3B2: 26 04           BNE    op_skip_jump    ; jump only on the n-th pass
 
-lE3B4:
+op_take_jump:
 E3B4: EE 42           LDU    $2,U
-E3B6: 20 02           BRA    lE3BA
+E3B6: 20 02           BRA    set_stream_ptr
 
-lE3B8:
+op_skip_jump:
 E3B8: 33 44           LEAU   $4,U
 
-lE3BA:
-E3BA: EF 84           STU    ,X
-E3BC: 7E E3 0B        JMP    lE30B
+set_stream_ptr:
+E3BA: EF 84           STU    ,X              ; stream pointer
+E3BC: 7E E3 0B        JMP    next_event
 
 ;------------------------------------------------------------------------------
 ; op_end  ($E3BF)
-; $F0: end of the sound. Clear its request (sound $16, the coin
-; sound, is a counter and is decremented instead) and its active
-; flag, then return straight to irq_sound: PULS X,U drops next_note's
-; saved U and the return into play_sound.
+; -> src/game/sound/gp2_1.js
+; $F0: end of the sound. Clear its request byte (sound $16, the coin
+; sound, counts coins and is decremented instead, so it plays once
+; per coin) and its active byte, then return straight to irq_sound:
+; PULS X,U drops next_note's saved U and its return into write_shadow
+; (voice_done), and the RTS leaves play_sound. The first voice to
+; reach $F0 ends the whole sound: the voices after it are not played
+; this frame, and none of them is played again.
 ; Table entry at: $E376
 ;------------------------------------------------------------------------------
 op_end:
-E3BF: 8E 00 40        LDX    #snd_request    ; [#$0040]
+E3BF: 8E 00 40        LDX    #snd_request    ; request byte of this sound
+                                             ; [#$0040]
 E3C2: D6 C0           LDB    <snd_current    ; [$00C0]
 E3C4: 3A              ABX
 E3C5: C1 16           CMPB   #$16            ; sound $16 (coin) counts down
-E3C7: 27 04           BEQ    lE3CD
+E3C7: 27 04           BEQ    coin_count_down
 E3C9: 6F 84           CLR    ,X
-E3CB: 20 02           BRA    lE3CF
+E3CB: 20 02           BRA    clear_active
 
-lE3CD:
+coin_count_down:
 E3CD: 6A 84           DEC    ,X
 
-lE3CF:
-E3CF: 6F 88 20        CLR    $20,X
-E3D2: 35 50           PULS   X,U
+clear_active:
+E3CF: 6F 88 20        CLR    $20,X           ; snd_active+n
+E3D2: 35 50           PULS   X,U             ; drop next_note's U and the
+                                             ; return to play_voice: RTS goes
+                                             ; back to irq_sound
 E3D4: 39              RTS
 
-; First WSG voice used by each sound 0-25.
+; First WSG voice (0-7) used by each sound 0-25; voice k of the
+; sound's header plays on WSG voice sound_voice[n] + k.
 ; Referenced from: $E233 play_sound
 sound_voice:
 E3D5: 00 00 01 00 00 01 00 00  FCB    $00,$00,$01,$00,$00,$01,$00,$00
@@ -861,8 +1022,10 @@ E3DD: 04 04 04 05 05 05 04 02  FCB    $04,$04,$04,$05,$05,$05,$04,$02
 E3E5: 02 02 01 02 00 00 00 00  FCB    $02,$02,$01,$02,$00,$00,$00,$00
 E3ED: 03 04                    FCB    $03,$04
 
-; Tempo per sound (32 bytes, copied to $00A0 at boot). The last six
-; bytes overlap the start of sound_channels.
+; Tempo per sound 0-25: the frames per unit of note length (copied
+; with 6 more bytes to snd_tempo at boot).
+; QUIRK: the copy is 32 bytes; the last six (tempos of sounds 26-31,
+; never played) are the first bytes of sound_channels.
 ; Referenced from: $E038 reset_sound
 tempo_init:
 E3EF: 02 01 01 03 01 02 07 01  FCB    $02,$01,$01,$03,$01,$02,$07,$01
@@ -870,14 +1033,24 @@ E3F7: 05 02 03 02 01 01 01 01  FCB    $05,$02,$03,$02,$01,$01,$01,$01
 E3FF: 04 05 05 01 03 06 02 01  FCB    $04,$05,$05,$01,$03,$06,$02,$01
 E407: 04 01                    FCB    $04,$01
 
-; Channel block address in RAM for each sound 0-25.
+; Channel block address in RAM of each sound 0-25 (17 bytes per
+; voice, $0100-$0352). Sounds that should never play together share
+; blocks: the tunes 0, 2-6, 8, $12, $14, $17, $18 all start at $0100;
+; 1/7, 9/$0A, $0F/$19, $11/$13 and $15/$16 are pairs.
+; QUIRK: when two sounds sharing blocks do play at once, the second
+; one's first frame rebuilds the blocks from its own header, and from
+; then on both step the same streams each frame until one ends: a coin
+; ($16) 10 frames into the extra-ship jingle ($15) makes the pair last
+; 119 frames instead of 71 and 73, garbled.
 ; Referenced from: $E23C play_sound
 sound_channels:
 E409: 01 00 02 21 01 00        FDB    $0100,$0221,$0100 ; (first 6 bytes:
                                              ; tempo_init 26-31)
 
+; End of the 32-byte tempo copy (the CMPX at $E042): the seventh
+; byte of sound_channels.
 ; Referenced from: $E042 reset_sound
-dat_E40F:
+tempo_copy_end:
 E40F: 01 00 01 00 01 00 01 00  FDB    $0100,$0100,$0100,$0100
 E417: 02 21 01 00 02 A9 02 A9  FDB    $0221,$0100,$02A9,$02A9
 E41F: 01 EE 01 DD 01 CC 01 AA  FDB    $01EE,$01DD,$01CC,$01AA
@@ -885,982 +1058,2599 @@ E427: 03 0F 02 ED 01 88 01 00  FDB    $030F,$02ED,$0188,$0100
 E42F: 01 88 01 00 02 65 02 65  FDB    $0188,$0100,$0265,$0265
 E437: 01 00 01 00 03 0F        FDB    $0100,$0100,$030F
 
-; Header of each sound 0-25: per voice a note stream pointer and a
-; frequency table number, $11 ends the list.
+; Header of each sound 0-25 (hdr_<name> below): per voice a note
+; stream pointer and a frequency table number, $11 ends the list.
 ; Referenced from: $E24C play_sound
 sound_headers:
-E43D: E4 71                    FDB    dat_E471 ; [0] $E471
-E43F: E4 8A                    FDB    dat_E48A ; [1] $E48A
-E441: E4 97                    FDB    dat_E497 ; [2] $E497
-E443: E4 AA                    FDB    dat_E4AA ; [3] $E4AA
-E445: E4 C0                    FDB    dat_E4C0 ; [4] $E4C0
-E447: E4 D6                    FDB    dat_E4D6 ; [5] $E4D6
-E449: E5 55                    FDB    dat_E555 ; [6] $E555
-E44B: E5 B8                    FDB    dat_E5B8 ; [7] $E5B8
-E44D: E4 F6                    FDB    dat_E4F6 ; [8] $E4F6
-E44F: E5 03                    FDB    dat_E503 ; [9] $E503
-E451: E5 68                    FDB    dat_E568 ; [10] $E568
-E453: E5 3E                    FDB    dat_E53E ; [11] $E53E
-E455: E5 2F                    FDB    dat_E52F ; [12] $E52F
-E457: E5 33                    FDB    dat_E533 ; [13] $E533
-E459: E5 37                    FDB    dat_E537 ; [14] $E537
-E45B: E5 48                    FDB    dat_E548 ; [15] $E548
-E45D: E5 10                    FDB    dat_E510 ; [16] $E510
-E45F: E5 17                    FDB    dat_E517 ; [17] $E517
-E461: E5 1E                    FDB    dat_E51E ; [18] $E51E
-E463: E5 28                    FDB    dat_E528 ; [19] $E528
-E465: E5 75                    FDB    dat_E575 ; [20] $E575
-E467: E5 8E                    FDB    dat_E58E ; [21] $E58E
-E469: E5 9B                    FDB    dat_E59B ; [22] $E59B
-E46B: E4 E9                    FDB    dat_E4E9 ; [23] $E4E9
-E46D: E5 A8                    FDB    dat_E5A8 ; [24] $E5A8
-E46F: E5 C5                    FDB    dat_E5C5 ; [25] $E5C5
+E43D: E4 71                    FDB    hdr_start_tune ; [0] $E471
+E43F: E4 8A                    FDB    hdr_shot ; [1] $E48A
+E441: E4 97                    FDB    hdr_challenge_tune ; [2] $E497
+E443: E4 AA                    FDB    hdr_entry_tune_1st ; [3] $E4AA
+E445: E4 C0                    FDB    hdr_entry_tune ; [4] $E4C0
+E447: E4 D6                    FDB    hdr_stage_tune ; [5] $E4D6
+E449: E5 55                    FDB    hdr_payout_tune ; [6] $E555
+E44B: E5 B8                    FDB    hdr_shot_upgraded ; [7] $E5B8
+E44D: E4 F6                    FDB    hdr_button_wait ; [8] $E4F6
+E44F: E5 03                    FDB    hdr_formation_hum ; [9] $E503
+E451: E5 68                    FDB    hdr_hit_challenge ; [10] $E568
+E453: E5 3E                    FDB    hdr_hit ; [11] $E53E
+E455: E5 2F                    FDB    hdr_flyin ; [12] $E52F
+E457: E5 33                    FDB    hdr_dive ; [13] $E533
+E459: E5 37                    FDB    hdr_special_object ; [14] $E537
+E45B: E5 48                    FDB    hdr_object_spawn ; [15] $E548
+E45D: E5 10                    FDB    hdr_capture ; [16] $E510
+E45F: E5 17                    FDB    hdr_effect_rise ; [17] $E517
+E461: E5 1E                    FDB    hdr_effect_spread ; [18] $E51E
+E463: E5 28                    FDB    hdr_powerup ; [19] $E528
+E465: E5 75                    FDB    hdr_player_explode ; [20] $E575
+E467: E5 8E                    FDB    hdr_extra_ship ; [21] $E58E
+E469: E5 9B                    FDB    hdr_coin ; [22] $E59B
+E46B: E4 E9                    FDB    hdr_count_tick ; [23] $E4E9
+E46D: E5 A8                    FDB    hdr_star_warp ; [24] $E5A8
+E46F: E5 C5                    FDB    hdr_bonus_ship ; [25] $E5C5
 
-; Referenced from: $E43D op_end
-dat_E471:
-E471: E7 77 00 E7 D2 00 E8 5D  FCB    $E7,$77,$00,$E7,$D2,$00,$E8,$5D
-E479: 00 E8 C2 00 E8 FF 00 E9  FCB    $00,$E8,$C2,$00,$E8,$FF,$00,$E9
-E481: 3C 00 E9 42 00 E8 5D 01  FCB    $3C,$00,$E9,$42,$00,$E8,$5D,$01
-E489: 11                       FCB    $11
+; Sound 0 ($00), snd_request+0 (main $6040): start_tune.
+; Game start music: start_game ($CE17), the main CPU waits for the request to
+; clear ($CE7F); also the demo's start. 384 frames.
+; WSG voices 0-7, tempo 2, channel blocks at $0100; held (plays while
+; requested; op_end clears the request).
+; Referenced from: $E43D sound_headers
+hdr_start_tune:
+E471: E7 77                    FDB    start_tune_v0 ; voice 0: WSG voice 0
+E473: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E474: E7 D2                    FDB    start_tune_v1 ; voice 1: WSG voice 1
+E476: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E477: E8 5D                    FDB    start_tune_v2 ; voice 2: WSG voice 2
+E479: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E47A: E8 C2                    FDB    start_tune_v3 ; voice 3: WSG voice 3
+E47C: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E47D: E8 FF                    FDB    start_tune_v4 ; voice 4: WSG voice 4
+E47F: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E480: E9 3C                    FDB    start_tune_v5 ; voice 5: WSG voice 5
+E482: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E483: E9 42                    FDB    start_tune_v6 ; voice 6: WSG voice 6
+E485: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E486: E8 5D                    FDB    start_tune_v2 ; voice 7: WSG voice 7
+E488: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E489: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E43F op_end
-dat_E48A:
-E48A: E9 48 00 E9 6D 01 E9 90  FCB    $E9,$48,$00,$E9,$6D,$01,$E9,$90
-E492: 02 E9 B5 02 11           FCB    $02,$E9,$B5,$02,$11
+; Sound 1 ($01), snd_request+1 (main $6041): shot.
+; Fighter shot, normal fighter picture $2F (task_player_fire $D1B5). 18 frames.
+; WSG voices 0-3, tempo 1, channel blocks at $0221; retriggered (a new request
+; restarts it).
+; Referenced from: $E43F sound_headers
+hdr_shot:
+E48A: E9 48                    FDB    shot_v0 ; voice 0: WSG voice 0
+E48C: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E48D: E9 6D                    FDB    shot_v1 ; voice 1: WSG voice 1
+E48F: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E490: E9 90                    FDB    shot_v2 ; voice 2: WSG voice 2
+E492: 02                       FCB    $02    ; frequency table 2 (freq_high)
+E493: E9 B5                    FDB    shot_v3 ; voice 3: WSG voice 3
+E495: 02                       FCB    $02    ; frequency table 2 (freq_high)
+E496: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E441 op_end
-dat_E497:
-E497: E9 D8 00 E9 FD 00 EA 22  FCB    $E9,$D8,$00,$E9,$FD,$00,$EA,$22
-E49F: 00 EA 47 00 EA 6A 00 EA  FCB    $00,$EA,$47,$00,$EA,$6A,$00,$EA
-E4A7: 83 00 11                 FCB    $83,$00,$11
+; Sound 2 ($02), snd_request+2 (main $6042): challenge_tune.
+; Challenging stage tune: task_stage_clear ($D6E3) when the next stage is a
+; challenging stage (dat_D6E8). 144 frames.
+; WSG voices 1-6, tempo 1, channel blocks at $0100; held (plays while
+; requested; op_end clears the request).
+; Referenced from: $E441 sound_headers
+hdr_challenge_tune:
+E497: E9 D8                    FDB    challenge_tune_v0 ; voice 0: WSG voice 1
+E499: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E49A: E9 FD                    FDB    challenge_tune_v1 ; voice 1: WSG voice 2
+E49C: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E49D: EA 22                    FDB    challenge_tune_v2 ; voice 2: WSG voice 3
+E49F: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E4A0: EA 47                    FDB    challenge_tune_v3 ; voice 3: WSG voice 4
+E4A2: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E4A3: EA 6A                    FDB    challenge_tune_v4 ; voice 4: WSG voice 5
+E4A5: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E4A6: EA 83                    FDB    challenge_tune_v5 ; voice 5: WSG voice 6
+E4A8: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E4A9: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E443 op_end
-dat_E4AA:
-E4AA: EA 9C 00 ED 98 01 EB 17  FCB    $EA,$9C,$00,$ED,$98,$01,$EB,$17
-E4B2: 00 EB A0 01 EB A0 02 EC  FCB    $00,$EB,$A0,$01,$EB,$A0,$02,$EC
-E4BA: A7 00 EB 17 02 11        FCB    $A7,$00,$EB,$17,$02,$11
+; Sound 3 ($03), snd_request+3 (main $6043): entry_tune_1st.
+; TOP 5 name entry music for a new best score (rank 1, $B52F via
+; entry_music_ptr). 576 frames.
+; WSG voices 0-6, tempo 3, channel blocks at $0100; held (plays while
+; requested; op_end clears the request).
+; Referenced from: $E443 sound_headers
+hdr_entry_tune_1st:
+E4AA: EA 9C                    FDB    entry_tune_1st_v0 ; voice 0: WSG voice 0
+E4AC: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E4AD: ED 98                    FDB    entry_tune_1st_v1 ; voice 1: WSG voice 1
+E4AF: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E4B0: EB 17                    FDB    entry_tune_1st_v2 ; voice 2: WSG voice 2
+E4B2: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E4B3: EB A0                    FDB    entry_tune_1st_v3 ; voice 3: WSG voice 3
+E4B5: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E4B6: EB A0                    FDB    entry_tune_1st_v3 ; voice 4: WSG voice 4
+E4B8: 02                       FCB    $02    ; frequency table 2 (freq_high)
+E4B9: EC A7                    FDB    entry_tune_1st_v5 ; voice 5: WSG voice 5
+E4BB: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E4BC: EB 17                    FDB    entry_tune_1st_v2 ; voice 6: WSG voice 6
+E4BE: 02                       FCB    $02    ; frequency table 2 (freq_high)
+E4BF: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E445 op_end
-dat_E4C0:
-E4C0: ED 9E 00 ED F7 00 EE 59  FCB    $ED,$9E,$00,$ED,$F7,$00,$EE,$59
-E4C8: 00 EE F9 00 EF B0 00 ED  FCB    $00,$EE,$F9,$00,$EF,$B0,$00,$ED
-E4D0: 9E 02 EE 59 02 11        FCB    $9E,$02,$EE,$59,$02,$11
+; Sound 4 ($04), snd_request+4 (main $6044): entry_tune.
+; TOP 5 name entry music for ranks 2-5 ($B542-$B57B). 960 frames.
+; WSG voices 0-6, tempo 1, channel blocks at $0100; held (plays while
+; requested; op_end clears the request).
+; Referenced from: $E445 sound_headers
+hdr_entry_tune:
+E4C0: ED 9E                    FDB    entry_tune_v0 ; voice 0: WSG voice 0
+E4C2: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E4C3: ED F7                    FDB    entry_tune_v1 ; voice 1: WSG voice 1
+E4C5: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E4C6: EE 59                    FDB    entry_tune_v2 ; voice 2: WSG voice 2
+E4C8: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E4C9: EE F9                    FDB    entry_tune_v3 ; voice 3: WSG voice 3
+E4CB: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E4CC: EF B0                    FDB    entry_tune_v4 ; voice 4: WSG voice 4
+E4CE: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E4CF: ED 9E                    FDB    entry_tune_v0 ; voice 5: WSG voice 5
+E4D1: 02                       FCB    $02    ; frequency table 2 (freq_high)
+E4D2: EE 59                    FDB    entry_tune_v2 ; voice 6: WSG voice 6
+E4D4: 02                       FCB    $02    ; frequency table 2 (freq_high)
+E4D5: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E447 op_end
-dat_E4D6:
-E4D6: F0 68 00 F0 7D 00 F0 92  FCB    $F0,$68,$00,$F0,$7D,$00,$F0,$92
-E4DE: 00 F0 A9 00 F0 C0 00 F0  FCB    $00,$F0,$A9,$00,$F0,$C0,$00,$F0
-E4E6: DF 00 11                 FCB    $DF,$00,$11
+; Sound 5 ($05), snd_request+5 (main $6045): stage_tune.
+; Stage start ("PARSEC nn") jingle: after the start tune ($CE92), at a stage
+; clear ($D6BB), after a lost ship or a player change ($DCFF, $DDE8) and after
+; the challenging-stage results ($E3EC). 108 frames.
+; WSG voices 1-6, tempo 2, channel blocks at $0100; held (plays while
+; requested; op_end clears the request).
+; Referenced from: $E447 sound_headers
+hdr_stage_tune:
+E4D6: F0 68                    FDB    stage_tune_v0 ; voice 0: WSG voice 1
+E4D8: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E4D9: F0 7D                    FDB    stage_tune_v1 ; voice 1: WSG voice 2
+E4DB: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E4DC: F0 92                    FDB    stage_tune_v2 ; voice 2: WSG voice 3
+E4DE: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E4DF: F0 A9                    FDB    stage_tune_v3 ; voice 3: WSG voice 4
+E4E1: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E4E2: F0 C0                    FDB    stage_tune_v4 ; voice 4: WSG voice 5
+E4E4: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E4E5: F0 DF                    FDB    stage_tune_v5 ; voice 5: WSG voice 6
+E4E7: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E4E8: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E46B op_end
-dat_E4E9:
-E4E9: E7 47 00 E7 4C 00 E7 47  FCB    $E7,$47,$00,$E7,$4C,$00,$E7,$47
-E4F1: 01 E7 4C 01 11           FCB    $01,$E7,$4C,$01,$11
+; Sound 23 ($17), snd_request+23 (main $6057): count_tick.
+; Challenging-stage results: one hit counted, every other frame
+; (results_count_hits $E2B2). 4 frames.
+; WSG voices 0-3, tempo 1, channel blocks at $0100; held (plays while
+; requested; op_end clears the request).
+; Referenced from: $E46B sound_headers
+hdr_count_tick:
+E4E9: E7 47                    FDB    count_tick_v0 ; voice 0: WSG voice 0
+E4EB: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E4EC: E7 4C                    FDB    count_tick_v1 ; voice 1: WSG voice 1
+E4EE: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E4EF: E7 47                    FDB    count_tick_v0 ; voice 2: WSG voice 2
+E4F1: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E4F2: E7 4C                    FDB    count_tick_v1 ; voice 3: WSG voice 3
+E4F4: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E4F5: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E44D op_end
-dat_E4F6:
-E4F6: E7 61 00 E7 6C 00 E7 61  FCB    $E7,$61,$00,$E7,$6C,$00,$E7,$61
-E4FE: 01 E7 6C 01 11           FCB    $01,$E7,$6C,$01,$11
+; Sound 8 ($08), snd_request+8 (main $6048): button_wait.
+; Results bonus: requested every frame while the screen waits for a fire press
+; (results_show_bonus $E35F), stopped with snd_active by the press. 20 frames a
+; pass.
+; WSG voices 4-7, tempo 5, channel blocks at $0100; held (plays while
+; requested; op_end clears the request).
+; Referenced from: $E44D sound_headers
+hdr_button_wait:
+E4F6: E7 61                    FDB    button_wait_v0 ; voice 0: WSG voice 4
+E4F8: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E4F9: E7 6C                    FDB    button_wait_v1 ; voice 1: WSG voice 5
+E4FB: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E4FC: E7 61                    FDB    button_wait_v0 ; voice 2: WSG voice 6
+E4FE: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E4FF: E7 6C                    FDB    button_wait_v1 ; voice 3: WSG voice 7
+E501: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E502: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E44F op_end
-dat_E503:
-E503: F2 3C 00 F2 E1 01 F3 84  FCB    $F2,$3C,$00,$F2,$E1,$01,$F3,$84
-E50B: 00 F3 8B 01 11           FCB    $00,$F3,$8B,$01,$11
+; Sound 9 ($09), snd_request+9 (main $6049): formation_hum.
+; The formation's background hum: sub task_formation_anim ($E34B, via the
+; queue) every frame while the formation is assembled and no refill is flying
+; in. 168 frames a pass.
+; WSG voices 4-7, tempo 2, channel blocks at $02A9; held (plays while
+; requested; op_end clears the request).
+; Referenced from: $E44F sound_headers
+hdr_formation_hum:
+E503: F2 3C                    FDB    formation_hum_v0 ; voice 0: WSG voice 4
+E505: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E506: F2 E1                    FDB    formation_hum_v1 ; voice 1: WSG voice 5
+E508: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E509: F3 84                    FDB    formation_hum_v2 ; voice 2: WSG voice 6
+E50B: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E50C: F3 8B                    FDB    formation_hum_v3 ; voice 3: WSG voice 7
+E50E: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E50F: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E45D op_end
-dat_E510:
-E510: F3 92 00 F3 D3 01 11     FCB    $F3,$92,$00,$F3,$D3,$01,$11
+; Sound 16 ($10), snd_request+16 (main $6050): capture.
+; Sub task_capture_steer ($E6C3) every frame while it moves the fighter and the
+; beam sprite (capture_state 1), and bonus_seq_fall ($F6DB). 120 frames a pass.
+; WSG voices 2-3, tempo 4, channel blocks at $02ED; held (plays while
+; requested; op_end clears the request).
+; Referenced from: $E45D sound_headers
+hdr_capture:
+E510: F3 92                    FDB    capture_v0 ; voice 0: WSG voice 2
+E512: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E513: F3 D3                    FDB    capture_v1 ; voice 1: WSG voice 3
+E515: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E516: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E45F op_end
-dat_E517:
-E517: F4 0E 00 F4 1B 01 11     FCB    $F4,$0E,$00,$F4,$1B,$01,$11
+; Sound 17 ($11), snd_request+17 (main $6051): effect_rise.
+; Power-up effect 0, six rising sprites (sub effect_rising $B5BA); irq_main
+; clears it at $C07A when a coin ends the demo. 120 frames a pass.
+; WSG voices 2-3, tempo 5, channel blocks at $0188; held (plays while
+; requested; op_end clears the request).
+; Referenced from: $E45F sound_headers
+hdr_effect_rise:
+E517: F4 0E                    FDB    effect_rise_v0 ; voice 0: WSG voice 2
+E519: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E51A: F4 1B                    FDB    effect_rise_v1 ; voice 1: WSG voice 3
+E51C: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E51D: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E461 op_end
-dat_E51E:
-E51E: F4 28 00 F4 37 00 F4 28  FCB    $F4,$28,$00,$F4,$37,$00,$F4,$28
-E526: 01 11                    FCB    $01,$11
+; Sound 18 ($12), snd_request+18 (main $6052): effect_spread.
+; Power-up effect 1, six sprites spread along the ship (sub effect_sequence
+; $B3F4). 120 frames.
+; WSG voices 1-3, tempo 5, channel blocks at $0100; held (plays while
+; requested; op_end clears the request).
+; Referenced from: $E461 sound_headers
+hdr_effect_spread:
+E51E: F4 28                    FDB    effect_spread_v0 ; voice 0: WSG voice 1
+E520: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E521: F4 37                    FDB    effect_spread_v1 ; voice 1: WSG voice 2
+E523: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E524: F4 28                    FDB    effect_spread_v0 ; voice 2: WSG voice 3
+E526: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E527: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E463 op_end
-dat_E528:
-E528: F4 46 00 F4 5F 01 11     FCB    $F4,$46,$00,$F4,$5F,$01,$11
+; Sound 19 ($13), snd_request+19 (main $6053): powerup.
+; Fighter upgrade and power-up effects 2-5 (sub effect_setup $B87B). 72 frames.
+; WSG voices 2-3, tempo 1, channel blocks at $0188; held (plays while
+; requested; op_end clears the request).
+; Referenced from: $E463 sound_headers
+hdr_powerup:
+E528: F4 46                    FDB    powerup_v0 ; voice 0: WSG voice 2
+E52A: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E52B: F4 5F                    FDB    powerup_v1 ; voice 1: WSG voice 3
+E52D: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E52E: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E455 op_end
-dat_E52F:
-E52F: F4 78 00 11              FCB    $F4,$78,$00,$11
+; Sound 12 ($0C), snd_request+12 (main $604C): flyin.
+; An enemy flying into the formation: sub task_formation_refill ($EA75) and
+; task_escort_flyin_a ($EC5A). 87 frames.
+; WSG voices 5-5, tempo 1, channel blocks at $01DD; retriggered (a new request
+; restarts it).
+; Referenced from: $E455 sound_headers
+hdr_flyin:
+E52F: F4 78                    FDB    flyin_v0 ; voice 0: WSG voice 5
+E531: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E532: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E457 op_end
-dat_E533:
-E533: F7 75 00 11              FCB    $F7,$75,$00,$11
+; Sound 13 ($0D), snd_request+13 (main $604D): dive.
+; Enemies leaving the formation to attack: sub launch_group1_tail ($FBF0),
+; launch_group2_tail ($FCE6), task_launch_trio ($FDC5) and formation_home
+; ($B28A). 104 frames.
+; WSG voices 5-5, tempo 1, channel blocks at $01CC; retriggered (a new request
+; restarts it).
+; Referenced from: $E457 sound_headers
+hdr_dive:
+E533: F7 75                    FDB    dive_v0 ; voice 0: WSG voice 5
+E535: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E536: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E459 op_end
-dat_E537:
-E537: F5 29 00 F5 E6 02 11     FCB    $F5,$29,$00,$F5,$E6,$02,$11
+; Sound 14 ($0E), snd_request+14 (main $604E): special_object.
+; The object at formation_flags+42 starts (sub task_start_188A_object $FE71).
+; 89 frames.
+; WSG voices 4-5, tempo 1, channel blocks at $01AA; retriggered (a new request
+; restarts it).
+; Referenced from: $E459 sound_headers
+hdr_special_object:
+E537: F5 29                    FDB    special_object_v0 ; voice 0: WSG voice 4
+E539: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E53A: F5 E6                    FDB    special_object_v1 ; voice 1: WSG voice 5
+E53C: 02                       FCB    $02    ; frequency table 2 (freq_high)
+E53D: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E453 op_end
-dat_E53E:
-E53E: F8 4C 00 F8 4C 01 F8 4C  FCB    $F8,$4C,$00,$F8,$4C,$01,$F8,$4C
-E546: 02 11                    FCB    $02,$11
+; Sound 11 ($0B), snd_request+11 (main $604B): hit.
+; Enemy hit in a normal stage (task_shot_hits $D3F8); a captured ship hit by an
+; enemy shot (task_shot_collisions $FA57). 28 frames.
+; WSG voices 5-7, tempo 2, channel blocks at $01EE; retriggered (a new request
+; restarts it).
+; Referenced from: $E453 sound_headers
+hdr_hit:
+E53E: F8 4C                    FDB    hit_v0 ; voice 0: WSG voice 5
+E540: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E541: F8 4C                    FDB    hit_v0 ; voice 1: WSG voice 6
+E543: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E544: F8 4C                    FDB    hit_v0 ; voice 2: WSG voice 7
+E546: 02                       FCB    $02    ; frequency table 2 (freq_high)
+E547: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E45B op_end
-dat_E548:
-E548: F8 69 00 F8 A2 00 F8 69  FCB    $F8,$69,$00,$F8,$A2,$00,$F8,$69
-E550: 01 F8 A2 01 11           FCB    $01,$F8,$A2,$01,$11
+; Sound 15 ($0F), snd_request+15 (main $604F): object_spawn.
+; An object placed at a pseudo-random position (sub object_spawn_random $B967).
+; 120 frames.
+; WSG voices 2-5, tempo 1, channel blocks at $030F; held (plays while
+; requested; op_end clears the request).
+; Referenced from: $E45B sound_headers
+hdr_object_spawn:
+E548: F8 69                    FDB    object_spawn_v0 ; voice 0: WSG voice 2
+E54A: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E54B: F8 A2                    FDB    object_spawn_v1 ; voice 1: WSG voice 3
+E54D: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E54E: F8 69                    FDB    object_spawn_v0 ; voice 2: WSG voice 4
+E550: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E551: F8 A2                    FDB    object_spawn_v1 ; voice 3: WSG voice 5
+E553: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E554: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E449 op_end
-dat_E555:
-E555: E7 51 00 E7 5C 00 E7 51  FCB    $E7,$51,$00,$E7,$5C,$00,$E7,$51
-E55D: 01 E7 5C 01 E7 51 02 E7  FCB    $01,$E7,$5C,$01,$E7,$51,$02,$E7
-E565: 5C 02 11                 FCB    $5C,$02,$11
+; Sound 6 ($06), snd_request+6 (main $6046): payout_tune.
+; Challenging-stage results pay-out: a component moving into place
+; (payout_lucky) or dropping (payout_byebye). 280 frames.
+; WSG voices 0-5, tempo 7, channel blocks at $0100; held (plays while
+; requested; op_end clears the request).
+; Referenced from: $E449 sound_headers
+hdr_payout_tune:
+E555: E7 51                    FDB    payout_tune_v0 ; voice 0: WSG voice 0
+E557: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E558: E7 5C                    FDB    payout_tune_v1 ; voice 1: WSG voice 1
+E55A: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E55B: E7 51                    FDB    payout_tune_v0 ; voice 2: WSG voice 2
+E55D: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E55E: E7 5C                    FDB    payout_tune_v1 ; voice 3: WSG voice 3
+E560: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E561: E7 51                    FDB    payout_tune_v0 ; voice 4: WSG voice 4
+E563: 02                       FCB    $02    ; frequency table 2 (freq_high)
+E564: E7 5C                    FDB    payout_tune_v1 ; voice 5: WSG voice 5
+E566: 02                       FCB    $02    ; frequency table 2 (freq_high)
+E567: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E451 op_end
-dat_E568:
-E568: F5 EE 00 F5 FB 00 F5 EE  FCB    $F5,$EE,$00,$F5,$FB,$00,$F5,$EE
-E570: 01 F5 FB 01 11           FCB    $01,$F5,$FB,$01,$11
+; Sound 10 ($0A), snd_request+10 (main $604A): hit_challenge.
+; Enemy hit in a challenging stage (task_shot_hits $D3F1 with $115F set), sub
+; bonus_fly ($BDC5) and the last hit counted on the results screen ($E2C4). 39
+; frames.
+; WSG voices 4-7, tempo 3, channel blocks at $02A9; retriggered (a new request
+; restarts it).
+; Referenced from: $E451 sound_headers
+hdr_hit_challenge:
+E568: F5 EE                    FDB    hit_challenge_v0 ; voice 0: WSG voice 4
+E56A: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E56B: F5 FB                    FDB    hit_challenge_v1 ; voice 1: WSG voice 5
+E56D: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E56E: F5 EE                    FDB    hit_challenge_v0 ; voice 2: WSG voice 6
+E570: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E571: F5 FB                    FDB    hit_challenge_v1 ; voice 3: WSG voice 7
+E573: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E574: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E465 op_end
-dat_E575:
-E575: F9 79 00 F9 9E 00 F9 A5  FCB    $F9,$79,$00,$F9,$9E,$00,$F9,$A5
-E57D: 00 F9 FF 00 FA 0E 00 F9  FCB    $00,$F9,$FF,$00,$FA,$0E,$00,$F9
-E585: 79 01 F9 A5 01 F9 A5 02  FCB    $79,$01,$F9,$A5,$01,$F9,$A5,$02
-E58D: 11                       FCB    $11
+; Sound 20 ($14), snd_request+20 (main $6054): player_explode.
+; The fighter explodes (player_dies $DA0B; the main CPU waits for it at $DA16);
+; task_sound_queue keeps it while player_dying. 540 frames.
+; WSG voices 0-7, tempo 3, channel blocks at $0100; held (plays while
+; requested; op_end clears the request).
+; Referenced from: $E465 sound_headers
+hdr_player_explode:
+E575: F9 79                    FDB    player_explode_v0 ; voice 0: WSG voice 0
+E577: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E578: F9 9E                    FDB    player_explode_v1 ; voice 1: WSG voice 1
+E57A: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E57B: F9 A5                    FDB    player_explode_v2 ; voice 2: WSG voice 2
+E57D: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E57E: F9 FF                    FDB    player_explode_v3 ; voice 3: WSG voice 3
+E580: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E581: FA 0E                    FDB    player_explode_v4 ; voice 4: WSG voice 4
+E583: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E584: F9 79                    FDB    player_explode_v0 ; voice 5: WSG voice 5
+E586: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E587: F9 A5                    FDB    player_explode_v2 ; voice 6: WSG voice 6
+E589: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E58A: F9 A5                    FDB    player_explode_v2 ; voice 7: WSG voice 7
+E58C: 02                       FCB    $02    ; frequency table 2 (freq_high)
+E58D: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E467 op_end
-dat_E58E:
-E58E: F8 DB 00 F8 EA 00 F8 DB  FCB    $F8,$DB,$00,$F8,$EA,$00,$F8,$DB
-E596: 01 F8 EA 01 11           FCB    $01,$F8,$EA,$01,$11
+; Sound 21 ($15), snd_request+21 (main $6055): extra_ship.
+; Extra fighter: bonus life (bonus_first/second/every_p1/p2), results pay-out
+; (payout_extend), the bonus ship caught (task_bonus_ship $FE99), sub
+; bonus_seq_extend ($F789). 72 frames.
+; WSG voices 0-3, tempo 6, channel blocks at $0265; held (plays while
+; requested; op_end clears the request).
+; Referenced from: $E467 sound_headers
+hdr_extra_ship:
+E58E: F8 DB                    FDB    extra_ship_v0 ; voice 0: WSG voice 0
+E590: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E591: F8 EA                    FDB    extra_ship_v1 ; voice 1: WSG voice 1
+E593: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E594: F8 DB                    FDB    extra_ship_v0 ; voice 2: WSG voice 2
+E596: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E597: F8 EA                    FDB    extra_ship_v1 ; voice 3: WSG voice 3
+E599: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E59A: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E469 op_end
-dat_E59B:
-E59B: F8 FB 00 F9 3A 00 F8 FB  FCB    $F8,$FB,$00,$F9,$3A,$00,$F8,$FB
-E5A3: 02 F9 3A 02 11           FCB    $02,$F9,$3A,$02,$11
+; Sound 22 ($16), snd_request+22 (main $6056): coin.
+; Coin: irq_main INCs it per credit ($C05C); op_end counts it down, so it plays
+; once per coin. 74 frames.
+; WSG voices 0-3, tempo 2, channel blocks at $0265; held (plays while
+; requested; op_end clears the request).
+; Referenced from: $E469 sound_headers
+hdr_coin:
+E59B: F8 FB                    FDB    coin_v0 ; voice 0: WSG voice 0
+E59D: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E59E: F9 3A                    FDB    coin_v1 ; voice 1: WSG voice 1
+E5A0: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E5A1: F8 FB                    FDB    coin_v0 ; voice 2: WSG voice 2
+E5A3: 02                       FCB    $02    ; frequency table 2 (freq_high)
+E5A4: F9 3A                    FDB    coin_v1 ; voice 3: WSG voice 3
+E5A6: 02                       FCB    $02    ; frequency table 2 (freq_high)
+E5A7: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E46D op_end
-dat_E5A8:
-E5A8: F6 FC 00 F7 05 00 F7 0E  FCB    $F6,$FC,$00,$F7,$05,$00,$F7,$0E
-E5B0: 00 F7 33 00 F7 58 00 11  FCB    $00,$F7,$33,$00,$F7,$58,$00,$11
+; Sound 24 ($18), snd_request+24 (main $6058): star_warp.
+; Starfield event: stage_event1_step0 ($EAD7, every frame for 60 frames in mode
+; 1) and stage_event5_step0 ($EBA0). 960 frames.
+; WSG voices 3-7, tempo 4, channel blocks at $0100; held (plays while
+; requested; op_end clears the request).
+; Referenced from: $E46D sound_headers
+hdr_star_warp:
+E5A8: F6 FC                    FDB    star_warp_v0 ; voice 0: WSG voice 3
+E5AA: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E5AB: F7 05                    FDB    star_warp_v1 ; voice 1: WSG voice 4
+E5AD: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E5AE: F7 0E                    FDB    star_warp_v2 ; voice 2: WSG voice 5
+E5B0: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E5B1: F7 33                    FDB    star_warp_v3 ; voice 3: WSG voice 6
+E5B3: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E5B4: F7 58                    FDB    star_warp_v4 ; voice 4: WSG voice 7
+E5B6: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E5B7: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E44B op_end
-dat_E5B8:
-E5B8: F6 08 00 F6 4F 01 F6 96  FCB    $F6,$08,$00,$F6,$4F,$01,$F6,$96
-E5C0: 00 F6 C9 01 11           FCB    $00,$F6,$C9,$01,$11
+; Sound 7 ($07), snd_request+7 (main $6047): shot_upgraded.
+; The fighter's shot when its picture ($0EA2) is not $2F, i.e. after an upgrade
+; (task_player_fire $D1BB; the main listing calls it the dual fighter's); never
+; requested together with sound 1. 31 frames.
+; WSG voices 0-3, tempo 1, channel blocks at $0221; retriggered (a new request
+; restarts it).
+; Referenced from: $E44B sound_headers
+hdr_shot_upgraded:
+E5B8: F6 08                    FDB    shot_upgraded_v0 ; voice 0: WSG voice 0
+E5BA: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E5BB: F6 4F                    FDB    shot_upgraded_v1 ; voice 1: WSG voice 1
+E5BD: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E5BE: F6 96                    FDB    shot_upgraded_v2 ; voice 2: WSG voice 2
+E5C0: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E5C1: F6 C9                    FDB    shot_upgraded_v3 ; voice 3: WSG voice 3
+E5C3: 01                       FCB    $01    ; frequency table 1 (freq_a440)
+E5C4: 11                       FCB    $11    ; end of header
 
-; Referenced from: $E46F op_end
-dat_E5C5:
-E5C5: FA 1D 00 FA 1D 00 FA 1D  FCB    $FA,$1D,$00,$FA,$1D,$00,$FA,$1D
-E5CD: 00 FA 1D 00 11           FCB    $00,$FA,$1D,$00,$11
+; Sound 25 ($19), snd_request+25 (main $6059): bonus_ship.
+; The bonus ship appears (task_bonus_ship $FE6A). 35 frames.
+; WSG voices 4-7, tempo 1, channel blocks at $030F; held (plays while
+; requested; op_end clears the request).
+; Referenced from: $E46F sound_headers
+hdr_bonus_ship:
+E5C5: FA 1D                    FDB    bonus_ship_v0 ; voice 0: WSG voice 4
+E5C7: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E5C8: FA 1D                    FDB    bonus_ship_v0 ; voice 1: WSG voice 5
+E5CA: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E5CB: FA 1D                    FDB    bonus_ship_v0 ; voice 2: WSG voice 6
+E5CD: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E5CE: FA 1D                    FDB    bonus_ship_v0 ; voice 3: WSG voice 7
+E5D0: 00                       FCB    $00    ; frequency table 0 (freq_low)
+E5D1: 11                       FCB    $11    ; end of header
 
-; Volume envelope pointers: an envelope is a list of levels 0-$F
-; played one per frame, then an envelope_ops byte ($10-$16).
-; Referenced from: $E285 play_voice
+; The 31 volume envelopes (env_0 ... env_30 below): levels 0-$F, one
+; a frame, then an op: $10 sustain the last level, $12 sustain but
+; fade out with the note's last frames, $14 repeat, $16 n ramp down
+; one step a frame to n (see env_op_ramp). Each line below shows the
+; decoded envelope.
+; Referenced from: $E285 envelope_step
 envelopes:
-E5D2: E6 10                    FDB    dat_E610 ; [0] $E610
-E5D4: E6 12                    FDB    dat_E612 ; [1] $E612
-E5D6: E6 14                    FDB    dat_E614 ; [2] $E614
-E5D8: E6 16                    FDB    dat_E616 ; [3] $E616
-E5DA: E6 18                    FDB    dat_E618 ; [4] $E618
-E5DC: E6 1A                    FDB    dat_E61A ; [5] $E61A
-E5DE: E6 1C                    FDB    dat_E61C ; [6] $E61C
-E5E0: E6 1E                    FDB    dat_E61E ; [7] $E61E
-E5E2: E6 23                    FDB    dat_E623 ; [8] $E623
-E5E4: E6 28                    FDB    dat_E628 ; [9] $E628
-E5E6: E6 2D                    FDB    dat_E62D ; [10] $E62D
-E5E8: E6 32                    FDB    dat_E632 ; [11] $E632
-E5EA: E6 37                    FDB    dat_E637 ; [12] $E637
-E5EC: E6 3C                    FDB    dat_E63C ; [13] $E63C
-E5EE: E6 46                    FDB    dat_E646 ; [14] $E646
-E5F0: E6 4F                    FDB    dat_E64F ; [15] $E64F
-E5F2: E6 54                    FDB    dat_E654 ; [16] $E654
-E5F4: E6 5C                    FDB    dat_E65C ; [17] $E65C
-E5F6: E6 63                    FDB    dat_E663 ; [18] $E663
-E5F8: E6 6C                    FDB    dat_E66C ; [19] $E66C
-E5FA: E6 6E                    FDB    dat_E66E ; [20] $E66E
-E5FC: E6 70                    FDB    dat_E670 ; [21] $E670
-E5FE: E6 72                    FDB    dat_E672 ; [22] $E672
-E600: E6 85                    FDB    dat_E685 ; [23] $E685
-E602: E6 87                    FDB    dat_E687 ; [24] $E687
-E604: E6 94                    FDB    dat_E694 ; [25] $E694
-E606: E6 A2                    FDB    dat_E6A2 ; [26] $E6A2
-E608: E6 AB                    FDB    dat_E6AB ; [27] $E6AB
-E60A: E6 BA                    FDB    dat_E6BA ; [28] $E6BA
-E60C: E6 C6                    FDB    dat_E6C6 ; [29] $E6C6
-E60E: E6 CA                    FDB    dat_E6CA ; [30] $E6CA
+E5D2: E6 10                    FDB    env_0  ; [0] $E610
+E5D4: E6 12                    FDB    env_1  ; [1] $E612
+E5D6: E6 14                    FDB    env_2  ; [2] $E614
+E5D8: E6 16                    FDB    env_3  ; [3] $E616
+E5DA: E6 18                    FDB    env_4  ; [4] $E618
+E5DC: E6 1A                    FDB    env_5  ; [5] $E61A
+E5DE: E6 1C                    FDB    env_6  ; [6] $E61C
+E5E0: E6 1E                    FDB    env_7  ; [7] $E61E
+E5E2: E6 23                    FDB    env_8  ; [8] $E623
+E5E4: E6 28                    FDB    env_9  ; [9] $E628
+E5E6: E6 2D                    FDB    env_10 ; [10] $E62D
+E5E8: E6 32                    FDB    env_11 ; [11] $E632
+E5EA: E6 37                    FDB    env_12 ; [12] $E637
+E5EC: E6 3C                    FDB    env_13 ; [13] $E63C
+E5EE: E6 46                    FDB    env_14 ; [14] $E646
+E5F0: E6 4F                    FDB    env_15 ; [15] $E64F
+E5F2: E6 54                    FDB    env_16 ; [16] $E654
+E5F4: E6 5C                    FDB    env_17 ; [17] $E65C
+E5F6: E6 63                    FDB    env_18 ; [18] $E663
+E5F8: E6 6C                    FDB    env_19 ; [19] $E66C
+E5FA: E6 6E                    FDB    env_20 ; [20] $E66E
+E5FC: E6 70                    FDB    env_21 ; [21] $E670
+E5FE: E6 72                    FDB    env_22 ; [22] $E672
+E600: E6 85                    FDB    env_23 ; [23] $E685
+E602: E6 87                    FDB    env_24 ; [24] $E687
+E604: E6 94                    FDB    env_25 ; [25] $E694
+E606: E6 A2                    FDB    env_26 ; [26] $E6A2
+E608: E6 AB                    FDB    env_27 ; [27] $E6AB
+E60A: E6 BA                    FDB    env_28 ; [28] $E6BA
+E60C: E6 C6                    FDB    env_29 ; [29] $E6C6
+E60E: E6 CA                    FDB    env_30 ; [30] $E6CA
 
-; Referenced from: $E5D2 op_end
-dat_E610:
-E610: 0F 10                    FCB    $0F,$10
+; Referenced from: $E5D2 envelopes
+env_0:
+E610: 0F 10                    FCB    $0F,$10 ; F sustain
 
-; Referenced from: $E5D4 op_end
-dat_E612:
-E612: 0C 10                    FCB    $0C,$10
+; Referenced from: $E5D4 envelopes
+env_1:
+E612: 0C 10                    FCB    $0C,$10 ; C sustain
 
-; Referenced from: $E5D6 op_end
-dat_E614:
-E614: 0A 10                    FCB    $0A,$10
+; Referenced from: $E5D6 envelopes
+env_2:
+E614: 0A 10                    FCB    $0A,$10 ; A sustain
 
-; Referenced from: $E5D8 op_end
-dat_E616:
-E616: 07 10                    FCB    $07,$10
+; Referenced from: $E5D8 envelopes
+env_3:
+E616: 07 10                    FCB    $07,$10 ; 7 sustain
 
-; Referenced from: $E5DA op_end
-dat_E618:
-E618: 05 10                    FCB    $05,$10
+; Referenced from: $E5DA envelopes
+env_4:
+E618: 05 10                    FCB    $05,$10 ; 5 sustain
 
-; Referenced from: $E5DC op_end
-dat_E61A:
-E61A: 03 10                    FCB    $03,$10
+; Referenced from: $E5DC envelopes
+env_5:
+E61A: 03 10                    FCB    $03,$10 ; 3 sustain
 
-; Referenced from: $E5DE op_end
-dat_E61C:
-E61C: 02 10                    FCB    $02,$10
+; Referenced from: $E5DE envelopes
+env_6:
+E61C: 02 10                    FCB    $02,$10 ; 2 sustain
 
-; Referenced from: $E5E0 op_end
-dat_E61E:
-E61E: 0A 0A 03 03 14           FCB    $0A,$0A,$03,$03,$14
+; Referenced from: $E5E0 envelopes
+env_7:
+E61E: 0A 0A 03 03 14           FCB    $0A,$0A,$03,$03,$14 ; A A 3 3 repeat
 
-; Referenced from: $E5E2 op_end
-dat_E623:
-E623: 0F 0F 16 05 10           FCB    $0F,$0F,$16,$05,$10
+; Referenced from: $E5E2 envelopes
+env_8:
+E623: 0F 0F 16 05 10           FCB    $0F,$0F,$16,$05,$10 ; F F ramp to 5
+                                             ; sustain
 
-; Referenced from: $E5E4 op_end
-dat_E628:
-E628: 0C 0C 16 03 10           FCB    $0C,$0C,$16,$03,$10
+; Referenced from: $E5E4 envelopes
+env_9:
+E628: 0C 0C 16 03 10           FCB    $0C,$0C,$16,$03,$10 ; C C ramp to 3
+                                             ; sustain
 
-; Referenced from: $E5E6 op_end
-dat_E62D:
-E62D: 0C 0C 16 05 10           FCB    $0C,$0C,$16,$05,$10
+; Referenced from: $E5E6 envelopes
+env_10:
+E62D: 0C 0C 16 05 10           FCB    $0C,$0C,$16,$05,$10 ; C C ramp to 5
+                                             ; sustain
 
-; Referenced from: $E5E8 op_end
-dat_E632:
-E632: 07 07 16 00 10           FCB    $07,$07,$16,$00,$10
+; Referenced from: $E5E8 envelopes
+env_11:
+E632: 07 07 16 00 10           FCB    $07,$07,$16,$00,$10 ; 7 7 ramp to 0
+                                             ; sustain
 
-; Referenced from: $E5EA op_end
-dat_E637:
-E637: 07 07 16 04 10           FCB    $07,$07,$16,$04,$10
+; Referenced from: $E5EA envelopes
+env_12:
+E637: 07 07 16 04 10           FCB    $07,$07,$16,$04,$10 ; 7 7 ramp to 4
+                                             ; sustain
 
-; Referenced from: $E5EC op_end
-dat_E63C:
+; Referenced from: $E5EC envelopes
+env_13:
 E63C: 06 08 0A 0C 0F 0F 0F 16  FCB    $06,$08,$0A,$0C,$0F,$0F,$0F,$16
+                                             ; 6 8 A C F F F ramp to 5 sustain
 E644: 05 10                    FCB    $05,$10
 
-; Referenced from: $E5EE op_end
-dat_E646:
+; Referenced from: $E5EE envelopes
+env_14:
 E646: 04 06 08 0A 0A 0A 16 03  FCB    $04,$06,$08,$0A,$0A,$0A,$16,$03
+                                             ; 4 6 8 A A A ramp to 3 sustain
 E64E: 10                       FCB    $10
 
-; Referenced from: $E5F0 op_end
-dat_E64F:
-E64F: 04 08 0A 0A 12           FCB    $04,$08,$0A,$0A,$12
+; Referenced from: $E5F0 envelopes
+env_15:
+E64F: 04 08 0A 0A 12           FCB    $04,$08,$0A,$0A,$12 ; 4 8 A A sustain,
+                                             ; fade out
 
-; Referenced from: $E5F2 op_end
-dat_E654:
+; Referenced from: $E5F2 envelopes
+env_16:
 E654: 0F 0C 0A 08 05 03 00 10  FCB    $0F,$0C,$0A,$08,$05,$03,$00,$10
+                                             ; F C A 8 5 3 0 sustain
 
-; Referenced from: $E5F4 op_end
-dat_E65C:
-E65C: 0A 08 06 04 02 00 10     FCB    $0A,$08,$06,$04,$02,$00,$10
+; Referenced from: $E5F4 envelopes
+env_17:
+E65C: 0A 08 06 04 02 00 10     FCB    $0A,$08,$06,$04,$02,$00,$10 ; A 8 6 4 2 0
+                                             ; sustain
 
-; Referenced from: $E5F6 op_end
-dat_E663:
+; Referenced from: $E5F6 envelopes
+env_18:
 E663: 08 07 06 05 04 03 02 00  FCB    $08,$07,$06,$05,$04,$03,$02,$00
+                                             ; 8 7 6 5 4 3 2 0 sustain
 E66B: 10                       FCB    $10
 
-; Referenced from: $E5F8 op_end
-dat_E66C:
-E66C: 0F 12                    FCB    $0F,$12
+; Referenced from: $E5F8 envelopes
+env_19:
+E66C: 0F 12                    FCB    $0F,$12 ; F sustain, fade out
 
-; Referenced from: $E5FA op_end
-dat_E66E:
-E66E: 0A 12                    FCB    $0A,$12
+; Referenced from: $E5FA envelopes
+env_20:
+E66E: 0A 12                    FCB    $0A,$12 ; A sustain, fade out
 
-; Referenced from: $E5FC op_end
-dat_E670:
-E670: 07 12                    FCB    $07,$12
+; Referenced from: $E5FC envelopes
+env_21:
+E670: 07 12                    FCB    $07,$12 ; 7 sustain, fade out
 
-; Referenced from: $E5FE op_end
-dat_E672:
+; Referenced from: $E5FE envelopes
+env_22:
 E672: 0F 0F 0F 06 06 06 0A 0A  FCB    $0F,$0F,$0F,$06,$06,$06,$0A,$0A
+                                             ; F F F 6 6 6 A A A 4 4 4 7 7 7 2
+                                             ; 2 2 sustain
 E67A: 0A 04 04 04 07 07 07 02  FCB    $0A,$04,$04,$04,$07,$07,$07,$02
 E682: 02 02 10                 FCB    $02,$02,$10
 
-; Referenced from: $E600 op_end
-dat_E685:
-E685: 05 12                    FCB    $05,$12
+; Referenced from: $E600 envelopes
+env_23:
+E685: 05 12                    FCB    $05,$12 ; 5 sustain, fade out
 
-; Referenced from: $E602 op_end
-dat_E687:
+; Referenced from: $E602 envelopes
+env_24:
 E687: 0A 0C 0F 0F 0F 0C 0A 07  FCB    $0A,$0C,$0F,$0F,$0F,$0C,$0A,$07
+                                             ; A C F F F C A 7 5 3 1 0 sustain
 E68F: 05 03 01 00 10           FCB    $05,$03,$01,$00,$10
 
-; Referenced from: $E604 op_end
-dat_E694:
+; Referenced from: $E604 envelopes
+env_25:
 E694: 08 09 0A 0B 0B 0B 0A 08  FCB    $08,$09,$0A,$0B,$0B,$0B,$0A,$08
+                                             ; 8 9 A B B B A 8 6 4 2 1 0
+                                             ; sustain
 E69C: 06 04 02 01 00 10        FCB    $06,$04,$02,$01,$00,$10
 
-; Referenced from: $E606 op_end
-dat_E6A2:
+; Referenced from: $E606 envelopes
+env_26:
 E6A2: 05 06 07 07 07 07 16 00  FCB    $05,$06,$07,$07,$07,$07,$16,$00
+                                             ; 5 6 7 7 7 7 ramp to 0 sustain
 E6AA: 10                       FCB    $10
 
-; Referenced from: $E608 op_end
-dat_E6AB:
+; Referenced from: $E608 envelopes
+env_27:
 E6AB: 03 04 05 05 05 05 05 04  FCB    $03,$04,$05,$05,$05,$05,$05,$04
+                                             ; 3 4 5 5 5 5 5 4 4 3 3 2 1 0
+                                             ; sustain
 E6B3: 04 03 03 02 01 00 10     FCB    $04,$03,$03,$02,$01,$00,$10
 
-; Referenced from: $E60A op_end
-dat_E6BA:
+; Referenced from: $E60A envelopes
+env_28:
 E6BA: 0F 0F 0F 0E 0C 0A 08 06  FCB    $0F,$0F,$0F,$0E,$0C,$0A,$08,$06
+                                             ; F F F E C A 8 6 4 2 0 sustain
 E6C2: 04 02 00 10              FCB    $04,$02,$00,$10
 
-; Referenced from: $E60C op_end
-dat_E6C6:
-E6C6: 0A 16 00 10              FCB    $0A,$16,$00,$10
+; Referenced from: $E60C envelopes
+env_29:
+E6C6: 0A 16 00 10              FCB    $0A,$16,$00,$10 ; A ramp to 0 sustain
 
-; Referenced from: $E60E op_end
-dat_E6CA:
+; Referenced from: $E60E envelopes
+env_30:
 E6CA: 0A 0C 0A 08 06 16 00 10  FCB    $0A,$0C,$0A,$08,$06,$16,$00,$10
+                                             ; A C A 8 6 ramp to 0 sustain
 
-; Three frequency tables (pointers), 3 bytes per note:
-; freq hi (b0-3; b4-6 wave come from +3), mid, lo.
+; The three frequency tables, 12 notes A..G# of 3 bytes each (freq
+; bits 16-19, 8-15, 0-7; the tone is freq x 24000 / 2^20 Hz); an
+; unused $00 follows each. A stream's octave shift divides by 2^n.
 ; Referenced from: $E319 next_note
 freq_tables:
-E6D2: E6 D8                    FDB    dat_E6D8 ; [0] $E6D8
-E6D4: E6 FD                    FDB    dat_E6FD ; [1] $E6FD
-E6D6: E7 22                    FDB    dat_E722 ; [2] $E722
+E6D2: E6 D8                    FDB    freq_low ; [0] $E6D8
+E6D4: E6 FD                    FDB    freq_a440 ; [1] $E6FD
+E6D6: E7 22                    FDB    freq_high ; [2] $E722
 
-; Referenced from: $E6D2 op_end
-dat_E6D8:
-E6D8: 02 54 A8 02 78 28 02 9D  FCB    $02,$54,$A8,$02,$78,$28,$02,$9D
-E6E0: B4 02 C5 78 02 EF CB 03  FCB    $B4,$02,$C5,$78,$02,$EF,$CB,$03
-E6E8: 1C 82 03 4B C8 03 7D F6  FCB    $1C,$82,$03,$4B,$C8,$03,$7D,$F6
-E6F0: 03 B3 35 03 EB 87 04 27  FCB    $03,$B3,$35,$03,$EB,$87,$04,$27
-E6F8: 17 04 66 69 00           FCB    $17,$04,$66,$69,$00
+; Frequency table 0: A7 = 3496 Hz, 12 cents below A440 pitch (the
+; detuned twin of freq_a440 for chorus voices).
+; Referenced from: $E6D2 freq_tables
+freq_low:
+E6D8: 02 54 A8                 FCB    $02,$54,$A8 ; A7 3496.0 Hz
+E6DB: 02 78 28                 FCB    $02,$78,$28 ; A#7 3704.0 Hz
+E6DE: 02 9D B4                 FCB    $02,$9D,$B4 ; B7 3924.0 Hz
+E6E1: 02 C5 78                 FCB    $02,$C5,$78 ; C8 4157.0 Hz
+E6E4: 02 EF CB                 FCB    $02,$EF,$CB ; C#8 4405.0 Hz
+E6E7: 03 1C 82                 FCB    $03,$1C,$82 ; D8 4667.0 Hz
+E6EA: 03 4B C8                 FCB    $03,$4B,$C8 ; D#8 4944.0 Hz
+E6ED: 03 7D F6                 FCB    $03,$7D,$F6 ; E8 5238.1 Hz
+E6F0: 03 B3 35                 FCB    $03,$B3,$35 ; F8 5550.0 Hz
+E6F3: 03 EB 87                 FCB    $03,$EB,$87 ; F#8 5880.0 Hz
+E6F6: 04 27 17                 FCB    $04,$27,$17 ; G8 6229.0 Hz
+E6F9: 04 66 69                 FCB    $04,$66,$69 ; G#8 6600.1 Hz
+E6FC: 00                       FCB    $00    ; [unreached]
 
-; Referenced from: $E6D4 op_end
-dat_E6FD:
-E6FD: 02 58 C0 02 7C 6C 02 A2  FCB    $02,$58,$C0,$02,$7C,$6C,$02,$A2
-E705: 4F 02 CA 6B 02 F4 EA 03  FCB    $4F,$02,$CA,$6B,$02,$F4,$EA,$03
-E70D: 21 F8 03 51 96 03 84 1A  FCB    $21,$F8,$03,$51,$96,$03,$84,$1A
-E715: 03 B9 B1 03 F2 5B 04 2E  FCB    $03,$B9,$B1,$03,$F2,$5B,$04,$2E
-E71D: 6E 04 6E 17 00           FCB    $6E,$04,$6E,$17,$00
+; Frequency table 1: equal temperament at A440 pitch, A7 = 3520 Hz.
+; Referenced from: $E6D4 freq_tables
+freq_a440:
+E6FD: 02 58 C0                 FCB    $02,$58,$C0 ; A7 3520.0 Hz
+E700: 02 7C 6C                 FCB    $02,$7C,$6C ; A#7 3729.0 Hz
+E703: 02 A2 4F                 FCB    $02,$A2,$4F ; B7 3951.0 Hz
+E706: 02 CA 6B                 FCB    $02,$CA,$6B ; C8 4186.0 Hz
+E709: 02 F4 EA                 FCB    $02,$F4,$EA ; C#8 4435.0 Hz
+E70C: 03 21 F8                 FCB    $03,$21,$F8 ; D8 4699.0 Hz
+E70F: 03 51 96                 FCB    $03,$51,$96 ; D#8 4978.0 Hz
+E712: 03 84 1A                 FCB    $03,$84,$1A ; E8 5274.0 Hz
+E715: 03 B9 B1                 FCB    $03,$B9,$B1 ; F8 5588.0 Hz
+E718: 03 F2 5B                 FCB    $03,$F2,$5B ; F#8 5920.1 Hz
+E71B: 04 2E 6E                 FCB    $04,$2E,$6E ; G8 6272.0 Hz
+E71E: 04 6E 17                 FCB    $04,$6E,$17 ; G#8 6645.1 Hz
+E721: 00                       FCB    $00    ; [unreached]
 
-; Referenced from: $E6D6 op_end
-dat_E722:
-E722: 02 5C D9 02 80 DC 02 A6  FCB    $02,$5C,$D9,$02,$80,$DC,$02,$A6
-E72A: EB 02 CF 5E 02 FA 08 03  FCB    $EB,$02,$CF,$5E,$02,$FA,$08,$03
-E732: 27 6E 03 57 63 03 8A 3F  FCB    $27,$6E,$03,$57,$63,$03,$8A,$3F
-E73A: 03 C0 2E 03 F9 2E 04 35  FCB    $03,$C0,$2E,$03,$F9,$2E,$04,$35
-E742: C5 04 75 C5 00 10 07 32  FCB    $C5,$04,$75,$C5,$00,$10,$07,$32
-E74A: 04 F0 40 07 B3 04 F0 10  FCB    $04,$F0,$40,$07,$B3,$04,$F0,$10
-E752: 00 22 05 A3 05 F3 04 E7  FCB    $00,$22,$05,$A3,$05,$F3,$04,$E7
-E75A: 53 F0 40 07 F7 E7 53 40  FCB    $53,$F0,$40,$07,$F7,$E7,$53,$40
-E762: 11 B3 01 02 01 B3 01 02  FCB    $11,$B3,$01,$02,$01,$B3,$01,$02
-E76A: 01 F0 40 11 83 01 93 01  FCB    $01,$F0,$40,$11,$83,$01,$93,$01
-E772: 83 01 93 01 F0 10 08 73  FCB    $83,$01,$93,$01,$F0,$10,$08,$73
-E77A: 09 F2 10 53 03 F2 08 53  FCB    $09,$F2,$10,$53,$03,$F2,$08,$53
-E782: 0C C0 06 23 03 33 03 73  FCB    $0C,$C0,$06,$23,$03,$33,$03,$73
-E78A: 03 53 03 43 03 53 03 02  FCB    $03,$53,$03,$43,$03,$53,$03,$02
-E792: 09 F2 10 A3 03 F2 08 A3  FCB    $09,$F2,$10,$A3,$03,$F2,$08,$A3
-E79A: 0C C0 06 A3 03 02 03 32  FCB    $0C,$C0,$06,$A3,$03,$02,$03,$32
-E7A2: 03 22 03 02 03 A3 03 F1  FCB    $03,$22,$03,$02,$03,$A3,$03,$F1
-E7AA: 40 F2 10 72 03 52 03 52  FCB    $40,$F2,$10,$72,$03,$52,$03,$52
-E7B2: 03 72 03 72 03 52 03 52  FCB    $03,$72,$03,$72,$03,$52,$03,$52
-E7BA: 03 72 03 73 03 53 03 53  FCB    $03,$72,$03,$73,$03,$53,$03,$53
-E7C2: 03 73 03 F2 00 74 04 54  FCB    $03,$73,$03,$F2,$00,$74,$04,$54
-E7CA: 04 74 04 F2 0D 94 30 F0  FCB    $04,$74,$04,$F2,$0D,$94,$30,$F0
-E7D2: 70 0B A5 03 95 03 75 03  FCB    $70,$0B,$A5,$03,$95,$03,$75,$03
-E7DA: 55 03 A5 03 95 03 75 03  FCB    $55,$03,$A5,$03,$95,$03,$75,$03
-E7E2: 55 03 A5 03 95 03 75 03  FCB    $55,$03,$A5,$03,$95,$03,$75,$03
-E7EA: 55 03 A5 03 95 03 75 03  FCB    $55,$03,$A5,$03,$95,$03,$75,$03
-E7F2: 55 03 64 03 54 03 34 03  FCB    $55,$03,$64,$03,$54,$03,$34,$03
-E7FA: 14 03 64 03 54 03 34 03  FCB    $14,$03,$64,$03,$54,$03,$34,$03
-E802: 14 03 64 03 54 03 34 03  FCB    $14,$03,$64,$03,$54,$03,$34,$03
-E80A: 14 03 64 03 54 03 34 03  FCB    $14,$03,$64,$03,$54,$03,$34,$03
-E812: 24 03 A4 03 94 03 74 03  FCB    $24,$03,$A4,$03,$94,$03,$74,$03
-E81A: 54 03 A4 03 94 03 74 03  FCB    $54,$03,$A4,$03,$94,$03,$74,$03
-E822: 54 03 A5 03 95 03 75 03  FCB    $54,$03,$A5,$03,$95,$03,$75,$03
-E82A: 55 03 A5 03 95 03 75 03  FCB    $55,$03,$A5,$03,$95,$03,$75,$03
-E832: 55 03 F2 10 F1 40 91 03  FCB    $55,$03,$F2,$10,$F1,$40,$91,$03
-E83A: 61 03 21 03 92 03 21 03  FCB    $61,$03,$21,$03,$92,$03,$21,$03
-E842: 92 03 62 03 22 03 F2 11  FCB    $92,$03,$62,$03,$22,$03,$F2,$11
+; Frequency table 2: A7 = 3544 Hz, 12 cents above A440 pitch.
+; Referenced from: $E6D6 freq_tables
+freq_high:
+E722: 02 5C D9                 FCB    $02,$5C,$D9 ; A7 3544.0 Hz
+E725: 02 80 DC                 FCB    $02,$80,$DC ; A#7 3755.0 Hz
+E728: 02 A6 EB                 FCB    $02,$A6,$EB ; B7 3978.0 Hz
+E72B: 02 CF 5E                 FCB    $02,$CF,$5E ; C8 4215.0 Hz
+E72E: 02 FA 08                 FCB    $02,$FA,$08 ; C#8 4465.0 Hz
+E731: 03 27 6E                 FCB    $03,$27,$6E ; D8 4731.0 Hz
+E734: 03 57 63                 FCB    $03,$57,$63 ; D#8 5012.0 Hz
+E737: 03 8A 3F                 FCB    $03,$8A,$3F ; E8 5310.0 Hz
+E73A: 03 C0 2E                 FCB    $03,$C0,$2E ; F8 5626.1 Hz
+E73D: 03 F9 2E                 FCB    $03,$F9,$2E ; F#8 5960.0 Hz
+E740: 04 35 C5                 FCB    $04,$35,$C5 ; G8 6315.1 Hz
+E743: 04 75 C5                 FCB    $04,$75,$C5 ; G#8 6690.1 Hz
+E746: 00                       FCB    $00    ; [unreached]
+
+; NOTE STREAMS ($E747-$FA3D). A stream starts with its waveform byte
+; (bits 4-6) and its envelope number; then notes $pn,len (pitch p of
+; the voice's frequency table, n octaves down), rests $Cx,len and
+; commands $F0-$F7 (stream_ops). Shown as pitch:length, e.g. C6:4 =
+; C6 for 4 x tempo frames; -:6 = a rest of 6. Labels: <sound>_v<k> =
+; voice k of that sound's header; lXXXX = a jump or loop target.
+; Referenced from: $E4E9 hdr_count_tick, $E4EF hdr_count_tick
+count_tick_v0:
+E747: 10 07                    FCB    $10,$07 ; waveform 1, envelope 7
+E749: 32 04                    FCB    $32,$04 ; C6:4
+E74B: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E4EC hdr_count_tick, $E4F2 hdr_count_tick
+count_tick_v1:
+E74C: 40 07                    FCB    $40,$07 ; waveform 4, envelope 7
+E74E: B3 04                    FCB    $B3,$04 ; G#5:4
+E750: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E555 hdr_payout_tune, $E55B hdr_payout_tune, $E561
+; hdr_payout_tune
+payout_tune_v0:
+E751: 10 00                    FCB    $10,$00 ; waveform 1, envelope 0
+
+; Referenced from: $E757 payout_tune_v0, $E75E payout_tune_v1
+lE753:
+E753: 22 05 A3 05              FCB    $22,$05,$A3,$05 ; B5:5 G5:5
+E757: F3 04 E7 53              FCB    $F3,$04,$E7,$53 ; repeat from lE753: 4
+                                             ; passes (+C)
+E75B: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E558 hdr_payout_tune, $E55E hdr_payout_tune, $E564
+; hdr_payout_tune
+payout_tune_v1:
+E75C: 40 07                    FCB    $40,$07 ; waveform 4, envelope 7
+E75E: F7 E7 53                 FCB    $F7,$E7,$53 ; jump lE753
+
+; Referenced from: $E4F6 hdr_button_wait, $E4FC hdr_button_wait
+button_wait_v0:
+E761: 40 11                    FCB    $40,$11 ; waveform 4, envelope 17
+E763: B3 01 02 01 B3 01 02 01  FCB    $B3,$01,$02,$01,$B3,$01,$02,$01
+                                             ; G#5:1 A5:1 G#5:1 A5:1
+E76B: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E4F9 hdr_button_wait, $E4FF hdr_button_wait
+button_wait_v1:
+E76C: 40 11                    FCB    $40,$11 ; waveform 4, envelope 17
+E76E: 83 01 93 01 83 01 93 01  FCB    $83,$01,$93,$01,$83,$01,$93,$01
+                                             ; F5:1 F#5:1 F5:1 F#5:1
+E776: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E471 hdr_start_tune
+start_tune_v0:
+E777: 10 08                    FCB    $10,$08 ; waveform 1, envelope 8
+
+; Referenced from: $E93E start_tune_v5, $E944 start_tune_v6
+lE779:
+E779: 73 09                    FCB    $73,$09 ; E5:9
+E77B: F2 10                    FCB    $F2,$10 ; envelope 16
+E77D: 53 03                    FCB    $53,$03 ; D5:3
+E77F: F2 08                    FCB    $F2,$08 ; envelope 8
+E781: 53 0C C0 06 23 03 33 03  FCB    $53,$0C,$C0,$06,$23,$03,$33,$03
+                                             ; D5:12 -:6 B4:3 C5:3
+E789: 73 03 53 03 43 03 53 03  FCB    $73,$03,$53,$03,$43,$03,$53,$03
+                                             ; E5:3 D5:3 C#5:3 D5:3
+E791: 02 09                    FCB    $02,$09 ; A5:9
+E793: F2 10                    FCB    $F2,$10 ; envelope 16
+E795: A3 03                    FCB    $A3,$03 ; G5:3
+E797: F2 08                    FCB    $F2,$08 ; envelope 8
+E799: A3 0C C0 06 A3 03 02 03  FCB    $A3,$0C,$C0,$06,$A3,$03,$02,$03
+                                             ; G5:12 -:6 G5:3 A5:3
+E7A1: 32 03 22 03 02 03 A3 03  FCB    $32,$03,$22,$03,$02,$03,$A3,$03
+                                             ; C6:3 B5:3 A5:3 G5:3
+E7A9: F1 40                    FCB    $F1,$40 ; waveform 4
+E7AB: F2 10                    FCB    $F2,$10 ; envelope 16
+E7AD: 72 03 52 03 52 03 72 03  FCB    $72,$03,$52,$03,$52,$03,$72,$03
+                                             ; E6:3 D6:3 D6:3 E6:3
+E7B5: 72 03 52 03 52 03 72 03  FCB    $72,$03,$52,$03,$52,$03,$72,$03
+                                             ; E6:3 D6:3 D6:3 E6:3
+E7BD: 73 03 53 03 53 03 73 03  FCB    $73,$03,$53,$03,$53,$03,$73,$03
+                                             ; E5:3 D5:3 D5:3 E5:3
+E7C5: F2 00                    FCB    $F2,$00 ; envelope 0
+E7C7: 74 04 54 04 74 04        FCB    $74,$04,$54,$04,$74,$04 ; E4:4 D4:4 E4:4
+E7CD: F2 0D                    FCB    $F2,$0D ; envelope 13
+E7CF: 94 30                    FCB    $94,$30 ; F#4:48
+E7D1: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E474 hdr_start_tune
+start_tune_v1:
+E7D2: 70 0B                    FCB    $70,$0B ; waveform 7, envelope 11
+E7D4: A5 03 95 03 75 03 55 03  FCB    $A5,$03,$95,$03,$75,$03,$55,$03
+                                             ; G3:3 F#3:3 E3:3 D3:3
+E7DC: A5 03 95 03 75 03 55 03  FCB    $A5,$03,$95,$03,$75,$03,$55,$03
+                                             ; G3:3 F#3:3 E3:3 D3:3
+E7E4: A5 03 95 03 75 03 55 03  FCB    $A5,$03,$95,$03,$75,$03,$55,$03
+                                             ; G3:3 F#3:3 E3:3 D3:3
+E7EC: A5 03 95 03 75 03 55 03  FCB    $A5,$03,$95,$03,$75,$03,$55,$03
+                                             ; G3:3 F#3:3 E3:3 D3:3
+E7F4: 64 03 54 03 34 03 14 03  FCB    $64,$03,$54,$03,$34,$03,$14,$03
+                                             ; D#4:3 D4:3 C4:3 A#3:3
+E7FC: 64 03 54 03 34 03 14 03  FCB    $64,$03,$54,$03,$34,$03,$14,$03
+                                             ; D#4:3 D4:3 C4:3 A#3:3
+E804: 64 03 54 03 34 03 14 03  FCB    $64,$03,$54,$03,$34,$03,$14,$03
+                                             ; D#4:3 D4:3 C4:3 A#3:3
+E80C: 64 03 54 03 34 03 24 03  FCB    $64,$03,$54,$03,$34,$03,$24,$03
+                                             ; D#4:3 D4:3 C4:3 B3:3
+E814: A4 03 94 03 74 03 54 03  FCB    $A4,$03,$94,$03,$74,$03,$54,$03
+                                             ; G4:3 F#4:3 E4:3 D4:3
+E81C: A4 03 94 03 74 03 54 03  FCB    $A4,$03,$94,$03,$74,$03,$54,$03
+                                             ; G4:3 F#4:3 E4:3 D4:3
+E824: A5 03 95 03 75 03 55 03  FCB    $A5,$03,$95,$03,$75,$03,$55,$03
+                                             ; G3:3 F#3:3 E3:3 D3:3
+E82C: A5 03 95 03 75 03 55 03  FCB    $A5,$03,$95,$03,$75,$03,$55,$03
+                                             ; G3:3 F#3:3 E3:3 D3:3
+E834: F2 10                    FCB    $F2,$10 ; envelope 16
+E836: F1 40                    FCB    $F1,$40 ; waveform 4
+E838: 91 03 61 03 21 03 92 03  FCB    $91,$03,$61,$03,$21,$03,$92,$03
+                                             ; F#7:3 D#7:3 B6:3 F#6:3
+E840: 21 03 92 03 62 03 22 03  FCB    $21,$03,$92,$03,$62,$03,$22,$03
+                                             ; B6:3 F#6:3 D#6:3 B5:3
+E848: F2 11                    FCB    $F2,$11 ; envelope 17
 E84A: 22 03 93 03 63 03 23 03  FCB    $22,$03,$93,$03,$63,$03,$23,$03
-E852: F2 12 23 03 94 03 64 03  FCB    $F2,$12,$23,$03,$94,$03,$64,$03
-E85A: 24 03 F0 30 11 A4 06 54  FCB    $24,$03,$F0,$30,$11,$A4,$06,$54
-E862: 02 54 02 54 02 A4 06 54  FCB    $02,$54,$02,$54,$02,$A4,$06,$54
-E86A: 02 54 02 54 02 A4 06 54  FCB    $02,$54,$02,$54,$02,$A4,$06,$54
-E872: 02 54 02 54 02 A4 06 54  FCB    $02,$54,$02,$54,$02,$A4,$06,$54
-E87A: 02 54 02 54 02 13 06 64  FCB    $02,$54,$02,$54,$02,$13,$06,$64
-E882: 02 64 02 64 02 13 06 64  FCB    $02,$64,$02,$64,$02,$13,$06,$64
-E88A: 02 64 02 64 02 13 06 64  FCB    $02,$64,$02,$64,$02,$13,$06,$64
-E892: 02 64 02 64 02 64 06 34  FCB    $02,$64,$02,$64,$02,$64,$06,$34
-E89A: 02 34 02 34 02 A4 06 54  FCB    $02,$34,$02,$34,$02,$A4,$06,$54
-E8A2: 02 54 02 54 02 A4 06 54  FCB    $02,$54,$02,$54,$02,$A4,$06,$54
-E8AA: 02 54 02 54 02 A4 06 54  FCB    $02,$54,$02,$54,$02,$A4,$06,$54
-E8B2: 02 54 02 54 02 A4 06 54  FCB    $02,$54,$02,$54,$02,$A4,$06,$54
-E8BA: 02 54 02 54 02 24 30 F0  FCB    $02,$54,$02,$54,$02,$24,$30,$F0
-E8C2: 30 0A 23 09 23 03 23 0C  FCB    $30,$0A,$23,$09,$23,$03,$23,$0C
-E8CA: C0 06 23 06 23 0C 63 09  FCB    $C0,$06,$23,$06,$23,$0C,$63,$09
-E8D2: 63 03 63 0C C0 06 63 06  FCB    $63,$03,$63,$0C,$C0,$06,$63,$06
-E8DA: A3 06 63 06 22 03 22 03  FCB    $A3,$06,$63,$06,$22,$03,$22,$03
-E8E2: 22 03 22 03 22 03 22 03  FCB    $22,$03,$22,$03,$22,$03,$22,$03
-E8EA: 22 03 22 03 23 03 23 03  FCB    $22,$03,$22,$03,$23,$03,$23,$03
-E8F2: 23 03 23 03 24 04 24 04  FCB    $23,$03,$23,$03,$24,$04,$24,$04
-E8FA: 24 04 64 30 F0 10 0A 94  FCB    $24,$04,$64,$30,$F0,$10,$0A,$94
-E902: 09 94 03 94 0C C0 06 94  FCB    $09,$94,$03,$94,$0C,$C0,$06,$94
-E90A: 06 A4 0C 13 09 13 03 13  FCB    $06,$A4,$0C,$13,$09,$13,$03,$13
-E912: 0C C0 06 13 06 63 06 34  FCB    $0C,$C0,$06,$13,$06,$63,$06,$34
-E91A: 06 93 03 A3 03 A3 03 A3  FCB    $06,$93,$03,$A3,$03,$A3,$03,$A3
-E922: 03 93 03 A3 03 A3 03 A3  FCB    $03,$93,$03,$A3,$03,$A3,$03,$A3
-E92A: 03 94 03 A4 03 A4 03 A4  FCB    $03,$94,$03,$A4,$03,$A4,$03,$A4
-E932: 03 A5 04 A5 04 A5 04 14  FCB    $03,$A5,$04,$A5,$04,$A5,$04,$14
-E93A: 30 F0 20 08 F7 E7 79 F0  FCB    $30,$F0,$20,$08,$F7,$E7,$79,$F0
-E942: 40 08 F7 E7 79 F0 20 00  FCB    $40,$08,$F7,$E7,$79,$F0,$20,$00
+                                             ; B5:3 F#5:3 D#5:3 B4:3
+E852: F2 12                    FCB    $F2,$12 ; envelope 18
+E854: 23 03 94 03 64 03 24 03  FCB    $23,$03,$94,$03,$64,$03,$24,$03
+                                             ; B4:3 F#4:3 D#4:3 B3:3
+E85C: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E477 hdr_start_tune, $E486 hdr_start_tune
+start_tune_v2:
+E85D: 30 11                    FCB    $30,$11 ; waveform 3, envelope 17
+E85F: A4 06 54 02 54 02 54 02  FCB    $A4,$06,$54,$02,$54,$02,$54,$02
+                                             ; G4:6 D4:2 D4:2 D4:2
+E867: A4 06 54 02 54 02 54 02  FCB    $A4,$06,$54,$02,$54,$02,$54,$02
+                                             ; G4:6 D4:2 D4:2 D4:2
+E86F: A4 06 54 02 54 02 54 02  FCB    $A4,$06,$54,$02,$54,$02,$54,$02
+                                             ; G4:6 D4:2 D4:2 D4:2
+E877: A4 06 54 02 54 02 54 02  FCB    $A4,$06,$54,$02,$54,$02,$54,$02
+                                             ; G4:6 D4:2 D4:2 D4:2
+E87F: 13 06 64 02 64 02 64 02  FCB    $13,$06,$64,$02,$64,$02,$64,$02
+                                             ; A#4:6 D#4:2 D#4:2 D#4:2
+E887: 13 06 64 02 64 02 64 02  FCB    $13,$06,$64,$02,$64,$02,$64,$02
+                                             ; A#4:6 D#4:2 D#4:2 D#4:2
+E88F: 13 06 64 02 64 02 64 02  FCB    $13,$06,$64,$02,$64,$02,$64,$02
+                                             ; A#4:6 D#4:2 D#4:2 D#4:2
+E897: 64 06 34 02 34 02 34 02  FCB    $64,$06,$34,$02,$34,$02,$34,$02
+                                             ; D#4:6 C4:2 C4:2 C4:2
+E89F: A4 06 54 02 54 02 54 02  FCB    $A4,$06,$54,$02,$54,$02,$54,$02
+                                             ; G4:6 D4:2 D4:2 D4:2
+E8A7: A4 06 54 02 54 02 54 02  FCB    $A4,$06,$54,$02,$54,$02,$54,$02
+                                             ; G4:6 D4:2 D4:2 D4:2
+E8AF: A4 06 54 02 54 02 54 02  FCB    $A4,$06,$54,$02,$54,$02,$54,$02
+                                             ; G4:6 D4:2 D4:2 D4:2
+E8B7: A4 06 54 02 54 02 54 02  FCB    $A4,$06,$54,$02,$54,$02,$54,$02
+                                             ; G4:6 D4:2 D4:2 D4:2
+E8BF: 24 30                    FCB    $24,$30 ; B3:48
+E8C1: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E47A hdr_start_tune
+start_tune_v3:
+E8C2: 30 0A                    FCB    $30,$0A ; waveform 3, envelope 10
+E8C4: 23 09 23 03 23 0C C0 06  FCB    $23,$09,$23,$03,$23,$0C,$C0,$06
+                                             ; B4:9 B4:3 B4:12 -:6
+E8CC: 23 06 23 0C 63 09 63 03  FCB    $23,$06,$23,$0C,$63,$09,$63,$03
+                                             ; B4:6 B4:12 D#5:9 D#5:3
+E8D4: 63 0C C0 06 63 06 A3 06  FCB    $63,$0C,$C0,$06,$63,$06,$A3,$06
+                                             ; D#5:12 -:6 D#5:6 G5:6
+E8DC: 63 06 22 03 22 03 22 03  FCB    $63,$06,$22,$03,$22,$03,$22,$03
+                                             ; D#5:6 B5:3 B5:3 B5:3
+E8E4: 22 03 22 03 22 03 22 03  FCB    $22,$03,$22,$03,$22,$03,$22,$03
+                                             ; B5:3 B5:3 B5:3 B5:3
+E8EC: 22 03 23 03 23 03 23 03  FCB    $22,$03,$23,$03,$23,$03,$23,$03
+                                             ; B5:3 B4:3 B4:3 B4:3
+E8F4: 23 03 24 04 24 04 24 04  FCB    $23,$03,$24,$04,$24,$04,$24,$04
+                                             ; B4:3 B3:4 B3:4 B3:4
+E8FC: 64 30                    FCB    $64,$30 ; D#4:48
+E8FE: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E47D hdr_start_tune
+start_tune_v4:
+E8FF: 10 0A                    FCB    $10,$0A ; waveform 1, envelope 10
+E901: 94 09 94 03 94 0C C0 06  FCB    $94,$09,$94,$03,$94,$0C,$C0,$06
+                                             ; F#4:9 F#4:3 F#4:12 -:6
+E909: 94 06 A4 0C 13 09 13 03  FCB    $94,$06,$A4,$0C,$13,$09,$13,$03
+                                             ; F#4:6 G4:12 A#4:9 A#4:3
+E911: 13 0C C0 06 13 06 63 06  FCB    $13,$0C,$C0,$06,$13,$06,$63,$06
+                                             ; A#4:12 -:6 A#4:6 D#5:6
+E919: 34 06 93 03 A3 03 A3 03  FCB    $34,$06,$93,$03,$A3,$03,$A3,$03
+                                             ; C4:6 F#5:3 G5:3 G5:3
+E921: A3 03 93 03 A3 03 A3 03  FCB    $A3,$03,$93,$03,$A3,$03,$A3,$03
+                                             ; G5:3 F#5:3 G5:3 G5:3
+E929: A3 03 94 03 A4 03 A4 03  FCB    $A3,$03,$94,$03,$A4,$03,$A4,$03
+                                             ; G5:3 F#4:3 G4:3 G4:3
+E931: A4 03 A5 04 A5 04 A5 04  FCB    $A4,$03,$A5,$04,$A5,$04,$A5,$04
+                                             ; G4:3 G3:4 G3:4 G3:4
+E939: 14 30                    FCB    $14,$30 ; A#3:48
+E93B: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E480 hdr_start_tune
+start_tune_v5:
+E93C: 20 08                    FCB    $20,$08 ; waveform 2, envelope 8
+E93E: F7 E7 79                 FCB    $F7,$E7,$79 ; jump lE779
+E941: F0                       FCB    $F0    ; [unreached]
+
+; Referenced from: $E483 hdr_start_tune
+start_tune_v6:
+E942: 40 08                    FCB    $40,$08 ; waveform 4, envelope 8
+E944: F7 E7 79                 FCB    $F7,$E7,$79 ; jump lE779
+E947: F0                       FCB    $F0    ; [unreached]
+
+; Referenced from: $E48A hdr_shot
+shot_v0:
+E948: 20 00                    FCB    $20,$00 ; waveform 2, envelope 0
 E94A: 42 01 32 01 42 01 C0 01  FCB    $42,$01,$32,$01,$42,$01,$C0,$01
+                                             ; C#6:1 C6:1 C#6:1 -:1
 E952: 32 02 22 02 12 02 02 02  FCB    $32,$02,$22,$02,$12,$02,$02,$02
-E95A: B3 02 F2 02 A3 01 83 01  FCB    $B3,$02,$F2,$02,$A3,$01,$83,$01
-E962: 63 01 F2 03 43 01 23 01  FCB    $63,$01,$F2,$03,$43,$01,$23,$01
-E96A: B4 01 F0 50 03 C0 02 43  FCB    $B4,$01,$F0,$50,$03,$C0,$02,$43
-E972: 01 33 01 43 01 F2 04 C0  FCB    $01,$33,$01,$43,$01,$F2,$04,$C0
-E97A: 01 33 02 23 02 13 02 03  FCB    $01,$33,$02,$23,$02,$13,$02,$03
-E982: 01 B4 01 F2 05 A4 01 84  FCB    $01,$B4,$01,$F2,$05,$A4,$01,$84
-E98A: 01 64 01 24 01 F0 10 00  FCB    $01,$64,$01,$24,$01,$F0,$10,$00
+                                             ; C6:2 B5:2 A#5:2 A5:2
+E95A: B3 02                    FCB    $B3,$02 ; G#5:2
+E95C: F2 02                    FCB    $F2,$02 ; envelope 2
+E95E: A3 01 83 01 63 01        FCB    $A3,$01,$83,$01,$63,$01 ; G5:1 F5:1 D#5:1
+E964: F2 03                    FCB    $F2,$03 ; envelope 3
+E966: 43 01 23 01 B4 01        FCB    $43,$01,$23,$01,$B4,$01 ; C#5:1 B4:1
+                                             ; G#4:1
+E96C: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E48D hdr_shot
+shot_v1:
+E96D: 50 03                    FCB    $50,$03 ; waveform 5, envelope 3
+E96F: C0 02 43 01 33 01 43 01  FCB    $C0,$02,$43,$01,$33,$01,$43,$01
+                                             ; -:2 C#5:1 C5:1 C#5:1
+E977: F2 04                    FCB    $F2,$04 ; envelope 4
+E979: C0 01 33 02 23 02 13 02  FCB    $C0,$01,$33,$02,$23,$02,$13,$02
+                                             ; -:1 C5:2 B4:2 A#4:2
+E981: 03 01 B4 01              FCB    $03,$01,$B4,$01 ; A4:1 G#4:1
+E985: F2 05                    FCB    $F2,$05 ; envelope 5
+E987: A4 01 84 01 64 01 24 01  FCB    $A4,$01,$84,$01,$64,$01,$24,$01
+                                             ; G4:1 F4:1 D#4:1 B3:1
+E98F: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E490 hdr_shot
+shot_v2:
+E990: 10 00                    FCB    $10,$00 ; waveform 1, envelope 0
 E992: 02 01 B3 01 02 01 C0 01  FCB    $02,$01,$B3,$01,$02,$01,$C0,$01
+                                             ; A5:1 G#5:1 A5:1 -:1
 E99A: B3 02 A3 02 93 02 83 01  FCB    $B3,$02,$A3,$02,$93,$02,$83,$01
-E9A2: 73 01 F2 02 63 01 43 01  FCB    $73,$01,$F2,$02,$63,$01,$43,$01
-E9AA: 23 01 F2 03 03 01 A4 01  FCB    $23,$01,$F2,$03,$03,$01,$A4,$01
-E9B2: 74 01 F0 40 03 C0 02 03  FCB    $74,$01,$F0,$40,$03,$C0,$02,$03
-E9BA: 01 B4 01 03 01 F2 04 C0  FCB    $01,$B4,$01,$03,$01,$F2,$04,$C0
-E9C2: 01 B4 02 A4 02 94 02 84  FCB    $01,$B4,$02,$A4,$02,$94,$02,$84
-E9CA: 01 74 01 F2 05 64 01 44  FCB    $01,$74,$01,$F2,$05,$64,$01,$44
-E9D2: 01 24 01 B5 01 F0 00 08  FCB    $01,$24,$01,$B5,$01,$F0,$00,$08
+                                             ; G#5:2 G5:2 F#5:2 F5:1
+E9A2: 73 01                    FCB    $73,$01 ; E5:1
+E9A4: F2 02                    FCB    $F2,$02 ; envelope 2
+E9A6: 63 01 43 01 23 01        FCB    $63,$01,$43,$01,$23,$01 ; D#5:1 C#5:1
+                                             ; B4:1
+E9AC: F2 03                    FCB    $F2,$03 ; envelope 3
+E9AE: 03 01 A4 01 74 01        FCB    $03,$01,$A4,$01,$74,$01 ; A4:1 G4:1 E4:1
+E9B4: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E493 hdr_shot
+shot_v3:
+E9B5: 40 03                    FCB    $40,$03 ; waveform 4, envelope 3
+E9B7: C0 02 03 01 B4 01 03 01  FCB    $C0,$02,$03,$01,$B4,$01,$03,$01
+                                             ; -:2 A4:1 G#4:1 A4:1
+E9BF: F2 04                    FCB    $F2,$04 ; envelope 4
+E9C1: C0 01 B4 02 A4 02 94 02  FCB    $C0,$01,$B4,$02,$A4,$02,$94,$02
+                                             ; -:1 G#4:2 G4:2 F#4:2
+E9C9: 84 01 74 01              FCB    $84,$01,$74,$01 ; F4:1 E4:1
+E9CD: F2 05                    FCB    $F2,$05 ; envelope 5
+E9CF: 64 01 44 01 24 01 B5 01  FCB    $64,$01,$44,$01,$24,$01,$B5,$01
+                                             ; D#4:1 C#4:1 B3:1 G#3:1
+E9D7: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E497 hdr_challenge_tune
+challenge_tune_v0:
+E9D8: 00 08                    FCB    $00,$08 ; waveform 0, envelope 8
 E9DA: A5 06 04 06 A5 06 75 06  FCB    $A5,$06,$04,$06,$A5,$06,$75,$06
+                                             ; G3:6 A3:6 G3:6 E3:6
 E9E2: A5 06 34 06 54 06 74 06  FCB    $A5,$06,$34,$06,$54,$06,$74,$06
+                                             ; G3:6 C4:6 D4:6 E4:6
 E9EA: A4 06 33 06 53 06 73 06  FCB    $A4,$06,$33,$06,$53,$06,$73,$06
-E9F2: F2 11 B3 0C 93 06 F2 13  FCB    $F2,$11,$B3,$0C,$93,$06,$F2,$13
-E9FA: B3 36 F0 00 09 75 06 85  FCB    $B3,$36,$F0,$00,$09,$75,$06,$85
-EA02: 06 75 06 C0 06 75 06 A5  FCB    $06,$75,$06,$C0,$06,$75,$06,$A5
-EA0A: 06 34 06 54 06 74 06 A4  FCB    $06,$34,$06,$54,$06,$74,$06,$A4
-EA12: 06 33 06 53 06 F2 11 73  FCB    $06,$33,$06,$53,$06,$F2,$11,$73
-EA1A: 0C 63 06 F2 13 73 36 F0  FCB    $0C,$63,$06,$F2,$13,$73,$36,$F0
-EA22: 40 1D C0 02 A5 06 04 06  FCB    $40,$1D,$C0,$02,$A5,$06,$04,$06
-EA2A: A5 06 C0 0A 75 06 A5 06  FCB    $A5,$06,$C0,$0A,$75,$06,$A5,$06
-EA32: 34 06 54 06 74 06 A4 06  FCB    $34,$06,$54,$06,$74,$06,$A4,$06
-EA3A: 33 06 F2 11 23 0C 23 06  FCB    $33,$06,$F2,$11,$23,$0C,$23,$06
-EA42: F2 13 23 36 F0 40 0B C0  FCB    $F2,$13,$23,$36,$F0,$40,$0B,$C0
-EA4A: 02 75 06 85 06 75 06 C0  FCB    $02,$75,$06,$85,$06,$75,$06,$C0
-EA52: 10 75 06 A5 06 34 06 54  FCB    $10,$75,$06,$A5,$06,$34,$06,$54
-EA5A: 06 74 06 A4 06 F2 11 B4  FCB    $06,$74,$06,$A4,$06,$F2,$11,$B4
-EA62: 0C 94 06 F2 13 B4 36 F0  FCB    $0C,$94,$06,$F2,$13,$B4,$36,$F0
-EA6A: 40 0B C0 2A 75 06 A5 06  FCB    $40,$0B,$C0,$2A,$75,$06,$A5,$06
-EA72: 34 06 54 06 74 06 F2 11  FCB    $34,$06,$54,$06,$74,$06,$F2,$11
-EA7A: 74 0C 64 06 F2 13 74 36  FCB    $74,$0C,$64,$06,$F2,$13,$74,$36
-EA82: F0 40 05 C0 30 75 06 A5  FCB    $F0,$40,$05,$C0,$30,$75,$06,$A5
-EA8A: 06 34 06 54 06 F1 20 F2  FCB    $06,$34,$06,$54,$06,$F1,$20,$F2
-EA92: 11 24 0C 24 06 F2 13 24  FCB    $11,$24,$0C,$24,$06,$F2,$13,$24
-EA9A: 36 F0 20 08 73 04 A4 02  FCB    $36,$F0,$20,$08,$73,$04,$A4,$02
-EAA2: F2 13 73 0A F2 08 73 02  FCB    $F2,$13,$73,$0A,$F2,$08,$73,$02
-EAAA: 53 02 13 02 53 02 73 04  FCB    $53,$02,$13,$02,$53,$02,$73,$04
-EAB2: A4 02 F2 13 73 0C F2 08  FCB    $A4,$02,$F2,$13,$73,$0C,$F2,$08
+                                             ; G4:6 C5:6 D5:6 E5:6
+E9F2: F2 11                    FCB    $F2,$11 ; envelope 17
+E9F4: B3 0C 93 06              FCB    $B3,$0C,$93,$06 ; G#5:12 F#5:6
+E9F8: F2 13                    FCB    $F2,$13 ; envelope 19
+E9FA: B3 36                    FCB    $B3,$36 ; G#5:54
+E9FC: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E49A hdr_challenge_tune
+challenge_tune_v1:
+E9FD: 00 09                    FCB    $00,$09 ; waveform 0, envelope 9
+E9FF: 75 06 85 06 75 06 C0 06  FCB    $75,$06,$85,$06,$75,$06,$C0,$06
+                                             ; E3:6 F3:6 E3:6 -:6
+EA07: 75 06 A5 06 34 06 54 06  FCB    $75,$06,$A5,$06,$34,$06,$54,$06
+                                             ; E3:6 G3:6 C4:6 D4:6
+EA0F: 74 06 A4 06 33 06 53 06  FCB    $74,$06,$A4,$06,$33,$06,$53,$06
+                                             ; E4:6 G4:6 C5:6 D5:6
+EA17: F2 11                    FCB    $F2,$11 ; envelope 17
+EA19: 73 0C 63 06              FCB    $73,$0C,$63,$06 ; E5:12 D#5:6
+EA1D: F2 13                    FCB    $F2,$13 ; envelope 19
+EA1F: 73 36                    FCB    $73,$36 ; E5:54
+EA21: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E49D hdr_challenge_tune
+challenge_tune_v2:
+EA22: 40 1D                    FCB    $40,$1D ; waveform 4, envelope 29
+EA24: C0 02 A5 06 04 06 A5 06  FCB    $C0,$02,$A5,$06,$04,$06,$A5,$06
+                                             ; -:2 G3:6 A3:6 G3:6
+EA2C: C0 0A 75 06 A5 06 34 06  FCB    $C0,$0A,$75,$06,$A5,$06,$34,$06
+                                             ; -:10 E3:6 G3:6 C4:6
+EA34: 54 06 74 06 A4 06 33 06  FCB    $54,$06,$74,$06,$A4,$06,$33,$06
+                                             ; D4:6 E4:6 G4:6 C5:6
+EA3C: F2 11                    FCB    $F2,$11 ; envelope 17
+EA3E: 23 0C 23 06              FCB    $23,$0C,$23,$06 ; B4:12 B4:6
+EA42: F2 13                    FCB    $F2,$13 ; envelope 19
+EA44: 23 36                    FCB    $23,$36 ; B4:54
+EA46: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E4A0 hdr_challenge_tune
+challenge_tune_v3:
+EA47: 40 0B                    FCB    $40,$0B ; waveform 4, envelope 11
+EA49: C0 02 75 06 85 06 75 06  FCB    $C0,$02,$75,$06,$85,$06,$75,$06
+                                             ; -:2 E3:6 F3:6 E3:6
+EA51: C0 10 75 06 A5 06 34 06  FCB    $C0,$10,$75,$06,$A5,$06,$34,$06
+                                             ; -:16 E3:6 G3:6 C4:6
+EA59: 54 06 74 06 A4 06        FCB    $54,$06,$74,$06,$A4,$06 ; D4:6 E4:6 G4:6
+EA5F: F2 11                    FCB    $F2,$11 ; envelope 17
+EA61: B4 0C 94 06              FCB    $B4,$0C,$94,$06 ; G#4:12 F#4:6
+EA65: F2 13                    FCB    $F2,$13 ; envelope 19
+EA67: B4 36                    FCB    $B4,$36 ; G#4:54
+EA69: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E4A3 hdr_challenge_tune
+challenge_tune_v4:
+EA6A: 40 0B                    FCB    $40,$0B ; waveform 4, envelope 11
+EA6C: C0 2A 75 06 A5 06 34 06  FCB    $C0,$2A,$75,$06,$A5,$06,$34,$06
+                                             ; -:42 E3:6 G3:6 C4:6
+EA74: 54 06 74 06              FCB    $54,$06,$74,$06 ; D4:6 E4:6
+EA78: F2 11                    FCB    $F2,$11 ; envelope 17
+EA7A: 74 0C 64 06              FCB    $74,$0C,$64,$06 ; E4:12 D#4:6
+EA7E: F2 13                    FCB    $F2,$13 ; envelope 19
+EA80: 74 36                    FCB    $74,$36 ; E4:54
+EA82: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E4A6 hdr_challenge_tune
+challenge_tune_v5:
+EA83: 40 05                    FCB    $40,$05 ; waveform 4, envelope 5
+EA85: C0 30 75 06 A5 06 34 06  FCB    $C0,$30,$75,$06,$A5,$06,$34,$06
+                                             ; -:48 E3:6 G3:6 C4:6
+EA8D: 54 06                    FCB    $54,$06 ; D4:6
+EA8F: F1 20                    FCB    $F1,$20 ; waveform 2
+EA91: F2 11                    FCB    $F2,$11 ; envelope 17
+EA93: 24 0C 24 06              FCB    $24,$0C,$24,$06 ; B3:12 B3:6
+EA97: F2 13                    FCB    $F2,$13 ; envelope 19
+EA99: 24 36                    FCB    $24,$36 ; B3:54
+EA9B: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E4AA hdr_entry_tune_1st
+entry_tune_1st_v0:
+EA9C: 20 08                    FCB    $20,$08 ; waveform 2, envelope 8
+
+; Referenced from: $ED9A entry_tune_1st_v1
+lEA9E:
+EA9E: 73 04 A4 02              FCB    $73,$04,$A4,$02 ; E5:4 G4:2
+EAA2: F2 13                    FCB    $F2,$13 ; envelope 19
+EAA4: 73 0A                    FCB    $73,$0A ; E5:10
+EAA6: F2 08                    FCB    $F2,$08 ; envelope 8
+EAA8: 73 02 53 02 13 02 53 02  FCB    $73,$02,$53,$02,$13,$02,$53,$02
+                                             ; E5:2 D5:2 A#4:2 D5:2
+EAB0: 73 04 A4 02              FCB    $73,$04,$A4,$02 ; E5:4 G4:2
+EAB4: F2 13                    FCB    $F2,$13 ; envelope 19
+EAB6: 73 0C                    FCB    $73,$0C ; E5:12
+EAB8: F2 08                    FCB    $F2,$08 ; envelope 8
 EABA: 93 02 A3 02 02 02 22 04  FCB    $93,$02,$A3,$02,$02,$02,$22,$04
-EAC2: 53 02 F2 13 22 0A F2 08  FCB    $53,$02,$F2,$13,$22,$0A,$F2,$08
+                                             ; F#5:2 G5:2 A5:2 B5:4
+EAC2: 53 02                    FCB    $53,$02 ; D5:2
+EAC4: F2 13                    FCB    $F2,$13 ; envelope 19
+EAC6: 22 0A                    FCB    $22,$0A ; B5:10
+EAC8: F2 08                    FCB    $F2,$08 ; envelope 8
 EACA: 22 02 02 02 83 02 02 02  FCB    $22,$02,$02,$02,$83,$02,$02,$02
-EAD2: 22 04 53 02 F2 13 22 12  FCB    $22,$04,$53,$02,$F2,$13,$22,$12
-EADA: F2 08 52 04 02 02 52 0C  FCB    $F2,$08,$52,$04,$02,$02,$52,$0C
-EAE2: 32 02 22 02 02 02 A3 04  FCB    $32,$02,$22,$02,$02,$02,$A3,$04
-EAEA: 73 02 F2 13 A3 12 F2 08  FCB    $73,$02,$F2,$13,$A3,$12,$F2,$08
-EAF2: A3 04 63 02 F2 13 A3 12  FCB    $A3,$04,$63,$02,$F2,$13,$A3,$12
-EAFA: F2 12 F1 40 C0 02 93 02  FCB    $F2,$12,$F1,$40,$C0,$02,$93,$02
-EB02: 93 02 C0 02 73 02 73 02  FCB    $93,$02,$C0,$02,$73,$02,$73,$02
-EB0A: 53 02 73 02 93 02 53 02  FCB    $53,$02,$73,$02,$93,$02,$53,$02
-EB12: 73 02 83 02 F0 10 0E 33  FCB    $73,$02,$83,$02,$F0,$10,$0E,$33
-EB1A: 04 74 02 F2 14 33 0A F2  FCB    $04,$74,$02,$F2,$14,$33,$0A,$F2
-EB22: 0E 33 02 84 02 84 01 84  FCB    $0E,$33,$02,$84,$02,$84,$01,$84
-EB2A: 01 84 01 84 01 33 04 74  FCB    $01,$84,$01,$84,$01,$33,$04,$74
-EB32: 02 F2 14 33 0C F2 0E 63  FCB    $02,$F2,$14,$33,$0C,$F2,$0E,$63
-EB3A: 02 63 01 63 01 63 01 63  FCB    $02,$63,$01,$63,$01,$63,$01,$63
-EB42: 01 53 04 23 02 F2 14 53  FCB    $01,$53,$04,$23,$02,$F2,$14,$53
-EB4A: 0A F2 0E 53 02 33 02 33  FCB    $0A,$F2,$0E,$53,$02,$33,$02,$33
-EB52: 01 33 01 33 01 33 01 53  FCB    $01,$33,$01,$33,$01,$33,$01,$53
-EB5A: 04 23 02 F2 14 53 12 F2  FCB    $04,$23,$02,$F2,$14,$53,$12,$F2
-EB62: 0E 83 04 83 02 83 0C 73  FCB    $0E,$83,$04,$83,$02,$83,$0C,$73
-EB6A: 02 53 02 33 02 73 04 23  FCB    $02,$53,$02,$33,$02,$73,$04,$23
-EB72: 02 F2 14 73 12 F2 13 63  FCB    $02,$F2,$14,$73,$12,$F2,$13,$63
-EB7A: 04 13 02 F2 14 63 12 F1  FCB    $04,$13,$02,$F2,$14,$63,$12,$F1
-EB82: 40 F2 12 C0 02 53 02 53  FCB    $40,$F2,$12,$C0,$02,$53,$02,$53
-EB8A: 02 C0 02 43 02 43 02 F2  FCB    $02,$C0,$02,$43,$02,$43,$02,$F2
-EB92: 03 03 02 43 02 53 02 03  FCB    $03,$03,$02,$43,$02,$53,$02,$03
-EB9A: 02 33 02 53 02 F0 40 10  FCB    $02,$33,$02,$53,$02,$F0,$40,$10
+                                             ; B5:2 A5:2 F5:2 A5:2
+EAD2: 22 04 53 02              FCB    $22,$04,$53,$02 ; B5:4 D5:2
+EAD6: F2 13                    FCB    $F2,$13 ; envelope 19
+EAD8: 22 12                    FCB    $22,$12 ; B5:18
+EADA: F2 08                    FCB    $F2,$08 ; envelope 8
+EADC: 52 04 02 02 52 0C 32 02  FCB    $52,$04,$02,$02,$52,$0C,$32,$02
+                                             ; D6:4 A5:2 D6:12 C6:2
+EAE4: 22 02 02 02 A3 04 73 02  FCB    $22,$02,$02,$02,$A3,$04,$73,$02
+                                             ; B5:2 A5:2 G5:4 E5:2
+EAEC: F2 13                    FCB    $F2,$13 ; envelope 19
+EAEE: A3 12                    FCB    $A3,$12 ; G5:18
+EAF0: F2 08                    FCB    $F2,$08 ; envelope 8
+EAF2: A3 04 63 02              FCB    $A3,$04,$63,$02 ; G5:4 D#5:2
+EAF6: F2 13                    FCB    $F2,$13 ; envelope 19
+EAF8: A3 12                    FCB    $A3,$12 ; G5:18
+EAFA: F2 12                    FCB    $F2,$12 ; envelope 18
+EAFC: F1 40                    FCB    $F1,$40 ; waveform 4
+EAFE: C0 02 93 02 93 02 C0 02  FCB    $C0,$02,$93,$02,$93,$02,$C0,$02
+                                             ; -:2 F#5:2 F#5:2 -:2
+EB06: 73 02 73 02 53 02 73 02  FCB    $73,$02,$73,$02,$53,$02,$73,$02
+                                             ; E5:2 E5:2 D5:2 E5:2
+EB0E: 93 02 53 02 73 02 83 02  FCB    $93,$02,$53,$02,$73,$02,$83,$02
+                                             ; F#5:2 D5:2 E5:2 F5:2
+EB16: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E4B0 hdr_entry_tune_1st, $E4BC hdr_entry_tune_1st
+entry_tune_1st_v2:
+EB17: 10 0E                    FCB    $10,$0E ; waveform 1, envelope 14
+EB19: 33 04 74 02              FCB    $33,$04,$74,$02 ; C5:4 E4:2
+EB1D: F2 14                    FCB    $F2,$14 ; envelope 20
+EB1F: 33 0A                    FCB    $33,$0A ; C5:10
+EB21: F2 0E                    FCB    $F2,$0E ; envelope 14
+EB23: 33 02 84 02 84 01 84 01  FCB    $33,$02,$84,$02,$84,$01,$84,$01
+                                             ; C5:2 F4:2 F4:1 F4:1
+EB2B: 84 01 84 01 33 04 74 02  FCB    $84,$01,$84,$01,$33,$04,$74,$02
+                                             ; F4:1 F4:1 C5:4 E4:2
+EB33: F2 14                    FCB    $F2,$14 ; envelope 20
+EB35: 33 0C                    FCB    $33,$0C ; C5:12
+EB37: F2 0E                    FCB    $F2,$0E ; envelope 14
+EB39: 63 02 63 01 63 01 63 01  FCB    $63,$02,$63,$01,$63,$01,$63,$01
+                                             ; D#5:2 D#5:1 D#5:1 D#5:1
+EB41: 63 01 53 04 23 02        FCB    $63,$01,$53,$04,$23,$02 ; D#5:1 D5:4 B4:2
+EB47: F2 14                    FCB    $F2,$14 ; envelope 20
+EB49: 53 0A                    FCB    $53,$0A ; D5:10
+EB4B: F2 0E                    FCB    $F2,$0E ; envelope 14
+EB4D: 53 02 33 02 33 01 33 01  FCB    $53,$02,$33,$02,$33,$01,$33,$01
+                                             ; D5:2 C5:2 C5:1 C5:1
+EB55: 33 01 33 01 53 04 23 02  FCB    $33,$01,$33,$01,$53,$04,$23,$02
+                                             ; C5:1 C5:1 D5:4 B4:2
+EB5D: F2 14                    FCB    $F2,$14 ; envelope 20
+EB5F: 53 12                    FCB    $53,$12 ; D5:18
+EB61: F2 0E                    FCB    $F2,$0E ; envelope 14
+EB63: 83 04 83 02 83 0C 73 02  FCB    $83,$04,$83,$02,$83,$0C,$73,$02
+                                             ; F5:4 F5:2 F5:12 E5:2
+EB6B: 53 02 33 02 73 04 23 02  FCB    $53,$02,$33,$02,$73,$04,$23,$02
+                                             ; D5:2 C5:2 E5:4 B4:2
+EB73: F2 14                    FCB    $F2,$14 ; envelope 20
+EB75: 73 12                    FCB    $73,$12 ; E5:18
+EB77: F2 13                    FCB    $F2,$13 ; envelope 19
+EB79: 63 04 13 02              FCB    $63,$04,$13,$02 ; D#5:4 A#4:2
+EB7D: F2 14                    FCB    $F2,$14 ; envelope 20
+EB7F: 63 12                    FCB    $63,$12 ; D#5:18
+EB81: F1 40                    FCB    $F1,$40 ; waveform 4
+EB83: F2 12                    FCB    $F2,$12 ; envelope 18
+EB85: C0 02 53 02 53 02 C0 02  FCB    $C0,$02,$53,$02,$53,$02,$C0,$02
+                                             ; -:2 D5:2 D5:2 -:2
+EB8D: 43 02 43 02              FCB    $43,$02,$43,$02 ; C#5:2 C#5:2
+EB91: F2 03                    FCB    $F2,$03 ; envelope 3
+EB93: 03 02 43 02 53 02 03 02  FCB    $03,$02,$43,$02,$53,$02,$03,$02
+                                             ; A4:2 C#5:2 D5:2 A4:2
+EB9B: 33 02 53 02              FCB    $33,$02,$53,$02 ; C5:2 D5:2
+EB9F: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E4B3 hdr_entry_tune_1st, $E4B6 hdr_entry_tune_1st
+entry_tune_1st_v3:
+EBA0: 40 10                    FCB    $40,$10 ; waveform 4, envelope 16
 EBA2: 34 02 34 01 34 01 A5 01  FCB    $34,$02,$34,$01,$34,$01,$A5,$01
+                                             ; C4:2 C4:1 C4:1 G3:1
 EBAA: A5 01 34 02 A5 02 34 02  FCB    $A5,$01,$34,$02,$A5,$02,$34,$02
+                                             ; G3:1 C4:2 G3:2 C4:2
 EBB2: A5 02 34 02 A5 02 14 02  FCB    $A5,$02,$34,$02,$A5,$02,$14,$02
+                                             ; G3:2 C4:2 G3:2 A#3:2
 EBBA: 14 01 14 01 14 01 14 01  FCB    $14,$01,$14,$01,$14,$01,$14,$01
+                                             ; A#3:1 A#3:1 A#3:1 A#3:1
 EBC2: 34 02 34 01 34 01 A5 01  FCB    $34,$02,$34,$01,$34,$01,$A5,$01
+                                             ; C4:2 C4:1 C4:1 G3:1
 EBCA: A5 01 34 02 A5 02 34 02  FCB    $A5,$01,$34,$02,$A5,$02,$34,$02
+                                             ; G3:1 C4:2 G3:2 C4:2
 EBD2: A5 02 34 02 A5 02 24 02  FCB    $A5,$02,$34,$02,$A5,$02,$24,$02
+                                             ; G3:2 C4:2 G3:2 B3:2
 EBDA: 24 01 24 01 04 01 04 01  FCB    $24,$01,$24,$01,$04,$01,$04,$01
+                                             ; B3:1 B3:1 A3:1 A3:1
 EBE2: A5 02 A5 01 A5 01 54 01  FCB    $A5,$02,$A5,$01,$A5,$01,$54,$01
+                                             ; G3:2 G3:1 G3:1 D4:1
 EBEA: 54 01 A5 02 54 02 A5 02  FCB    $54,$01,$A5,$02,$54,$02,$A5,$02
+                                             ; D4:1 G3:2 D4:2 G3:2
 EBF2: 54 02 A5 02 54 02 85 02  FCB    $54,$02,$A5,$02,$54,$02,$85,$02
+                                             ; D4:2 G3:2 D4:2 F3:2
 EBFA: 85 01 85 01 85 01 85 01  FCB    $85,$01,$85,$01,$85,$01,$85,$01
+                                             ; F3:1 F3:1 F3:1 F3:1
 EC02: A5 02 A5 01 A5 01 54 01  FCB    $A5,$02,$A5,$01,$A5,$01,$54,$01
+                                             ; G3:2 G3:1 G3:1 D4:1
 EC0A: 54 01 A5 02 54 02 A5 02  FCB    $54,$01,$A5,$02,$54,$02,$A5,$02
+                                             ; D4:1 G3:2 D4:2 G3:2
 EC12: 54 02 A5 02 54 02 A5 02  FCB    $54,$02,$A5,$02,$54,$02,$A5,$02
+                                             ; D4:2 G3:2 D4:2 G3:2
 EC1A: A5 01 A5 01 24 01 24 01  FCB    $A5,$01,$A5,$01,$24,$01,$24,$01
+                                             ; G3:1 G3:1 B3:1 B3:1
 EC22: 54 02 54 01 54 01 04 01  FCB    $54,$02,$54,$01,$54,$01,$04,$01
-EC2A: 04 01 F2 00 54 02 84 02  FCB    $04,$01,$F2,$00,$54,$02,$84,$02
-EC32: A4 02 03 02 84 02 04 02  FCB    $A4,$02,$03,$02,$84,$02,$04,$02
-EC3A: 54 06 F2 10 74 02 74 01  FCB    $54,$06,$F2,$10,$74,$02,$74,$01
-EC42: 74 01 24 01 24 01 74 02  FCB    $74,$01,$24,$01,$24,$01,$74,$02
-EC4A: 24 02 74 02 24 02 74 02  FCB    $24,$02,$74,$02,$24,$02,$74,$02
-EC52: 24 02 74 02 24 01 24 01  FCB    $24,$02,$74,$02,$24,$01,$24,$01
-EC5A: 74 01 74 01 64 02 64 01  FCB    $74,$01,$74,$01,$64,$02,$64,$01
-EC62: 64 01 14 01 14 01 64 02  FCB    $64,$01,$14,$01,$14,$01,$64,$02
-EC6A: 14 02 64 02 14 02 64 02  FCB    $14,$02,$64,$02,$14,$02,$64,$02
-EC72: 14 02 64 02 14 01 14 01  FCB    $14,$02,$64,$02,$14,$01,$14,$01
-EC7A: 64 01 64 01 54 02 54 01  FCB    $64,$01,$64,$01,$54,$02,$54,$01
-EC82: 54 01 04 01 04 01 44 02  FCB    $54,$01,$04,$01,$04,$01,$44,$02
-EC8A: 44 01 44 01 04 01 04 01  FCB    $44,$01,$44,$01,$04,$01,$04,$01
-EC92: 54 02 54 01 54 01 04 01  FCB    $54,$02,$54,$01,$54,$01,$04,$01
-EC9A: 04 01 A5 02 A5 01 A5 01  FCB    $04,$01,$A5,$02,$A5,$01,$A5,$01
-ECA2: 24 01 24 01 F0 40 11 74  FCB    $24,$01,$24,$01,$F0,$40,$11,$74
-ECAA: 02 74 01 74 01 34 01 34  FCB    $02,$74,$01,$74,$01,$34,$01,$34
-ECB2: 01 74 02 34 02 74 02 34  FCB    $01,$74,$02,$34,$02,$74,$02,$34
-ECBA: 02 74 02 34 02 54 02 54  FCB    $02,$74,$02,$34,$02,$54,$02,$54
-ECC2: 01 54 01 54 01 54 01 74  FCB    $01,$54,$01,$54,$01,$54,$01,$74
-ECCA: 02 74 01 74 01 34 01 34  FCB    $02,$74,$01,$74,$01,$34,$01,$34
-ECD2: 01 74 02 34 02 74 02 34  FCB    $01,$74,$02,$34,$02,$74,$02,$34
-ECDA: 02 74 02 34 02 94 02 94  FCB    $02,$74,$02,$34,$02,$94,$02,$94
-ECE2: 01 94 01 24 01 24 01 24  FCB    $01,$94,$01,$24,$01,$24,$01,$24
-ECEA: 02 24 01 24 01 A4 01 A4  FCB    $02,$24,$01,$24,$01,$A4,$01,$A4
-ECF2: 01 24 02 A4 02 24 02 A4  FCB    $01,$24,$02,$A4,$02,$24,$02,$A4
-ECFA: 02 24 02 A4 02 04 02 04  FCB    $02,$24,$02,$A4,$02,$04,$02,$04
-ED02: 01 04 01 04 01 04 01 24  FCB    $01,$04,$01,$04,$01,$04,$01,$24
-ED0A: 02 24 01 24 01 A4 01 A4  FCB    $02,$24,$01,$24,$01,$A4,$01,$A4
-ED12: 01 24 02 A4 02 24 02 A4  FCB    $01,$24,$02,$A4,$02,$24,$02,$A4
-ED1A: 02 24 02 A4 02 24 02 24  FCB    $02,$24,$02,$A4,$02,$24,$02,$24
-ED22: 01 24 01 54 01 54 01 84  FCB    $01,$24,$01,$54,$01,$54,$01,$84
-ED2A: 02 84 01 84 01 54 01 54  FCB    $02,$84,$01,$84,$01,$54,$01,$54
-ED32: 01 03 04 C0 02 03 04 03  FCB    $01,$03,$04,$C0,$02,$03,$04,$03
-ED3A: 02 84 06 A4 02 A4 01 A4  FCB    $02,$84,$06,$A4,$02,$A4,$01,$A4
-ED42: 01 74 01 74 01 A4 02 74  FCB    $01,$74,$01,$74,$01,$A4,$02,$74
-ED4A: 02 A4 02 74 02 A4 02 74  FCB    $02,$A4,$02,$74,$02,$A4,$02,$74
-ED52: 02 A4 02 74 01 74 01 A4  FCB    $02,$A4,$02,$74,$01,$74,$01,$A4
-ED5A: 01 A4 01 A4 02 A4 01 A4  FCB    $01,$A4,$01,$A4,$02,$A4,$01,$A4
-ED62: 01 64 01 64 01 A4 02 64  FCB    $01,$64,$01,$64,$01,$A4,$02,$64
-ED6A: 02 A4 02 64 02 A4 02 64  FCB    $02,$A4,$02,$64,$02,$A4,$02,$64
-ED72: 02 A4 02 64 01 64 01 A4  FCB    $02,$A4,$02,$64,$01,$64,$01,$A4
-ED7A: 01 A4 01 F2 12 C0 02 03  FCB    $01,$A4,$01,$F2,$12,$C0,$02,$03
-ED82: 02 03 02 C0 02 03 02 03  FCB    $02,$03,$02,$C0,$02,$03,$02,$03
-ED8A: 02 53 02 73 02 93 02 53  FCB    $02,$53,$02,$73,$02,$93,$02,$53
-ED92: 02 73 02 83 02 F0 30 08  FCB    $02,$73,$02,$83,$02,$F0,$30,$08
-ED9A: F7 EA 9E F0 20 0D 73 0F  FCB    $F7,$EA,$9E,$F0,$20,$0D,$73,$0F
-EDA2: A3 0F 33 14 A4 0F 03 0F  FCB    $A3,$0F,$33,$14,$A4,$0F,$03,$0F
-EDAA: 73 50 83 0F 02 0F 53 14  FCB    $73,$50,$83,$0F,$02,$0F,$53,$14
-EDB2: 03 0F 53 0F 83 28 63 14  FCB    $03,$0F,$53,$0F,$83,$28,$63,$14
-EDBA: 53 14 F3 02 ED A0 F2 10  FCB    $53,$14,$F3,$02,$ED,$A0,$F2,$10
-EDC2: A3 05 A3 05 F2 00 93 02  FCB    $A3,$05,$A3,$05,$F2,$00,$93,$02
-EDCA: 83 02 F2 02 73 02 F2 03  FCB    $83,$02,$F2,$02,$73,$02,$F2,$03
-EDD2: 63 02 F2 04 53 02 C0 1E  FCB    $63,$02,$F2,$04,$53,$02,$C0,$1E
-EDDA: F2 0D 12 0F B3 0F A3 28  FCB    $F2,$0D,$12,$0F,$B3,$0F,$A3,$28
-EDE2: 13 14 33 14 A3 28 B3 14  FCB    $13,$14,$33,$14,$A3,$28,$B3,$14
-EDEA: 12 14 32 28 C0 0A 22 0A  FCB    $12,$14,$32,$28,$C0,$0A,$22,$0A
-EDF2: C0 05 A3 0F F0 20 0E 33  FCB    $C0,$05,$A3,$0F,$F0,$20,$0E,$33
-EDFA: 0F 73 0F 74 14 74 14 74  FCB    $0F,$73,$0F,$74,$14,$74,$14,$74
-EE02: 0A A4 50 03 0F 53 0F 84  FCB    $0A,$A4,$50,$03,$0F,$53,$0F,$84
-EE0A: 14 54 14 84 0A F5 02 EE  FCB    $14,$54,$14,$84,$0A,$F5,$02,$EE
-EE12: 1C B4 28 84 14 23 14 F7  FCB    $1C,$B4,$28,$84,$14,$23,$14,$F7
-EE1A: ED F9 B4 28 84 14 B4 14  FCB    $ED,$F9,$B4,$28,$84,$14,$B4,$14
-EE22: F2 10 13 05 13 05 F2 00  FCB    $F2,$10,$13,$05,$13,$05,$F2,$00
-EE2A: 03 02 B4 02 F2 02 A4 02  FCB    $03,$02,$B4,$02,$F2,$02,$A4,$02
-EE32: F2 03 94 02 F2 04 84 02  FCB    $F2,$03,$94,$02,$F2,$04,$84,$02
-EE3A: C0 1E F2 0E A3 0F 83 0F  FCB    $C0,$1E,$F2,$0E,$A3,$0F,$83,$0F
-EE42: 63 28 A4 14 A4 14 63 28  FCB    $63,$28,$A4,$14,$A4,$14,$63,$28
-EE4A: 63 14 63 14 53 28 C0 0A  FCB    $63,$14,$63,$14,$53,$28,$C0,$0A
-EE52: 53 0A C0 05 23 0F F0 00  FCB    $53,$0A,$C0,$05,$23,$0F,$F0,$00
-EE5A: 09 35 0F 35 05 35 0F 35  FCB    $09,$35,$0F,$35,$05,$35,$0F,$35
-EE62: 05 A5 0F A5 05 A5 0F A5  FCB    $05,$A5,$0F,$A5,$05,$A5,$0F,$A5
-EE6A: 05 75 0F 75 05 45 0F 45  FCB    $05,$75,$0F,$75,$05,$45,$0F,$45
-EE72: 05 05 0F 05 05 75 0F 75  FCB    $05,$05,$0F,$05,$05,$75,$0F,$75
-EE7A: 05 55 0F 55 05 55 0F 55  FCB    $05,$55,$0F,$55,$05,$55,$0F,$55
-EE82: 05 04 0F 04 05 04 0F 04  FCB    $05,$04,$0F,$04,$05,$04,$0F,$04
-EE8A: 05 F5 02 EE A2 B5 0F B5  FCB    $05,$F5,$02,$EE,$A2,$B5,$0F,$B5
-EE92: 05 85 0F 85 05 55 0F 55  FCB    $05,$85,$0F,$85,$05,$55,$0F,$55
-EE9A: 05 25 0F 25 05 F7 EE 5B  FCB    $05,$25,$0F,$25,$05,$F7,$EE,$5B
+                                             ; D4:2 D4:1 D4:1 A3:1
+EC2A: 04 01                    FCB    $04,$01 ; A3:1
+EC2C: F2 00                    FCB    $F2,$00 ; envelope 0
+EC2E: 54 02 84 02 A4 02 03 02  FCB    $54,$02,$84,$02,$A4,$02,$03,$02
+                                             ; D4:2 F4:2 G4:2 A4:2
+EC36: 84 02 04 02 54 06        FCB    $84,$02,$04,$02,$54,$06 ; F4:2 A3:2 D4:6
+EC3C: F2 10                    FCB    $F2,$10 ; envelope 16
+EC3E: 74 02 74 01 74 01 24 01  FCB    $74,$02,$74,$01,$74,$01,$24,$01
+                                             ; E4:2 E4:1 E4:1 B3:1
+EC46: 24 01 74 02 24 02 74 02  FCB    $24,$01,$74,$02,$24,$02,$74,$02
+                                             ; B3:1 E4:2 B3:2 E4:2
+EC4E: 24 02 74 02 24 02 74 02  FCB    $24,$02,$74,$02,$24,$02,$74,$02
+                                             ; B3:2 E4:2 B3:2 E4:2
+EC56: 24 01 24 01 74 01 74 01  FCB    $24,$01,$24,$01,$74,$01,$74,$01
+                                             ; B3:1 B3:1 E4:1 E4:1
+EC5E: 64 02 64 01 64 01 14 01  FCB    $64,$02,$64,$01,$64,$01,$14,$01
+                                             ; D#4:2 D#4:1 D#4:1 A#3:1
+EC66: 14 01 64 02 14 02 64 02  FCB    $14,$01,$64,$02,$14,$02,$64,$02
+                                             ; A#3:1 D#4:2 A#3:2 D#4:2
+EC6E: 14 02 64 02 14 02 64 02  FCB    $14,$02,$64,$02,$14,$02,$64,$02
+                                             ; A#3:2 D#4:2 A#3:2 D#4:2
+EC76: 14 01 14 01 64 01 64 01  FCB    $14,$01,$14,$01,$64,$01,$64,$01
+                                             ; A#3:1 A#3:1 D#4:1 D#4:1
+EC7E: 54 02 54 01 54 01 04 01  FCB    $54,$02,$54,$01,$54,$01,$04,$01
+                                             ; D4:2 D4:1 D4:1 A3:1
+EC86: 04 01 44 02 44 01 44 01  FCB    $04,$01,$44,$02,$44,$01,$44,$01
+                                             ; A3:1 C#4:2 C#4:1 C#4:1
+EC8E: 04 01 04 01 54 02 54 01  FCB    $04,$01,$04,$01,$54,$02,$54,$01
+                                             ; A3:1 A3:1 D4:2 D4:1
+EC96: 54 01 04 01 04 01 A5 02  FCB    $54,$01,$04,$01,$04,$01,$A5,$02
+                                             ; D4:1 A3:1 A3:1 G3:2
+EC9E: A5 01 A5 01 24 01 24 01  FCB    $A5,$01,$A5,$01,$24,$01,$24,$01
+                                             ; G3:1 G3:1 B3:1 B3:1
+ECA6: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E4B9 hdr_entry_tune_1st
+entry_tune_1st_v5:
+ECA7: 40 11                    FCB    $40,$11 ; waveform 4, envelope 17
+ECA9: 74 02 74 01 74 01 34 01  FCB    $74,$02,$74,$01,$74,$01,$34,$01
+                                             ; E4:2 E4:1 E4:1 C4:1
+ECB1: 34 01 74 02 34 02 74 02  FCB    $34,$01,$74,$02,$34,$02,$74,$02
+                                             ; C4:1 E4:2 C4:2 E4:2
+ECB9: 34 02 74 02 34 02 54 02  FCB    $34,$02,$74,$02,$34,$02,$54,$02
+                                             ; C4:2 E4:2 C4:2 D4:2
+ECC1: 54 01 54 01 54 01 54 01  FCB    $54,$01,$54,$01,$54,$01,$54,$01
+                                             ; D4:1 D4:1 D4:1 D4:1
+ECC9: 74 02 74 01 74 01 34 01  FCB    $74,$02,$74,$01,$74,$01,$34,$01
+                                             ; E4:2 E4:1 E4:1 C4:1
+ECD1: 34 01 74 02 34 02 74 02  FCB    $34,$01,$74,$02,$34,$02,$74,$02
+                                             ; C4:1 E4:2 C4:2 E4:2
+ECD9: 34 02 74 02 34 02 94 02  FCB    $34,$02,$74,$02,$34,$02,$94,$02
+                                             ; C4:2 E4:2 C4:2 F#4:2
+ECE1: 94 01 94 01 24 01 24 01  FCB    $94,$01,$94,$01,$24,$01,$24,$01
+                                             ; F#4:1 F#4:1 B3:1 B3:1
+ECE9: 24 02 24 01 24 01 A4 01  FCB    $24,$02,$24,$01,$24,$01,$A4,$01
+                                             ; B3:2 B3:1 B3:1 G4:1
+ECF1: A4 01 24 02 A4 02 24 02  FCB    $A4,$01,$24,$02,$A4,$02,$24,$02
+                                             ; G4:1 B3:2 G4:2 B3:2
+ECF9: A4 02 24 02 A4 02 04 02  FCB    $A4,$02,$24,$02,$A4,$02,$04,$02
+                                             ; G4:2 B3:2 G4:2 A3:2
+ED01: 04 01 04 01 04 01 04 01  FCB    $04,$01,$04,$01,$04,$01,$04,$01
+                                             ; A3:1 A3:1 A3:1 A3:1
+ED09: 24 02 24 01 24 01 A4 01  FCB    $24,$02,$24,$01,$24,$01,$A4,$01
+                                             ; B3:2 B3:1 B3:1 G4:1
+ED11: A4 01 24 02 A4 02 24 02  FCB    $A4,$01,$24,$02,$A4,$02,$24,$02
+                                             ; G4:1 B3:2 G4:2 B3:2
+ED19: A4 02 24 02 A4 02 24 02  FCB    $A4,$02,$24,$02,$A4,$02,$24,$02
+                                             ; G4:2 B3:2 G4:2 B3:2
+ED21: 24 01 24 01 54 01 54 01  FCB    $24,$01,$24,$01,$54,$01,$54,$01
+                                             ; B3:1 B3:1 D4:1 D4:1
+ED29: 84 02 84 01 84 01 54 01  FCB    $84,$02,$84,$01,$84,$01,$54,$01
+                                             ; F4:2 F4:1 F4:1 D4:1
+ED31: 54 01 03 04 C0 02 03 04  FCB    $54,$01,$03,$04,$C0,$02,$03,$04
+                                             ; D4:1 A4:4 -:2 A4:4
+ED39: 03 02 84 06 A4 02 A4 01  FCB    $03,$02,$84,$06,$A4,$02,$A4,$01
+                                             ; A4:2 F4:6 G4:2 G4:1
+ED41: A4 01 74 01 74 01 A4 02  FCB    $A4,$01,$74,$01,$74,$01,$A4,$02
+                                             ; G4:1 E4:1 E4:1 G4:2
+ED49: 74 02 A4 02 74 02 A4 02  FCB    $74,$02,$A4,$02,$74,$02,$A4,$02
+                                             ; E4:2 G4:2 E4:2 G4:2
+ED51: 74 02 A4 02 74 01 74 01  FCB    $74,$02,$A4,$02,$74,$01,$74,$01
+                                             ; E4:2 G4:2 E4:1 E4:1
+ED59: A4 01 A4 01 A4 02 A4 01  FCB    $A4,$01,$A4,$01,$A4,$02,$A4,$01
+                                             ; G4:1 G4:1 G4:2 G4:1
+ED61: A4 01 64 01 64 01 A4 02  FCB    $A4,$01,$64,$01,$64,$01,$A4,$02
+                                             ; G4:1 D#4:1 D#4:1 G4:2
+ED69: 64 02 A4 02 64 02 A4 02  FCB    $64,$02,$A4,$02,$64,$02,$A4,$02
+                                             ; D#4:2 G4:2 D#4:2 G4:2
+ED71: 64 02 A4 02 64 01 64 01  FCB    $64,$02,$A4,$02,$64,$01,$64,$01
+                                             ; D#4:2 G4:2 D#4:1 D#4:1
+ED79: A4 01 A4 01              FCB    $A4,$01,$A4,$01 ; G4:1 G4:1
+ED7D: F2 12                    FCB    $F2,$12 ; envelope 18
+ED7F: C0 02 03 02 03 02 C0 02  FCB    $C0,$02,$03,$02,$03,$02,$C0,$02
+                                             ; -:2 A4:2 A4:2 -:2
+ED87: 03 02 03 02 53 02 73 02  FCB    $03,$02,$03,$02,$53,$02,$73,$02
+                                             ; A4:2 A4:2 D5:2 E5:2
+ED8F: 93 02 53 02 73 02 83 02  FCB    $93,$02,$53,$02,$73,$02,$83,$02
+                                             ; F#5:2 D5:2 E5:2 F5:2
+ED97: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E4AD hdr_entry_tune_1st
+entry_tune_1st_v1:
+ED98: 30 08                    FCB    $30,$08 ; waveform 3, envelope 8
+ED9A: F7 EA 9E                 FCB    $F7,$EA,$9E ; jump lEA9E
+ED9D: F0                       FCB    $F0    ; [unreached]
+
+; Referenced from: $E4C0 hdr_entry_tune, $E4CF hdr_entry_tune
+entry_tune_v0:
+ED9E: 20 0D                    FCB    $20,$0D ; waveform 2, envelope 13
+
+; Referenced from: $EDBC entry_tune_v0
+lEDA0:
+EDA0: 73 0F A3 0F 33 14 A4 0F  FCB    $73,$0F,$A3,$0F,$33,$14,$A4,$0F
+                                             ; E5:15 G5:15 C5:20 G4:15
+EDA8: 03 0F 73 50 83 0F 02 0F  FCB    $03,$0F,$73,$50,$83,$0F,$02,$0F
+                                             ; A4:15 E5:80 F5:15 A5:15
+EDB0: 53 14 03 0F 53 0F 83 28  FCB    $53,$14,$03,$0F,$53,$0F,$83,$28
+                                             ; D5:20 A4:15 D5:15 F5:40
+EDB8: 63 14 53 14              FCB    $63,$14,$53,$14 ; D#5:20 D5:20
+EDBC: F3 02 ED A0              FCB    $F3,$02,$ED,$A0 ; repeat from lEDA0: 2
+                                             ; passes (+C)
+EDC0: F2 10                    FCB    $F2,$10 ; envelope 16
+EDC2: A3 05 A3 05              FCB    $A3,$05,$A3,$05 ; G5:5 G5:5
+EDC6: F2 00                    FCB    $F2,$00 ; envelope 0
+EDC8: 93 02 83 02              FCB    $93,$02,$83,$02 ; F#5:2 F5:2
+EDCC: F2 02                    FCB    $F2,$02 ; envelope 2
+EDCE: 73 02                    FCB    $73,$02 ; E5:2
+EDD0: F2 03                    FCB    $F2,$03 ; envelope 3
+EDD2: 63 02                    FCB    $63,$02 ; D#5:2
+EDD4: F2 04                    FCB    $F2,$04 ; envelope 4
+EDD6: 53 02 C0 1E              FCB    $53,$02,$C0,$1E ; D5:2 -:30
+EDDA: F2 0D                    FCB    $F2,$0D ; envelope 13
+EDDC: 12 0F B3 0F A3 28 13 14  FCB    $12,$0F,$B3,$0F,$A3,$28,$13,$14
+                                             ; A#5:15 G#5:15 G5:40 A#4:20
+EDE4: 33 14 A3 28 B3 14 12 14  FCB    $33,$14,$A3,$28,$B3,$14,$12,$14
+                                             ; C5:20 G5:40 G#5:20 A#5:20
+EDEC: 32 28 C0 0A 22 0A C0 05  FCB    $32,$28,$C0,$0A,$22,$0A,$C0,$05
+                                             ; C6:40 -:10 B5:10 -:5
+EDF4: A3 0F                    FCB    $A3,$0F ; G5:15
+EDF6: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E4C3 hdr_entry_tune
+entry_tune_v1:
+EDF7: 20 0E                    FCB    $20,$0E ; waveform 2, envelope 14
+
+; Referenced from: $EE19 entry_tune_v1
+lEDF9:
+EDF9: 33 0F 73 0F 74 14 74 14  FCB    $33,$0F,$73,$0F,$74,$14,$74,$14
+                                             ; C5:15 E5:15 E4:20 E4:20
+EE01: 74 0A A4 50 03 0F 53 0F  FCB    $74,$0A,$A4,$50,$03,$0F,$53,$0F
+                                             ; E4:10 G4:80 A4:15 D5:15
+EE09: 84 14 54 14 84 0A        FCB    $84,$14,$54,$14,$84,$0A ; F4:20 D4:20
+                                             ; F4:10
+EE0F: F5 02 EE 1C              FCB    $F5,$02,$EE,$1C ; to lEE1C on pass 2 only
+                                             ; (+E)
+EE13: B4 28 84 14 23 14        FCB    $B4,$28,$84,$14,$23,$14 ; G#4:40 F4:20
+                                             ; B4:20
+EE19: F7 ED F9                 FCB    $F7,$ED,$F9 ; jump lEDF9
+
+; Referenced from: $EE0F entry_tune_v1
+lEE1C:
+EE1C: B4 28 84 14 B4 14        FCB    $B4,$28,$84,$14,$B4,$14 ; G#4:40 F4:20
+                                             ; G#4:20
+EE22: F2 10                    FCB    $F2,$10 ; envelope 16
+EE24: 13 05 13 05              FCB    $13,$05,$13,$05 ; A#4:5 A#4:5
+EE28: F2 00                    FCB    $F2,$00 ; envelope 0
+EE2A: 03 02 B4 02              FCB    $03,$02,$B4,$02 ; A4:2 G#4:2
+EE2E: F2 02                    FCB    $F2,$02 ; envelope 2
+EE30: A4 02                    FCB    $A4,$02 ; G4:2
+EE32: F2 03                    FCB    $F2,$03 ; envelope 3
+EE34: 94 02                    FCB    $94,$02 ; F#4:2
+EE36: F2 04                    FCB    $F2,$04 ; envelope 4
+EE38: 84 02 C0 1E              FCB    $84,$02,$C0,$1E ; F4:2 -:30
+EE3C: F2 0E                    FCB    $F2,$0E ; envelope 14
+EE3E: A3 0F 83 0F 63 28 A4 14  FCB    $A3,$0F,$83,$0F,$63,$28,$A4,$14
+                                             ; G5:15 F5:15 D#5:40 G4:20
+EE46: A4 14 63 28 63 14 63 14  FCB    $A4,$14,$63,$28,$63,$14,$63,$14
+                                             ; G4:20 D#5:40 D#5:20 D#5:20
+EE4E: 53 28 C0 0A 53 0A C0 05  FCB    $53,$28,$C0,$0A,$53,$0A,$C0,$05
+                                             ; D5:40 -:10 D5:10 -:5
+EE56: 23 0F                    FCB    $23,$0F ; B4:15
+EE58: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E4C6 hdr_entry_tune, $E4D2 hdr_entry_tune
+entry_tune_v2:
+EE59: 00 09                    FCB    $00,$09 ; waveform 0, envelope 9
+
+; Referenced from: $EE9F entry_tune_v2
+lEE5B:
+EE5B: 35 0F 35 05 35 0F 35 05  FCB    $35,$0F,$35,$05,$35,$0F,$35,$05
+                                             ; C3:15 C3:5 C3:15 C3:5
+EE63: A5 0F A5 05 A5 0F A5 05  FCB    $A5,$0F,$A5,$05,$A5,$0F,$A5,$05
+                                             ; G3:15 G3:5 G3:15 G3:5
+EE6B: 75 0F 75 05 45 0F 45 05  FCB    $75,$0F,$75,$05,$45,$0F,$45,$05
+                                             ; E3:15 E3:5 C#3:15 C#3:5
+EE73: 05 0F 05 05 75 0F 75 05  FCB    $05,$0F,$05,$05,$75,$0F,$75,$05
+                                             ; A2:15 A2:5 E3:15 E3:5
+EE7B: 55 0F 55 05 55 0F 55 05  FCB    $55,$0F,$55,$05,$55,$0F,$55,$05
+                                             ; D3:15 D3:5 D3:15 D3:5
+EE83: 04 0F 04 05 04 0F 04 05  FCB    $04,$0F,$04,$05,$04,$0F,$04,$05
+                                             ; A3:15 A3:5 A3:15 A3:5
+EE8B: F5 02 EE A2              FCB    $F5,$02,$EE,$A2 ; to lEEA2 on pass 2 only
+                                             ; (+E)
+EE8F: B5 0F B5 05 85 0F 85 05  FCB    $B5,$0F,$B5,$05,$85,$0F,$85,$05
+                                             ; G#3:15 G#3:5 F3:15 F3:5
+EE97: 55 0F 55 05 25 0F 25 05  FCB    $55,$0F,$55,$05,$25,$0F,$25,$05
+                                             ; D3:15 D3:5 B2:15 B2:5
+EE9F: F7 EE 5B                 FCB    $F7,$EE,$5B ; jump lEE5B
+
+; Referenced from: $EE8B entry_tune_v2
+lEEA2:
 EEA2: B5 05 25 0A 25 0A 25 0A  FCB    $B5,$05,$25,$0A,$25,$0A,$25,$0A
+                                             ; G#3:5 B2:10 B2:10 B2:10
 EEAA: 25 05 B5 05 25 0A 25 0A  FCB    $25,$05,$B5,$05,$25,$0A,$25,$0A
+                                             ; B2:5 G#3:5 B2:10 B2:10
 EEB2: 25 0A 25 05 65 0F 65 05  FCB    $25,$0A,$25,$05,$65,$0F,$65,$05
+                                             ; B2:10 B2:5 D#3:15 D#3:5
 EEBA: 14 0F 14 05 55 0F 55 05  FCB    $14,$0F,$14,$05,$55,$0F,$55,$05
+                                             ; A#3:15 A#3:5 D3:15 D3:5
 EEC2: 14 0F 14 05 35 0F 35 05  FCB    $14,$0F,$14,$05,$35,$0F,$35,$05
+                                             ; A#3:15 A#3:5 C3:15 C3:5
 EECA: A5 0F A5 05 15 0F 15 05  FCB    $A5,$0F,$A5,$05,$15,$0F,$15,$05
+                                             ; G3:15 G3:5 A#2:15 A#2:5
 EED2: A5 0F A5 05 B6 0F B6 05  FCB    $A5,$0F,$A5,$05,$B6,$0F,$B6,$05
+                                             ; G3:15 G3:5 G#2:15 G#2:5
 EEDA: A5 0F A5 05 A6 0F A6 05  FCB    $A5,$0F,$A5,$05,$A6,$0F,$A6,$05
+                                             ; G3:15 G3:5 G2:15 G2:5
 EEE2: 65 0F 65 05 85 05 35 0A  FCB    $65,$0F,$65,$05,$85,$05,$35,$0A
+                                             ; D#3:15 D#3:5 F3:5 C3:10
 EEEA: 35 0A 35 0A 35 05 C0 0A  FCB    $35,$0A,$35,$0A,$35,$05,$C0,$0A
-EEF2: A5 0A C0 05 A5 0F F0 40  FCB    $A5,$0A,$C0,$05,$A5,$0F,$F0,$40
-EEFA: 08 33 0A F2 10 33 05 33  FCB    $08,$33,$0A,$F2,$10,$33,$05,$33
-EF02: 05 33 05 33 05 33 05 33  FCB    $05,$33,$05,$33,$05,$33,$05,$33
-EF0A: 05 F2 08 33 0A F2 10 33  FCB    $05,$F2,$08,$33,$0A,$F2,$10,$33
-EF12: 05 33 05 33 05 33 05 33  FCB    $05,$33,$05,$33,$05,$33,$05,$33
-EF1A: 05 33 05 F2 08 43 14 43  FCB    $05,$33,$05,$F2,$08,$43,$14,$43
-EF22: 0F F2 10 03 05 C0 0A F2  FCB    $0F,$F2,$10,$03,$05,$C0,$0A,$F2
-EF2A: 08 73 0A C0 05 43 0F 53  FCB    $08,$73,$0A,$C0,$05,$43,$0F,$53
-EF32: 0A F2 10 53 05 53 05 53  FCB    $0A,$F2,$10,$53,$05,$53,$05,$53
-EF3A: 05 53 05 53 05 53 05 F2  FCB    $05,$53,$05,$53,$05,$53,$05,$F2
-EF42: 08 53 0A F2 10 53 05 53  FCB    $08,$53,$0A,$F2,$10,$53,$05,$53
-EF4A: 05 53 05 53 05 53 05 53  FCB    $05,$53,$05,$53,$05,$53,$05,$53
-EF52: 05 F5 02 EF 6E F2 08 23  FCB    $05,$F5,$02,$EF,$6E,$F2,$08,$23
-EF5A: 14 23 0F F2 10 23 05 C0  FCB    $14,$23,$0F,$F2,$10,$23,$05,$C0
-EF62: 0A F2 08 B4 0A C0 05 B4  FCB    $0A,$F2,$08,$B4,$0A,$C0,$05,$B4
-EF6A: 0F F7 EE FB F2 08 53 14  FCB    $0F,$F7,$EE,$FB,$F2,$08,$53,$14
-EF72: 53 0F F2 10 53 05 C0 0A  FCB    $53,$0F,$F2,$10,$53,$05,$C0,$0A
-EF7A: F2 08 23 0A C0 05 23 0F  FCB    $F2,$08,$23,$0A,$C0,$05,$23,$0F
-EF82: F2 09 63 14 63 0F 63 05  FCB    $F2,$09,$63,$14,$63,$0F,$63,$05
-EF8A: C0 0A A3 0F 83 0F 63 14  FCB    $C0,$0A,$A3,$0F,$83,$0F,$63,$14
-EF92: 63 0F 63 05 C0 0A 13 0A  FCB    $63,$0F,$63,$05,$C0,$0A,$13,$0A
-EF9A: C0 05 33 0F 33 14 33 0F  FCB    $C0,$05,$33,$0F,$33,$14,$33,$0F
-EFA2: 33 05 C0 0A B4 0A C0 05  FCB    $33,$05,$C0,$0A,$B4,$0A,$C0,$05
-EFAA: 13 0F 53 53 28 F0 40 08  FCB    $13,$0F,$53,$53,$28,$F0,$40,$08
-EFB2: 74 0A F2 10 74 05 74 05  FCB    $74,$0A,$F2,$10,$74,$05,$74,$05
-EFBA: 74 05 74 05 74 05 74 05  FCB    $74,$05,$74,$05,$74,$05,$74,$05
-EFC2: F2 08 74 0A F2 10 74 05  FCB    $F2,$08,$74,$0A,$F2,$10,$74,$05
-EFCA: 74 05 74 05 74 05 74 05  FCB    $74,$05,$74,$05,$74,$05,$74,$05
-EFD2: 74 05 F2 08 74 14 74 0F  FCB    $74,$05,$F2,$08,$74,$14,$74,$0F
-EFDA: F2 10 74 05 C0 0A F2 08  FCB    $F2,$10,$74,$05,$C0,$0A,$F2,$08
+                                             ; C3:10 C3:10 C3:5 -:10
+EEF2: A5 0A C0 05 A5 0F        FCB    $A5,$0A,$C0,$05,$A5,$0F ; G3:10 -:5 G3:15
+EEF8: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E4C9 hdr_entry_tune
+entry_tune_v3:
+EEF9: 40 08                    FCB    $40,$08 ; waveform 4, envelope 8
+
+; Referenced from: $EF6B entry_tune_v3
+lEEFB:
+EEFB: 33 0A                    FCB    $33,$0A ; C5:10
+EEFD: F2 10                    FCB    $F2,$10 ; envelope 16
+EEFF: 33 05 33 05 33 05 33 05  FCB    $33,$05,$33,$05,$33,$05,$33,$05
+                                             ; C5:5 C5:5 C5:5 C5:5
+EF07: 33 05 33 05              FCB    $33,$05,$33,$05 ; C5:5 C5:5
+EF0B: F2 08                    FCB    $F2,$08 ; envelope 8
+EF0D: 33 0A                    FCB    $33,$0A ; C5:10
+EF0F: F2 10                    FCB    $F2,$10 ; envelope 16
+EF11: 33 05 33 05 33 05 33 05  FCB    $33,$05,$33,$05,$33,$05,$33,$05
+                                             ; C5:5 C5:5 C5:5 C5:5
+EF19: 33 05 33 05              FCB    $33,$05,$33,$05 ; C5:5 C5:5
+EF1D: F2 08                    FCB    $F2,$08 ; envelope 8
+EF1F: 43 14 43 0F              FCB    $43,$14,$43,$0F ; C#5:20 C#5:15
+EF23: F2 10                    FCB    $F2,$10 ; envelope 16
+EF25: 03 05 C0 0A              FCB    $03,$05,$C0,$0A ; A4:5 -:10
+EF29: F2 08                    FCB    $F2,$08 ; envelope 8
+EF2B: 73 0A C0 05 43 0F 53 0A  FCB    $73,$0A,$C0,$05,$43,$0F,$53,$0A
+                                             ; E5:10 -:5 C#5:15 D5:10
+EF33: F2 10                    FCB    $F2,$10 ; envelope 16
+EF35: 53 05 53 05 53 05 53 05  FCB    $53,$05,$53,$05,$53,$05,$53,$05
+                                             ; D5:5 D5:5 D5:5 D5:5
+EF3D: 53 05 53 05              FCB    $53,$05,$53,$05 ; D5:5 D5:5
+EF41: F2 08                    FCB    $F2,$08 ; envelope 8
+EF43: 53 0A                    FCB    $53,$0A ; D5:10
+EF45: F2 10                    FCB    $F2,$10 ; envelope 16
+EF47: 53 05 53 05 53 05 53 05  FCB    $53,$05,$53,$05,$53,$05,$53,$05
+                                             ; D5:5 D5:5 D5:5 D5:5
+EF4F: 53 05 53 05              FCB    $53,$05,$53,$05 ; D5:5 D5:5
+EF53: F5 02 EF 6E              FCB    $F5,$02,$EF,$6E ; to lEF6E on pass 2 only
+                                             ; (+E)
+EF57: F2 08                    FCB    $F2,$08 ; envelope 8
+EF59: 23 14 23 0F              FCB    $23,$14,$23,$0F ; B4:20 B4:15
+EF5D: F2 10                    FCB    $F2,$10 ; envelope 16
+EF5F: 23 05 C0 0A              FCB    $23,$05,$C0,$0A ; B4:5 -:10
+EF63: F2 08                    FCB    $F2,$08 ; envelope 8
+EF65: B4 0A C0 05 B4 0F        FCB    $B4,$0A,$C0,$05,$B4,$0F ; G#4:10 -:5
+                                             ; G#4:15
+EF6B: F7 EE FB                 FCB    $F7,$EE,$FB ; jump lEEFB
+
+; Referenced from: $EF53 entry_tune_v3
+lEF6E:
+EF6E: F2 08                    FCB    $F2,$08 ; envelope 8
+EF70: 53 14 53 0F              FCB    $53,$14,$53,$0F ; D5:20 D5:15
+EF74: F2 10                    FCB    $F2,$10 ; envelope 16
+EF76: 53 05 C0 0A              FCB    $53,$05,$C0,$0A ; D5:5 -:10
+EF7A: F2 08                    FCB    $F2,$08 ; envelope 8
+EF7C: 23 0A C0 05 23 0F        FCB    $23,$0A,$C0,$05,$23,$0F ; B4:10 -:5 B4:15
+EF82: F2 09                    FCB    $F2,$09 ; envelope 9
+EF84: 63 14 63 0F 63 05 C0 0A  FCB    $63,$14,$63,$0F,$63,$05,$C0,$0A
+                                             ; D#5:20 D#5:15 D#5:5 -:10
+EF8C: A3 0F 83 0F 63 14 63 0F  FCB    $A3,$0F,$83,$0F,$63,$14,$63,$0F
+                                             ; G5:15 F5:15 D#5:20 D#5:15
+EF94: 63 05 C0 0A 13 0A C0 05  FCB    $63,$05,$C0,$0A,$13,$0A,$C0,$05
+                                             ; D#5:5 -:10 A#4:10 -:5
+EF9C: 33 0F 33 14 33 0F 33 05  FCB    $33,$0F,$33,$14,$33,$0F,$33,$05
+                                             ; C5:15 C5:20 C5:15 C5:5
+EFA4: C0 0A B4 0A C0 05 13 0F  FCB    $C0,$0A,$B4,$0A,$C0,$05,$13,$0F
+                                             ; -:10 G#4:10 -:5 A#4:15
+EFAC: 53 53 28 F0              FCB    $53,$53,$28,$F0 ; D5:83 B-1:240
+
+; Referenced from: $E4CC hdr_entry_tune
+entry_tune_v4:
+EFB0: 40 08                    FCB    $40,$08 ; waveform 4, envelope 8
+
+; Referenced from: $F022 entry_tune_v4
+lEFB2:
+EFB2: 74 0A                    FCB    $74,$0A ; E4:10
+EFB4: F2 10                    FCB    $F2,$10 ; envelope 16
+EFB6: 74 05 74 05 74 05 74 05  FCB    $74,$05,$74,$05,$74,$05,$74,$05
+                                             ; E4:5 E4:5 E4:5 E4:5
+EFBE: 74 05 74 05              FCB    $74,$05,$74,$05 ; E4:5 E4:5
+EFC2: F2 08                    FCB    $F2,$08 ; envelope 8
+EFC4: 74 0A                    FCB    $74,$0A ; E4:10
+EFC6: F2 10                    FCB    $F2,$10 ; envelope 16
+EFC8: 74 05 74 05 74 05 74 05  FCB    $74,$05,$74,$05,$74,$05,$74,$05
+                                             ; E4:5 E4:5 E4:5 E4:5
+EFD0: 74 05 74 05              FCB    $74,$05,$74,$05 ; E4:5 E4:5
+EFD4: F2 08                    FCB    $F2,$08 ; envelope 8
+EFD6: 74 14 74 0F              FCB    $74,$14,$74,$0F ; E4:20 E4:15
+EFDA: F2 10                    FCB    $F2,$10 ; envelope 16
+EFDC: 74 05 C0 0A              FCB    $74,$05,$C0,$0A ; E4:5 -:10
+EFE0: F2 08                    FCB    $F2,$08 ; envelope 8
 EFE2: 03 0A C0 05 74 0F 84 0A  FCB    $03,$0A,$C0,$05,$74,$0F,$84,$0A
-EFEA: F2 10 84 05 84 05 84 05  FCB    $F2,$10,$84,$05,$84,$05,$84,$05
-EFF2: 84 05 84 05 84 05 F2 08  FCB    $84,$05,$84,$05,$84,$05,$F2,$08
-EFFA: 84 0A F2 10 84 05 84 05  FCB    $84,$0A,$F2,$10,$84,$05,$84,$05
-F002: 84 05 84 05 84 05 84 05  FCB    $84,$05,$84,$05,$84,$05,$84,$05
-F00A: F5 02 F0 25 F2 08 54 14  FCB    $F5,$02,$F0,$25,$F2,$08,$54,$14
-F012: 54 0F F2 10 54 05 C0 0A  FCB    $54,$0F,$F2,$10,$54,$05,$C0,$0A
-F01A: F2 08 84 0A C0 05 A4 0F  FCB    $F2,$08,$84,$0A,$C0,$05,$A4,$0F
-F022: F7 EF B2 F2 08 84 14 84  FCB    $F7,$EF,$B2,$F2,$08,$84,$14,$84
-F02A: 0F F2 10 84 05 C0 0A F2  FCB    $0F,$F2,$10,$84,$05,$C0,$0A,$F2
-F032: 08 84 0A C0 05 84 0F F2  FCB    $08,$84,$0A,$C0,$05,$84,$0F,$F2
-F03A: 09 A4 14 A4 0F A4 05 C0  FCB    $09,$A4,$14,$A4,$0F,$A4,$05,$C0
-F042: 0A 13 0F B4 0F A4 14 A4  FCB    $0A,$13,$0F,$B4,$0F,$A4,$14,$A4
-F04A: 0F A4 05 C0 0A 64 0A C0  FCB    $0F,$A4,$05,$C0,$0A,$64,$0A,$C0
-F052: 05 64 0F B4 14 B4 0F B4  FCB    $05,$64,$0F,$B4,$14,$B4,$0F,$B4
-F05A: 05 C0 0A 64 0A C0 05 64  FCB    $05,$C0,$0A,$64,$0A,$C0,$05,$64
-F062: 0F B4 28 A4 28 F0 10 00  FCB    $0F,$B4,$28,$A4,$28,$F0,$10,$00
+                                             ; A4:10 -:5 E4:15 F4:10
+EFEA: F2 10                    FCB    $F2,$10 ; envelope 16
+EFEC: 84 05 84 05 84 05 84 05  FCB    $84,$05,$84,$05,$84,$05,$84,$05
+                                             ; F4:5 F4:5 F4:5 F4:5
+EFF4: 84 05 84 05              FCB    $84,$05,$84,$05 ; F4:5 F4:5
+EFF8: F2 08                    FCB    $F2,$08 ; envelope 8
+EFFA: 84 0A                    FCB    $84,$0A ; F4:10
+EFFC: F2 10                    FCB    $F2,$10 ; envelope 16
+EFFE: 84 05 84 05 84 05 84 05  FCB    $84,$05,$84,$05,$84,$05,$84,$05
+                                             ; F4:5 F4:5 F4:5 F4:5
+F006: 84 05 84 05              FCB    $84,$05,$84,$05 ; F4:5 F4:5
+F00A: F5 02 F0 25              FCB    $F5,$02,$F0,$25 ; to lF025 on pass 2 only
+                                             ; (+E)
+F00E: F2 08                    FCB    $F2,$08 ; envelope 8
+F010: 54 14 54 0F              FCB    $54,$14,$54,$0F ; D4:20 D4:15
+F014: F2 10                    FCB    $F2,$10 ; envelope 16
+F016: 54 05 C0 0A              FCB    $54,$05,$C0,$0A ; D4:5 -:10
+F01A: F2 08                    FCB    $F2,$08 ; envelope 8
+F01C: 84 0A C0 05 A4 0F        FCB    $84,$0A,$C0,$05,$A4,$0F ; F4:10 -:5 G4:15
+F022: F7 EF B2                 FCB    $F7,$EF,$B2 ; jump lEFB2
+
+; Referenced from: $F00A entry_tune_v4
+lF025:
+F025: F2 08                    FCB    $F2,$08 ; envelope 8
+F027: 84 14 84 0F              FCB    $84,$14,$84,$0F ; F4:20 F4:15
+F02B: F2 10                    FCB    $F2,$10 ; envelope 16
+F02D: 84 05 C0 0A              FCB    $84,$05,$C0,$0A ; F4:5 -:10
+F031: F2 08                    FCB    $F2,$08 ; envelope 8
+F033: 84 0A C0 05 84 0F        FCB    $84,$0A,$C0,$05,$84,$0F ; F4:10 -:5 F4:15
+F039: F2 09                    FCB    $F2,$09 ; envelope 9
+F03B: A4 14 A4 0F A4 05 C0 0A  FCB    $A4,$14,$A4,$0F,$A4,$05,$C0,$0A
+                                             ; G4:20 G4:15 G4:5 -:10
+F043: 13 0F B4 0F A4 14 A4 0F  FCB    $13,$0F,$B4,$0F,$A4,$14,$A4,$0F
+                                             ; A#4:15 G#4:15 G4:20 G4:15
+F04B: A4 05 C0 0A 64 0A C0 05  FCB    $A4,$05,$C0,$0A,$64,$0A,$C0,$05
+                                             ; G4:5 -:10 D#4:10 -:5
+F053: 64 0F B4 14 B4 0F B4 05  FCB    $64,$0F,$B4,$14,$B4,$0F,$B4,$05
+                                             ; D#4:15 G#4:20 G#4:15 G#4:5
+F05B: C0 0A 64 0A C0 05 64 0F  FCB    $C0,$0A,$64,$0A,$C0,$05,$64,$0F
+                                             ; -:10 D#4:10 -:5 D#4:15
+F063: B4 28 A4 28              FCB    $B4,$28,$A4,$28 ; G#4:40 G4:40
+F067: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E4D6 hdr_stage_tune
+stage_tune_v0:
+F068: 10 00                    FCB    $10,$00 ; waveform 1, envelope 0
 F06A: A5 03 34 03 54 03 74 03  FCB    $A5,$03,$34,$03,$54,$03,$74,$03
-F072: A4 04 33 06 53 08 F2 0F  FCB    $A4,$04,$33,$06,$53,$08,$F2,$0F
-F07A: A3 18 F0 10 01 75 03 A5  FCB    $A3,$18,$F0,$10,$01,$75,$03,$A5
-F082: 03 24 03 34 03 74 04 A4  FCB    $03,$24,$03,$34,$03,$74,$04,$A4
-F08A: 06 33 08 F2 0F 53 18 F0  FCB    $06,$33,$08,$F2,$0F,$53,$18,$F0
-F092: 10 02 C0 03 A5 03 34 03  FCB    $10,$02,$C0,$03,$A5,$03,$34,$03
-F09A: 54 03 74 03 A4 04 33 06  FCB    $54,$03,$74,$03,$A4,$04,$33,$06
-F0A2: 53 08 F2 0F 33 18 F0 40  FCB    $53,$08,$F2,$0F,$33,$18,$F0,$40
-F0AA: 03 C0 03 75 03 A5 03 24  FCB    $03,$C0,$03,$75,$03,$A5,$03,$24
-F0B2: 03 34 03 74 04 A4 06 33  FCB    $03,$34,$03,$74,$04,$A4,$06,$33
-F0BA: 08 F2 0F A4 18 F0 50 04  FCB    $08,$F2,$0F,$A4,$18,$F0,$50,$04
+                                             ; G3:3 C4:3 D4:3 E4:3
+F072: A4 04 33 06 53 08        FCB    $A4,$04,$33,$06,$53,$08 ; G4:4 C5:6 D5:8
+F078: F2 0F                    FCB    $F2,$0F ; envelope 15
+F07A: A3 18                    FCB    $A3,$18 ; G5:24
+F07C: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E4D9 hdr_stage_tune
+stage_tune_v1:
+F07D: 10 01                    FCB    $10,$01 ; waveform 1, envelope 1
+F07F: 75 03 A5 03 24 03 34 03  FCB    $75,$03,$A5,$03,$24,$03,$34,$03
+                                             ; E3:3 G3:3 B3:3 C4:3
+F087: 74 04 A4 06 33 08        FCB    $74,$04,$A4,$06,$33,$08 ; E4:4 G4:6 C5:8
+F08D: F2 0F                    FCB    $F2,$0F ; envelope 15
+F08F: 53 18                    FCB    $53,$18 ; D5:24
+F091: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E4DC hdr_stage_tune
+stage_tune_v2:
+F092: 10 02                    FCB    $10,$02 ; waveform 1, envelope 2
+F094: C0 03 A5 03 34 03 54 03  FCB    $C0,$03,$A5,$03,$34,$03,$54,$03
+                                             ; -:3 G3:3 C4:3 D4:3
+F09C: 74 03 A4 04 33 06 53 08  FCB    $74,$03,$A4,$04,$33,$06,$53,$08
+                                             ; E4:3 G4:4 C5:6 D5:8
+F0A4: F2 0F                    FCB    $F2,$0F ; envelope 15
+F0A6: 33 18                    FCB    $33,$18 ; C5:24
+F0A8: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E4DF hdr_stage_tune
+stage_tune_v3:
+F0A9: 40 03                    FCB    $40,$03 ; waveform 4, envelope 3
+F0AB: C0 03 75 03 A5 03 24 03  FCB    $C0,$03,$75,$03,$A5,$03,$24,$03
+                                             ; -:3 E3:3 G3:3 B3:3
+F0B3: 34 03 74 04 A4 06 33 08  FCB    $34,$03,$74,$04,$A4,$06,$33,$08
+                                             ; C4:3 E4:4 G4:6 C5:8
+F0BB: F2 0F                    FCB    $F2,$0F ; envelope 15
+F0BD: A4 18                    FCB    $A4,$18 ; G4:24
+F0BF: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E4E2 hdr_stage_tune
+stage_tune_v4:
+F0C0: 50 04                    FCB    $50,$04 ; waveform 5, envelope 4
 F0C2: C0 0C A5 03 34 03 54 03  FCB    $C0,$0C,$A5,$03,$34,$03,$54,$03
+                                             ; -:12 G3:3 C4:3 D4:3
 F0CA: 74 03 A4 03 33 03 53 03  FCB    $74,$03,$A4,$03,$33,$03,$53,$03
+                                             ; E4:3 G4:3 C5:3 D5:3
 F0D2: 73 03 A3 03 32 03 52 03  FCB    $73,$03,$A3,$03,$32,$03,$52,$03
-F0DA: 72 03 A2 0C F0 50 05 C0  FCB    $72,$03,$A2,$0C,$F0,$50,$05,$C0
-F0E2: 0C 75 03 A5 03 24 03 34  FCB    $0C,$75,$03,$A5,$03,$24,$03,$34
-F0EA: 03 74 03 A4 03 23 03 33  FCB    $03,$74,$03,$A4,$03,$23,$03,$33
-F0F2: 03 73 03 A3 03 22 03 32  FCB    $03,$73,$03,$A3,$03,$22,$03,$32
-F0FA: 03 72 0C F0 20 08 74 02  FCB    $03,$72,$0C,$F0,$20,$08,$74,$02
-F102: 84 01 A4 01 03 01 A4 02  FCB    $84,$01,$A4,$01,$03,$01,$A4,$02
-F10A: 74 01 84 01 A4 01 03 01  FCB    $74,$01,$84,$01,$A4,$01,$03,$01
-F112: A4 01 84 01 74 01 54 01  FCB    $A4,$01,$84,$01,$74,$01,$54,$01
-F11A: 34 02 54 01 74 01 84 01  FCB    $34,$02,$54,$01,$74,$01,$84,$01
-F122: 74 02 34 01 54 01 74 01  FCB    $74,$02,$34,$01,$54,$01,$74,$01
-F12A: 84 01 74 01 54 01 34 01  FCB    $84,$01,$74,$01,$54,$01,$34,$01
-F132: F6 02 F1 65 24 01 04 02  FCB    $F6,$02,$F1,$65,$24,$01,$04,$02
-F13A: 54 02 24 01 A5 01 04 02  FCB    $54,$02,$24,$01,$A5,$01,$04,$02
-F142: 54 02 24 01 A5 01 F2 1C  FCB    $54,$02,$24,$01,$A5,$01,$F2,$1C
+                                             ; E5:3 G5:3 C6:3 D6:3
+F0DA: 72 03 A2 0C              FCB    $72,$03,$A2,$0C ; E6:3 G6:12
+F0DE: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E4E5 hdr_stage_tune
+stage_tune_v5:
+F0DF: 50 05                    FCB    $50,$05 ; waveform 5, envelope 5
+F0E1: C0 0C 75 03 A5 03 24 03  FCB    $C0,$0C,$75,$03,$A5,$03,$24,$03
+                                             ; -:12 E3:3 G3:3 B3:3
+F0E9: 34 03 74 03 A4 03 23 03  FCB    $34,$03,$74,$03,$A4,$03,$23,$03
+                                             ; C4:3 E4:3 G4:3 B4:3
+F0F1: 33 03 73 03 A3 03 22 03  FCB    $33,$03,$73,$03,$A3,$03,$22,$03
+                                             ; C5:3 E5:3 G5:3 B5:3
+F0F9: 32 03 72 0C              FCB    $32,$03,$72,$0C ; C6:3 E6:12
+F0FD: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; No header points to this stream: it is never played.
+unused_F0FE:
+F0FE: 20 08                    FCB    $20,$08 ; waveform 2, envelope 8
+
+; Referenced from: $F162 unused_F0FE
+lF100:
+F100: 74 02 84 01 A4 01 03 01  FCB    $74,$02,$84,$01,$A4,$01,$03,$01
+                                             ; E4:2 F4:1 G4:1 A4:1
+F108: A4 02 74 01 84 01 A4 01  FCB    $A4,$02,$74,$01,$84,$01,$A4,$01
+                                             ; G4:2 E4:1 F4:1 G4:1
+F110: 03 01 A4 01 84 01 74 01  FCB    $03,$01,$A4,$01,$84,$01,$74,$01
+                                             ; A4:1 G4:1 F4:1 E4:1
+F118: 54 01 34 02 54 01 74 01  FCB    $54,$01,$34,$02,$54,$01,$74,$01
+                                             ; D4:1 C4:2 D4:1 E4:1
+F120: 84 01 74 02 34 01 54 01  FCB    $84,$01,$74,$02,$34,$01,$54,$01
+                                             ; F4:1 E4:2 C4:1 D4:1
+F128: 74 01 84 01 74 01 54 01  FCB    $74,$01,$84,$01,$74,$01,$54,$01
+                                             ; E4:1 F4:1 E4:1 D4:1
+F130: 34 01                    FCB    $34,$01 ; C4:1
+F132: F6 02 F1 65              FCB    $F6,$02,$F1,$65 ; to lF165 every 2 passes
+                                             ; (+F)
+F136: 24 01 04 02 54 02 24 01  FCB    $24,$01,$04,$02,$54,$02,$24,$01
+                                             ; B3:1 A3:2 D4:2 B3:1
+F13E: A5 01 04 02 54 02 24 01  FCB    $A5,$01,$04,$02,$54,$02,$24,$01
+                                             ; G3:1 A3:2 D4:2 B3:1
+F146: A5 01                    FCB    $A5,$01 ; G3:1
+F148: F2 1C                    FCB    $F2,$1C ; envelope 28
 F14A: C0 01 04 01 54 01 24 01  FCB    $C0,$01,$04,$01,$54,$01,$24,$01
-F152: A5 01 04 01 54 01 24 01  FCB    $A5,$01,$04,$01,$54,$01,$24,$01
-F15A: A5 01 F3 02 F1 56 F2 08  FCB    $A5,$01,$F3,$02,$F1,$56,$F2,$08
-F162: F7 F1 00 74 01 84 02 33  FCB    $F7,$F1,$00,$74,$01,$84,$02,$33
-F16A: 01 B4 01 53 01 83 01 73  FCB    $01,$B4,$01,$53,$01,$83,$01,$73
-F172: 03 53 01 33 01 23 01 F2  FCB    $03,$53,$01,$33,$01,$23,$01,$F2
-F17A: 10 33 01 33 01 33 01 33  FCB    $10,$33,$01,$33,$01,$33,$01,$33
-F182: 01 C0 02 33 01 C0 01 33  FCB    $01,$C0,$02,$33,$01,$C0,$01,$33
-F18A: 02 33 01 33 01 33 02 C0  FCB    $02,$33,$01,$33,$01,$33,$02,$C0
-F192: 02 F0 50 15 A5 03 A5 03  FCB    $02,$F0,$50,$15,$A5,$03,$A5,$03
-F19A: A5 03 A5 03 85 03 75 03  FCB    $A5,$03,$A5,$03,$85,$03,$75,$03
-F1A2: 75 03 75 03 75 03 55 03  FCB    $75,$03,$75,$03,$75,$03,$55,$03
-F1AA: F6 02 F1 BD 35 03 55 03  FCB    $F6,$02,$F1,$BD,$35,$03,$55,$03
-F1B2: F3 03 F1 AE 75 03 85 03  FCB    $F3,$03,$F1,$AE,$75,$03,$85,$03
-F1BA: F7 F1 96 F0 50 15 75 03  FCB    $F7,$F1,$96,$F0,$50,$15,$75,$03
-F1C2: 75 03 75 03 75 03 55 03  FCB    $75,$03,$75,$03,$75,$03,$55,$03
-F1CA: 35 03 35 03 35 03 35 03  FCB    $35,$03,$35,$03,$35,$03,$35,$03
-F1D2: 25 03 F6 02 F1 E7 05 03  FCB    $25,$03,$F6,$02,$F1,$E7,$05,$03
-F1DA: 25 03 F3 03 F1 D8 35 03  FCB    $25,$03,$F3,$03,$F1,$D8,$35,$03
-F1E2: 55 03 F7 F1 C0 F0 50 15  FCB    $55,$03,$F7,$F1,$C0,$F0,$50,$15
+                                             ; -:1 A3:1 D4:1 B3:1
+F152: A5 01 04 01              FCB    $A5,$01,$04,$01 ; G3:1 A3:1
+
+; Referenced from: $F15C unused_F0FE
+lF156:
+F156: 54 01 24 01 A5 01        FCB    $54,$01,$24,$01,$A5,$01 ; D4:1 B3:1 G3:1
+F15C: F3 02 F1 56              FCB    $F3,$02,$F1,$56 ; repeat from lF156: 2
+                                             ; passes (+C)
+F160: F2 08                    FCB    $F2,$08 ; envelope 8
+F162: F7 F1 00                 FCB    $F7,$F1,$00 ; jump lF100
+
+; Referenced from: $F132 unused_F0FE
+lF165:
+F165: 74 01 84 02 33 01 B4 01  FCB    $74,$01,$84,$02,$33,$01,$B4,$01
+                                             ; E4:1 F4:2 C5:1 G#4:1
+F16D: 53 01 83 01 73 03 53 01  FCB    $53,$01,$83,$01,$73,$03,$53,$01
+                                             ; D5:1 F5:1 E5:3 D5:1
+F175: 33 01 23 01              FCB    $33,$01,$23,$01 ; C5:1 B4:1
+F179: F2 10                    FCB    $F2,$10 ; envelope 16
+F17B: 33 01 33 01 33 01 33 01  FCB    $33,$01,$33,$01,$33,$01,$33,$01
+                                             ; C5:1 C5:1 C5:1 C5:1
+F183: C0 02 33 01 C0 01 33 02  FCB    $C0,$02,$33,$01,$C0,$01,$33,$02
+                                             ; -:2 C5:1 -:1 C5:2
+F18B: 33 01 33 01 33 02 C0 02  FCB    $33,$01,$33,$01,$33,$02,$C0,$02
+                                             ; C5:1 C5:1 C5:2 -:2
+F193: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; No header points to this stream: it is never played.
+unused_F194:
+F194: 50 15                    FCB    $50,$15 ; waveform 5, envelope 21
+
+; Referenced from: $F1BA unused_F194
+lF196:
+F196: A5 03 A5 03 A5 03 A5 03  FCB    $A5,$03,$A5,$03,$A5,$03,$A5,$03
+                                             ; G3:3 G3:3 G3:3 G3:3
+F19E: 85 03 75 03 75 03 75 03  FCB    $85,$03,$75,$03,$75,$03,$75,$03
+                                             ; F3:3 E3:3 E3:3 E3:3
+F1A6: 75 03 55 03              FCB    $75,$03,$55,$03 ; E3:3 D3:3
+F1AA: F6 02 F1 BD              FCB    $F6,$02,$F1,$BD ; to lF1BD every 2 passes
+                                             ; (+F)
+
+; Referenced from: $F1B2 unused_F194
+lF1AE:
+F1AE: 35 03 55 03              FCB    $35,$03,$55,$03 ; C3:3 D3:3
+F1B2: F3 03 F1 AE              FCB    $F3,$03,$F1,$AE ; repeat from lF1AE: 3
+                                             ; passes (+C)
+F1B6: 75 03 85 03              FCB    $75,$03,$85,$03 ; E3:3 F3:3
+F1BA: F7 F1 96                 FCB    $F7,$F1,$96 ; jump lF196
+
+; Referenced from: $F1AA unused_F194
+lF1BD:
+F1BD: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; No header points to this stream: it is never played.
+unused_F1BE:
+F1BE: 50 15                    FCB    $50,$15 ; waveform 5, envelope 21
+
+; Referenced from: $F1E4 unused_F1BE
+lF1C0:
+F1C0: 75 03 75 03 75 03 75 03  FCB    $75,$03,$75,$03,$75,$03,$75,$03
+                                             ; E3:3 E3:3 E3:3 E3:3
+F1C8: 55 03 35 03 35 03 35 03  FCB    $55,$03,$35,$03,$35,$03,$35,$03
+                                             ; D3:3 C3:3 C3:3 C3:3
+F1D0: 35 03 25 03              FCB    $35,$03,$25,$03 ; C3:3 B2:3
+F1D4: F6 02 F1 E7              FCB    $F6,$02,$F1,$E7 ; to lF1E7 every 2 passes
+                                             ; (+F)
+
+; Referenced from: $F1DC unused_F1BE
+lF1D8:
+F1D8: 05 03 25 03              FCB    $05,$03,$25,$03 ; A2:3 B2:3
+F1DC: F3 03 F1 D8              FCB    $F3,$03,$F1,$D8 ; repeat from lF1D8: 3
+                                             ; passes (+C)
+F1E0: 35 03 55 03              FCB    $35,$03,$55,$03 ; C3:3 D3:3
+F1E4: F7 F1 C0                 FCB    $F7,$F1,$C0 ; jump lF1C0
+
+; Referenced from: $F1D4 unused_F1BE
+lF1E7:
+F1E7: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; No header points to this stream: it is never played.
+unused_F1E8:
+F1E8: 50 15                    FCB    $50,$15 ; waveform 5, envelope 21
+
+; Referenced from: $F20E unused_F1E8
+lF1EA:
 F1EA: 35 03 35 03 35 03 35 03  FCB    $35,$03,$35,$03,$35,$03,$35,$03
+                                             ; C3:3 C3:3 C3:3 C3:3
 F1F2: 15 03 25 03 15 03 05 03  FCB    $15,$03,$25,$03,$15,$03,$05,$03
-F1FA: 05 03 A6 03 F6 02 F2 11  FCB    $05,$03,$A6,$03,$F6,$02,$F2,$11
-F202: 86 03 A6 03 F3 03 F2 02  FCB    $86,$03,$A6,$03,$F3,$03,$F2,$02
-F20A: 05 03 25 03 F7 F1 EA F0  FCB    $05,$03,$25,$03,$F7,$F1,$EA,$F0
-F212: 50 15 35 03 25 03 15 03  FCB    $50,$15,$35,$03,$25,$03,$15,$03
-F21A: 05 03 B6 03 A6 03 A6 03  FCB    $05,$03,$B6,$03,$A6,$03,$A6,$03
-F222: A6 03 86 03 76 03 F6 02  FCB    $A6,$03,$86,$03,$76,$03,$F6,$02
-F22A: F2 3B 56 03 76 03 F3 03  FCB    $F2,$3B,$56,$03,$76,$03,$F3,$03
-F232: F2 2C 86 03 A6 03 F7 F2  FCB    $F2,$2C,$86,$03,$A6,$03,$F7,$F2
-F23A: 14 F0 20 05 F1 20 13 01  FCB    $14,$F0,$20,$05,$F1,$20,$13,$01
-F242: 23 01 33 01 43 01 53 01  FCB    $23,$01,$33,$01,$43,$01,$53,$01
-F24A: 63 01 73 01 83 01 93 01  FCB    $63,$01,$73,$01,$83,$01,$93,$01
-F252: C0 01 93 01 83 01 73 01  FCB    $C0,$01,$93,$01,$83,$01,$73,$01
-F25A: 63 01 53 01 43 01 33 01  FCB    $63,$01,$53,$01,$43,$01,$33,$01
-F262: C0 02 73 01 63 01 53 01  FCB    $C0,$02,$73,$01,$63,$01,$53,$01
-F26A: 43 01 33 01 23 01 13 01  FCB    $43,$01,$33,$01,$23,$01,$13,$01
-F272: C0 02 F1 40 84 01 94 01  FCB    $C0,$02,$F1,$40,$84,$01,$94,$01
-F27A: A4 01 B4 01 03 01 13 01  FCB    $A4,$01,$B4,$01,$03,$01,$13,$01
-F282: 23 01 33 01 43 01 C0 01  FCB    $23,$01,$33,$01,$43,$01,$C0,$01
-F28A: 43 01 33 01 23 01 13 01  FCB    $43,$01,$33,$01,$23,$01,$13,$01
-F292: 03 01 B4 01 A4 01 C0 02  FCB    $03,$01,$B4,$01,$A4,$01,$C0,$02
-F29A: 23 01 13 01 03 01 B4 01  FCB    $23,$01,$13,$01,$03,$01,$B4,$01
-F2A2: A4 01 94 01 84 01 C0 02  FCB    $A4,$01,$94,$01,$84,$01,$C0,$02
-F2AA: F1 70 03 01 13 01 23 01  FCB    $F1,$70,$03,$01,$13,$01,$23,$01
-F2B2: 33 01 43 01 53 01 63 01  FCB    $33,$01,$43,$01,$53,$01,$63,$01
-F2BA: 73 01 83 01 C0 01 83 01  FCB    $73,$01,$83,$01,$C0,$01,$83,$01
-F2C2: 73 01 63 01 53 01 43 01  FCB    $73,$01,$63,$01,$53,$01,$43,$01
-F2CA: 33 01 23 01 C0 02 63 01  FCB    $33,$01,$23,$01,$C0,$02,$63,$01
-F2D2: 53 01 43 01 33 01 23 01  FCB    $53,$01,$43,$01,$33,$01,$23,$01
-F2DA: 13 01 03 01 C0 02 F0 20  FCB    $13,$01,$03,$01,$C0,$02,$F0,$20
-F2E2: 06 14 01 24 01 34 01 44  FCB    $06,$14,$01,$24,$01,$34,$01,$44
-F2EA: 01 54 01 64 01 74 01 84  FCB    $01,$54,$01,$64,$01,$74,$01,$84
-F2F2: 01 94 01 C0 01 34 01 44  FCB    $01,$94,$01,$C0,$01,$34,$01,$44
-F2FA: 01 54 01 64 01 74 01 84  FCB    $01,$54,$01,$64,$01,$74,$01,$84
-F302: 01 94 01 C0 02 34 01 44  FCB    $01,$94,$01,$C0,$02,$34,$01,$44
-F30A: 01 54 01 64 01 74 01 84  FCB    $01,$54,$01,$64,$01,$74,$01,$84
-F312: 01 94 01 C0 02 F1 40 85  FCB    $01,$94,$01,$C0,$02,$F1,$40,$85
-F31A: 01 95 01 A5 01 B5 01 04  FCB    $01,$95,$01,$A5,$01,$B5,$01,$04
-F322: 01 14 01 24 01 34 01 44  FCB    $01,$14,$01,$24,$01,$34,$01,$44
-F32A: 01 C0 01 A5 01 B5 01 04  FCB    $01,$C0,$01,$A5,$01,$B5,$01,$04
-F332: 01 14 01 24 01 34 01 44  FCB    $01,$14,$01,$24,$01,$34,$01,$44
-F33A: 01 C0 02 A5 01 B5 01 04  FCB    $01,$C0,$02,$A5,$01,$B5,$01,$04
-F342: 01 14 01 24 01 34 01 44  FCB    $01,$14,$01,$24,$01,$34,$01,$44
-F34A: 01 C0 02 F1 70 04 01 14  FCB    $01,$C0,$02,$F1,$70,$04,$01,$14
-F352: 01 24 01 34 01 44 01 54  FCB    $01,$24,$01,$34,$01,$44,$01,$54
-F35A: 01 64 01 74 01 84 01 C0  FCB    $01,$64,$01,$74,$01,$84,$01,$C0
-F362: 01 24 01 34 01 44 01 54  FCB    $01,$24,$01,$34,$01,$44,$01,$54
-F36A: 01 64 01 74 01 84 01 C0  FCB    $01,$64,$01,$74,$01,$84,$01,$C0
-F372: 02 24 01 34 01 44 01 54  FCB    $02,$24,$01,$34,$01,$44,$01,$54
-F37A: 01 64 01 74 01 84 01 C0  FCB    $01,$64,$01,$74,$01,$84,$01,$C0
-F382: 02 F0 20 06 C0 03 F7 F2  FCB    $02,$F0,$20,$06,$C0,$03,$F7,$F2
-F38A: 3E 20 05 C0 03 F7 F2 E3  FCB    $3E,$20,$05,$C0,$03,$F7,$F2,$E3
-F392: 40 00 72 01 62 01 52 01  FCB    $40,$00,$72,$01,$62,$01,$52,$01
-F39A: 42 01 32 01 22 01 62 01  FCB    $42,$01,$32,$01,$22,$01,$62,$01
-F3A2: 52 01 42 01 32 01 22 01  FCB    $52,$01,$42,$01,$32,$01,$22,$01
-F3AA: 12 01 52 01 42 01 32 01  FCB    $12,$01,$52,$01,$42,$01,$32,$01
-F3B2: 22 01 12 01 02 01 42 01  FCB    $22,$01,$12,$01,$02,$01,$42,$01
-F3BA: 32 01 22 01 12 01 02 01  FCB    $32,$01,$22,$01,$12,$01,$02,$01
-F3C2: B3 01 32 01 22 01 12 01  FCB    $B3,$01,$32,$01,$22,$01,$12,$01
-F3CA: 02 01 B3 01 A3 01 C0 01  FCB    $02,$01,$B3,$01,$A3,$01,$C0,$01
-F3D2: F0 40 02 C0 03 73 01 63  FCB    $F0,$40,$02,$C0,$03,$73,$01,$63
-F3DA: 01 53 01 43 01 33 01 23  FCB    $01,$53,$01,$43,$01,$33,$01,$23
-F3E2: 01 63 01 53 01 43 01 33  FCB    $01,$63,$01,$53,$01,$43,$01,$33
-F3EA: 01 23 01 13 01 53 01 43  FCB    $01,$23,$01,$13,$01,$53,$01,$43
-F3F2: 01 33 01 23 01 13 01 03  FCB    $01,$33,$01,$23,$01,$13,$01,$03
-F3FA: 01 43 01 33 01 23 01 13  FCB    $01,$43,$01,$33,$01,$23,$01,$13
-F402: 01 03 01 B4 01 33 01 23  FCB    $01,$03,$01,$B4,$01,$33,$01,$23
-F40A: 01 13 01 F0 20 00 73 01  FCB    $01,$13,$01,$F0,$20,$00,$73,$01
-F412: 02 01 42 01 F3 08 F4 10  FCB    $02,$01,$42,$01,$F3,$08,$F4,$10
-F41A: F0 20 00 43 01 73 01 02  FCB    $F0,$20,$00,$43,$01,$73,$01,$02
-F422: 01 F3 08 F4 1D F0 50 00  FCB    $01,$F3,$08,$F4,$1D,$F0,$50,$00
+                                             ; A#2:3 B2:3 A#2:3 A2:3
+F1FA: 05 03 A6 03              FCB    $05,$03,$A6,$03 ; A2:3 G2:3
+F1FE: F6 02 F2 11              FCB    $F6,$02,$F2,$11 ; to lF211 every 2 passes
+                                             ; (+F)
+
+; Referenced from: $F206 unused_F1E8
+lF202:
+F202: 86 03 A6 03              FCB    $86,$03,$A6,$03 ; F2:3 G2:3
+F206: F3 03 F2 02              FCB    $F3,$03,$F2,$02 ; repeat from lF202: 3
+                                             ; passes (+C)
+F20A: 05 03 25 03              FCB    $05,$03,$25,$03 ; A2:3 B2:3
+F20E: F7 F1 EA                 FCB    $F7,$F1,$EA ; jump lF1EA
+
+; Referenced from: $F1FE unused_F1E8
+lF211:
+F211: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; No header points to this stream: it is never played.
+unused_F212:
+F212: 50 15                    FCB    $50,$15 ; waveform 5, envelope 21
+
+; Referenced from: $F238 unused_F212
+lF214:
+F214: 35 03 25 03 15 03 05 03  FCB    $35,$03,$25,$03,$15,$03,$05,$03
+                                             ; C3:3 B2:3 A#2:3 A2:3
+F21C: B6 03 A6 03 A6 03 A6 03  FCB    $B6,$03,$A6,$03,$A6,$03,$A6,$03
+                                             ; G#2:3 G2:3 G2:3 G2:3
+F224: 86 03 76 03              FCB    $86,$03,$76,$03 ; F2:3 E2:3
+F228: F6 02 F2 3B              FCB    $F6,$02,$F2,$3B ; to lF23B every 2 passes
+                                             ; (+F)
+
+; Referenced from: $F230 unused_F212
+lF22C:
+F22C: 56 03 76 03              FCB    $56,$03,$76,$03 ; D2:3 E2:3
+F230: F3 03 F2 2C              FCB    $F3,$03,$F2,$2C ; repeat from lF22C: 3
+                                             ; passes (+C)
+F234: 86 03 A6 03              FCB    $86,$03,$A6,$03 ; F2:3 G2:3
+F238: F7 F2 14                 FCB    $F7,$F2,$14 ; jump lF214
+
+; Referenced from: $F228 unused_F212
+lF23B:
+F23B: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E503 hdr_formation_hum
+formation_hum_v0:
+F23C: 20 05                    FCB    $20,$05 ; waveform 2, envelope 5
+
+; Referenced from: $F388 formation_hum_v2
+lF23E:
+F23E: F1 20                    FCB    $F1,$20 ; waveform 2
+F240: 13 01 23 01 33 01 43 01  FCB    $13,$01,$23,$01,$33,$01,$43,$01
+                                             ; A#4:1 B4:1 C5:1 C#5:1
+F248: 53 01 63 01 73 01 83 01  FCB    $53,$01,$63,$01,$73,$01,$83,$01
+                                             ; D5:1 D#5:1 E5:1 F5:1
+F250: 93 01 C0 01 93 01 83 01  FCB    $93,$01,$C0,$01,$93,$01,$83,$01
+                                             ; F#5:1 -:1 F#5:1 F5:1
+F258: 73 01 63 01 53 01 43 01  FCB    $73,$01,$63,$01,$53,$01,$43,$01
+                                             ; E5:1 D#5:1 D5:1 C#5:1
+F260: 33 01 C0 02 73 01 63 01  FCB    $33,$01,$C0,$02,$73,$01,$63,$01
+                                             ; C5:1 -:2 E5:1 D#5:1
+F268: 53 01 43 01 33 01 23 01  FCB    $53,$01,$43,$01,$33,$01,$23,$01
+                                             ; D5:1 C#5:1 C5:1 B4:1
+F270: 13 01 C0 02              FCB    $13,$01,$C0,$02 ; A#4:1 -:2
+F274: F1 40                    FCB    $F1,$40 ; waveform 4
+F276: 84 01 94 01 A4 01 B4 01  FCB    $84,$01,$94,$01,$A4,$01,$B4,$01
+                                             ; F4:1 F#4:1 G4:1 G#4:1
+F27E: 03 01 13 01 23 01 33 01  FCB    $03,$01,$13,$01,$23,$01,$33,$01
+                                             ; A4:1 A#4:1 B4:1 C5:1
+F286: 43 01 C0 01 43 01 33 01  FCB    $43,$01,$C0,$01,$43,$01,$33,$01
+                                             ; C#5:1 -:1 C#5:1 C5:1
+F28E: 23 01 13 01 03 01 B4 01  FCB    $23,$01,$13,$01,$03,$01,$B4,$01
+                                             ; B4:1 A#4:1 A4:1 G#4:1
+F296: A4 01 C0 02 23 01 13 01  FCB    $A4,$01,$C0,$02,$23,$01,$13,$01
+                                             ; G4:1 -:2 B4:1 A#4:1
+F29E: 03 01 B4 01 A4 01 94 01  FCB    $03,$01,$B4,$01,$A4,$01,$94,$01
+                                             ; A4:1 G#4:1 G4:1 F#4:1
+F2A6: 84 01 C0 02              FCB    $84,$01,$C0,$02 ; F4:1 -:2
+F2AA: F1 70                    FCB    $F1,$70 ; waveform 7
+F2AC: 03 01 13 01 23 01 33 01  FCB    $03,$01,$13,$01,$23,$01,$33,$01
+                                             ; A4:1 A#4:1 B4:1 C5:1
+F2B4: 43 01 53 01 63 01 73 01  FCB    $43,$01,$53,$01,$63,$01,$73,$01
+                                             ; C#5:1 D5:1 D#5:1 E5:1
+F2BC: 83 01 C0 01 83 01 73 01  FCB    $83,$01,$C0,$01,$83,$01,$73,$01
+                                             ; F5:1 -:1 F5:1 E5:1
+F2C4: 63 01 53 01 43 01 33 01  FCB    $63,$01,$53,$01,$43,$01,$33,$01
+                                             ; D#5:1 D5:1 C#5:1 C5:1
+F2CC: 23 01 C0 02 63 01 53 01  FCB    $23,$01,$C0,$02,$63,$01,$53,$01
+                                             ; B4:1 -:2 D#5:1 D5:1
+F2D4: 43 01 33 01 23 01 13 01  FCB    $43,$01,$33,$01,$23,$01,$13,$01
+                                             ; C#5:1 C5:1 B4:1 A#4:1
+F2DC: 03 01 C0 02              FCB    $03,$01,$C0,$02 ; A4:1 -:2
+F2E0: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E506 hdr_formation_hum
+formation_hum_v1:
+F2E1: 20 06                    FCB    $20,$06 ; waveform 2, envelope 6
+
+; Referenced from: $F38F formation_hum_v3
+lF2E3:
+F2E3: 14 01 24 01 34 01 44 01  FCB    $14,$01,$24,$01,$34,$01,$44,$01
+                                             ; A#3:1 B3:1 C4:1 C#4:1
+F2EB: 54 01 64 01 74 01 84 01  FCB    $54,$01,$64,$01,$74,$01,$84,$01
+                                             ; D4:1 D#4:1 E4:1 F4:1
+F2F3: 94 01 C0 01 34 01 44 01  FCB    $94,$01,$C0,$01,$34,$01,$44,$01
+                                             ; F#4:1 -:1 C4:1 C#4:1
+F2FB: 54 01 64 01 74 01 84 01  FCB    $54,$01,$64,$01,$74,$01,$84,$01
+                                             ; D4:1 D#4:1 E4:1 F4:1
+F303: 94 01 C0 02 34 01 44 01  FCB    $94,$01,$C0,$02,$34,$01,$44,$01
+                                             ; F#4:1 -:2 C4:1 C#4:1
+F30B: 54 01 64 01 74 01 84 01  FCB    $54,$01,$64,$01,$74,$01,$84,$01
+                                             ; D4:1 D#4:1 E4:1 F4:1
+F313: 94 01 C0 02              FCB    $94,$01,$C0,$02 ; F#4:1 -:2
+F317: F1 40                    FCB    $F1,$40 ; waveform 4
+F319: 85 01 95 01 A5 01 B5 01  FCB    $85,$01,$95,$01,$A5,$01,$B5,$01
+                                             ; F3:1 F#3:1 G3:1 G#3:1
+F321: 04 01 14 01 24 01 34 01  FCB    $04,$01,$14,$01,$24,$01,$34,$01
+                                             ; A3:1 A#3:1 B3:1 C4:1
+F329: 44 01 C0 01 A5 01 B5 01  FCB    $44,$01,$C0,$01,$A5,$01,$B5,$01
+                                             ; C#4:1 -:1 G3:1 G#3:1
+F331: 04 01 14 01 24 01 34 01  FCB    $04,$01,$14,$01,$24,$01,$34,$01
+                                             ; A3:1 A#3:1 B3:1 C4:1
+F339: 44 01 C0 02 A5 01 B5 01  FCB    $44,$01,$C0,$02,$A5,$01,$B5,$01
+                                             ; C#4:1 -:2 G3:1 G#3:1
+F341: 04 01 14 01 24 01 34 01  FCB    $04,$01,$14,$01,$24,$01,$34,$01
+                                             ; A3:1 A#3:1 B3:1 C4:1
+F349: 44 01 C0 02              FCB    $44,$01,$C0,$02 ; C#4:1 -:2
+F34D: F1 70                    FCB    $F1,$70 ; waveform 7
+F34F: 04 01 14 01 24 01 34 01  FCB    $04,$01,$14,$01,$24,$01,$34,$01
+                                             ; A3:1 A#3:1 B3:1 C4:1
+F357: 44 01 54 01 64 01 74 01  FCB    $44,$01,$54,$01,$64,$01,$74,$01
+                                             ; C#4:1 D4:1 D#4:1 E4:1
+F35F: 84 01 C0 01 24 01 34 01  FCB    $84,$01,$C0,$01,$24,$01,$34,$01
+                                             ; F4:1 -:1 B3:1 C4:1
+F367: 44 01 54 01 64 01 74 01  FCB    $44,$01,$54,$01,$64,$01,$74,$01
+                                             ; C#4:1 D4:1 D#4:1 E4:1
+F36F: 84 01 C0 02 24 01 34 01  FCB    $84,$01,$C0,$02,$24,$01,$34,$01
+                                             ; F4:1 -:2 B3:1 C4:1
+F377: 44 01 54 01 64 01 74 01  FCB    $44,$01,$54,$01,$64,$01,$74,$01
+                                             ; C#4:1 D4:1 D#4:1 E4:1
+F37F: 84 01 C0 02              FCB    $84,$01,$C0,$02 ; F4:1 -:2
+F383: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E509 hdr_formation_hum
+formation_hum_v2:
+F384: 20 06                    FCB    $20,$06 ; waveform 2, envelope 6
+F386: C0 03                    FCB    $C0,$03 ; -:3
+F388: F7 F2 3E                 FCB    $F7,$F2,$3E ; jump lF23E
+
+; Referenced from: $E50C hdr_formation_hum
+formation_hum_v3:
+F38B: 20 05                    FCB    $20,$05 ; waveform 2, envelope 5
+F38D: C0 03                    FCB    $C0,$03 ; -:3
+F38F: F7 F2 E3                 FCB    $F7,$F2,$E3 ; jump lF2E3
+
+; Referenced from: $E510 hdr_capture
+capture_v0:
+F392: 40 00                    FCB    $40,$00 ; waveform 4, envelope 0
+F394: 72 01 62 01 52 01 42 01  FCB    $72,$01,$62,$01,$52,$01,$42,$01
+                                             ; E6:1 D#6:1 D6:1 C#6:1
+F39C: 32 01 22 01 62 01 52 01  FCB    $32,$01,$22,$01,$62,$01,$52,$01
+                                             ; C6:1 B5:1 D#6:1 D6:1
+F3A4: 42 01 32 01 22 01 12 01  FCB    $42,$01,$32,$01,$22,$01,$12,$01
+                                             ; C#6:1 C6:1 B5:1 A#5:1
+F3AC: 52 01 42 01 32 01 22 01  FCB    $52,$01,$42,$01,$32,$01,$22,$01
+                                             ; D6:1 C#6:1 C6:1 B5:1
+F3B4: 12 01 02 01 42 01 32 01  FCB    $12,$01,$02,$01,$42,$01,$32,$01
+                                             ; A#5:1 A5:1 C#6:1 C6:1
+F3BC: 22 01 12 01 02 01 B3 01  FCB    $22,$01,$12,$01,$02,$01,$B3,$01
+                                             ; B5:1 A#5:1 A5:1 G#5:1
+F3C4: 32 01 22 01 12 01 02 01  FCB    $32,$01,$22,$01,$12,$01,$02,$01
+                                             ; C6:1 B5:1 A#5:1 A5:1
+F3CC: B3 01 A3 01 C0 01        FCB    $B3,$01,$A3,$01,$C0,$01 ; G#5:1 G5:1 -:1
+F3D2: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E513 hdr_capture
+capture_v1:
+F3D3: 40 02                    FCB    $40,$02 ; waveform 4, envelope 2
+F3D5: C0 03 73 01 63 01 53 01  FCB    $C0,$03,$73,$01,$63,$01,$53,$01
+                                             ; -:3 E5:1 D#5:1 D5:1
+F3DD: 43 01 33 01 23 01 63 01  FCB    $43,$01,$33,$01,$23,$01,$63,$01
+                                             ; C#5:1 C5:1 B4:1 D#5:1
+F3E5: 53 01 43 01 33 01 23 01  FCB    $53,$01,$43,$01,$33,$01,$23,$01
+                                             ; D5:1 C#5:1 C5:1 B4:1
+F3ED: 13 01 53 01 43 01 33 01  FCB    $13,$01,$53,$01,$43,$01,$33,$01
+                                             ; A#4:1 D5:1 C#5:1 C5:1
+F3F5: 23 01 13 01 03 01 43 01  FCB    $23,$01,$13,$01,$03,$01,$43,$01
+                                             ; B4:1 A#4:1 A4:1 C#5:1
+F3FD: 33 01 23 01 13 01 03 01  FCB    $33,$01,$23,$01,$13,$01,$03,$01
+                                             ; C5:1 B4:1 A#4:1 A4:1
+F405: B4 01 33 01 23 01 13 01  FCB    $B4,$01,$33,$01,$23,$01,$13,$01
+                                             ; G#4:1 C5:1 B4:1 A#4:1
+F40D: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E517 hdr_effect_rise
+effect_rise_v0:
+F40E: 20 00                    FCB    $20,$00 ; waveform 2, envelope 0
+
+; Referenced from: $F416 effect_rise_v0
+lF410:
+F410: 73 01 02 01 42 01        FCB    $73,$01,$02,$01,$42,$01 ; E5:1 A5:1 C#6:1
+F416: F3 08 F4 10              FCB    $F3,$08,$F4,$10 ; repeat from lF410: 8
+                                             ; passes (+C)
+F41A: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E51A hdr_effect_rise
+effect_rise_v1:
+F41B: 20 00                    FCB    $20,$00 ; waveform 2, envelope 0
+
+; Referenced from: $F423 effect_rise_v1
+lF41D:
+F41D: 43 01 73 01 02 01        FCB    $43,$01,$73,$01,$02,$01 ; C#5:1 E5:1 A5:1
+F423: F3 08 F4 1D              FCB    $F3,$08,$F4,$1D ; repeat from lF41D: 8
+                                             ; passes (+C)
+F427: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E51E hdr_effect_spread, $E524 hdr_effect_spread
+effect_spread_v0:
+F428: 50 00                    FCB    $50,$00 ; waveform 5, envelope 0
+
+; Referenced from: $F432 effect_spread_v0
+lF42A:
 F42A: 42 01 52 01 12 01 52 01  FCB    $42,$01,$52,$01,$12,$01,$52,$01
-F432: F3 06 F4 2A F0 50 00 02  FCB    $F3,$06,$F4,$2A,$F0,$50,$00,$02
-F43A: 01 12 01 83 01 12 01 F3  FCB    $01,$12,$01,$83,$01,$12,$01,$F3
-F442: 06 F4 39 F0 20 0D 04 12  FCB    $06,$F4,$39,$F0,$20,$0D,$04,$12
-F44A: F2 10 73 06 73 06 43 06  FCB    $F2,$10,$73,$06,$73,$06,$43,$06
-F452: F1 50 F2 0D B3 02 F2 13  FCB    $F1,$50,$F2,$0D,$B3,$02,$F2,$13
-F45A: 02 16 C0 0C F0 40 0D 04  FCB    $02,$16,$C0,$0C,$F0,$40,$0D,$04
-F462: 12 F2 10 43 06 43 06 03  FCB    $12,$F2,$10,$43,$06,$43,$06,$03
-F46A: 06 F1 70 F2 0D B2 02 F2  FCB    $06,$F1,$70,$F2,$0D,$B2,$02,$F2
-F472: 13 01 16 C0 0C F0 40 02  FCB    $13,$01,$16,$C0,$0C,$F0,$40,$02
+                                             ; C#6:1 D6:1 A#5:1 D6:1
+F432: F3 06 F4 2A              FCB    $F3,$06,$F4,$2A ; repeat from lF42A: 6
+                                             ; passes (+C)
+F436: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E521 hdr_effect_spread
+effect_spread_v1:
+F437: 50 00                    FCB    $50,$00 ; waveform 5, envelope 0
+
+; Referenced from: $F441 effect_spread_v1
+lF439:
+F439: 02 01 12 01 83 01 12 01  FCB    $02,$01,$12,$01,$83,$01,$12,$01
+                                             ; A5:1 A#5:1 F5:1 A#5:1
+F441: F3 06 F4 39              FCB    $F3,$06,$F4,$39 ; repeat from lF439: 6
+                                             ; passes (+C)
+F445: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E528 hdr_powerup
+powerup_v0:
+F446: 20 0D                    FCB    $20,$0D ; waveform 2, envelope 13
+F448: 04 12                    FCB    $04,$12 ; A3:18
+F44A: F2 10                    FCB    $F2,$10 ; envelope 16
+F44C: 73 06 73 06 43 06        FCB    $73,$06,$73,$06,$43,$06 ; E5:6 E5:6 C#5:6
+F452: F1 50                    FCB    $F1,$50 ; waveform 5
+F454: F2 0D                    FCB    $F2,$0D ; envelope 13
+F456: B3 02                    FCB    $B3,$02 ; G#5:2
+F458: F2 13                    FCB    $F2,$13 ; envelope 19
+F45A: 02 16 C0 0C              FCB    $02,$16,$C0,$0C ; A5:22 -:12
+F45E: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E52B hdr_powerup
+powerup_v1:
+F45F: 40 0D                    FCB    $40,$0D ; waveform 4, envelope 13
+F461: 04 12                    FCB    $04,$12 ; A3:18
+F463: F2 10                    FCB    $F2,$10 ; envelope 16
+F465: 43 06 43 06 03 06        FCB    $43,$06,$43,$06,$03,$06 ; C#5:6 C#5:6
+                                             ; A4:6
+F46B: F1 70                    FCB    $F1,$70 ; waveform 7
+F46D: F2 0D                    FCB    $F2,$0D ; envelope 13
+F46F: B2 02                    FCB    $B2,$02 ; G#6:2
+F471: F2 13                    FCB    $F2,$13 ; envelope 19
+F473: 01 16 C0 0C              FCB    $01,$16,$C0,$0C ; A6:22 -:12
+F477: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E52F hdr_flyin
+flyin_v0:
+F478: 40 02                    FCB    $40,$02 ; waveform 4, envelope 2
 F47A: C0 04 32 01 52 01 32 01  FCB    $C0,$04,$32,$01,$52,$01,$32,$01
-F482: 52 01 32 01 C0 02 F2 01  FCB    $52,$01,$32,$01,$C0,$02,$F2,$01
+                                             ; -:4 C6:1 D6:1 C6:1
+F482: 52 01 32 01 C0 02        FCB    $52,$01,$32,$01,$C0,$02 ; D6:1 C6:1 -:2
+F488: F2 01                    FCB    $F2,$01 ; envelope 1
 F48A: 01 01 B2 01 A2 01 92 01  FCB    $01,$01,$B2,$01,$A2,$01,$92,$01
-F492: F2 00 82 01 72 01 62 01  FCB    $F2,$00,$82,$01,$72,$01,$62,$01
-F49A: 52 01 82 01 72 01 62 01  FCB    $52,$01,$82,$01,$72,$01,$62,$01
-F4A2: 52 01 42 01 32 01 22 01  FCB    $52,$01,$42,$01,$32,$01,$22,$01
-F4AA: 12 01 42 01 32 01 22 01  FCB    $12,$01,$42,$01,$32,$01,$22,$01
-F4B2: 12 01 02 01 B3 01 A3 01  FCB    $12,$01,$02,$01,$B3,$01,$A3,$01
-F4BA: 93 01 F2 01 12 01 02 01  FCB    $93,$01,$F2,$01,$12,$01,$02,$01
-F4C2: B3 01 A3 01 93 01 83 01  FCB    $B3,$01,$A3,$01,$93,$01,$83,$01
-F4CA: 73 01 63 01 A3 01 93 01  FCB    $73,$01,$63,$01,$A3,$01,$93,$01
-F4D2: 83 01 73 01 63 01 53 01  FCB    $83,$01,$73,$01,$63,$01,$53,$01
-F4DA: 43 01 33 01 F2 02 63 01  FCB    $43,$01,$33,$01,$F2,$02,$63,$01
-F4E2: 53 01 43 01 33 01 23 01  FCB    $53,$01,$43,$01,$33,$01,$23,$01
-F4EA: 13 01 03 01 B4 01 F2 03  FCB    $13,$01,$03,$01,$B4,$01,$F2,$03
+                                             ; A6:1 G#6:1 G6:1 F#6:1
+F492: F2 00                    FCB    $F2,$00 ; envelope 0
+F494: 82 01 72 01 62 01 52 01  FCB    $82,$01,$72,$01,$62,$01,$52,$01
+                                             ; F6:1 E6:1 D#6:1 D6:1
+F49C: 82 01 72 01 62 01 52 01  FCB    $82,$01,$72,$01,$62,$01,$52,$01
+                                             ; F6:1 E6:1 D#6:1 D6:1
+F4A4: 42 01 32 01 22 01 12 01  FCB    $42,$01,$32,$01,$22,$01,$12,$01
+                                             ; C#6:1 C6:1 B5:1 A#5:1
+F4AC: 42 01 32 01 22 01 12 01  FCB    $42,$01,$32,$01,$22,$01,$12,$01
+                                             ; C#6:1 C6:1 B5:1 A#5:1
+F4B4: 02 01 B3 01 A3 01 93 01  FCB    $02,$01,$B3,$01,$A3,$01,$93,$01
+                                             ; A5:1 G#5:1 G5:1 F#5:1
+F4BC: F2 01                    FCB    $F2,$01 ; envelope 1
+F4BE: 12 01 02 01 B3 01 A3 01  FCB    $12,$01,$02,$01,$B3,$01,$A3,$01
+                                             ; A#5:1 A5:1 G#5:1 G5:1
+F4C6: 93 01 83 01 73 01 63 01  FCB    $93,$01,$83,$01,$73,$01,$63,$01
+                                             ; F#5:1 F5:1 E5:1 D#5:1
+F4CE: A3 01 93 01 83 01 73 01  FCB    $A3,$01,$93,$01,$83,$01,$73,$01
+                                             ; G5:1 F#5:1 F5:1 E5:1
+F4D6: 63 01 53 01 43 01 33 01  FCB    $63,$01,$53,$01,$43,$01,$33,$01
+                                             ; D#5:1 D5:1 C#5:1 C5:1
+F4DE: F2 02                    FCB    $F2,$02 ; envelope 2
+F4E0: 63 01 53 01 43 01 33 01  FCB    $63,$01,$53,$01,$43,$01,$33,$01
+                                             ; D#5:1 D5:1 C#5:1 C5:1
+F4E8: 23 01 13 01 03 01 B4 01  FCB    $23,$01,$13,$01,$03,$01,$B4,$01
+                                             ; B4:1 A#4:1 A4:1 G#4:1
+F4F0: F2 03                    FCB    $F2,$03 ; envelope 3
 F4F2: 03 01 B4 01 A4 01 94 01  FCB    $03,$01,$B4,$01,$A4,$01,$94,$01
+                                             ; A4:1 G#4:1 G4:1 F#4:1
 F4FA: 84 01 74 01 64 01 54 01  FCB    $84,$01,$74,$01,$64,$01,$54,$01
-F502: F2 04 74 01 64 01 54 01  FCB    $F2,$04,$74,$01,$64,$01,$54,$01
-F50A: 44 01 34 01 24 01 14 01  FCB    $44,$01,$34,$01,$24,$01,$14,$01
-F512: 04 01 F2 05 14 01 04 01  FCB    $04,$01,$F2,$05,$14,$01,$04,$01
-F51A: B5 01 A5 01 95 01 85 01  FCB    $B5,$01,$A5,$01,$95,$01,$85,$01
-F522: 75 01 65 01 C0 04 F0 10  FCB    $75,$01,$65,$01,$C0,$04,$F0,$10
-F52A: 00 42 01 02 01 22 01 B3  FCB    $00,$42,$01,$02,$01,$22,$01,$B3
-F532: 01 C0 01 02 01 73 01 93  FCB    $01,$C0,$01,$02,$01,$73,$01,$93
-F53A: 01 43 01 C0 01 63 01 33  FCB    $01,$43,$01,$C0,$01,$63,$01,$33
-F542: 01 43 01 03 01 C0 01 23  FCB    $01,$43,$01,$03,$01,$C0,$01,$23
-F54A: 01 A4 01 03 01 94 01 C0  FCB    $01,$A4,$01,$03,$01,$94,$01,$C0
-F552: 01 A4 01 74 01 94 01 54  FCB    $01,$A4,$01,$74,$01,$94,$01,$54
-F55A: 01 C0 01 74 01 54 01 44  FCB    $01,$C0,$01,$74,$01,$54,$01,$44
-F562: 01 24 01 04 01 A5 01 95  FCB    $01,$24,$01,$04,$01,$A5,$01,$95
-F56A: 01 75 01 C0 01 65 01 B5  FCB    $01,$75,$01,$C0,$01,$65,$01,$B5
-F572: 01 95 01 24 01 C0 01 04  FCB    $01,$95,$01,$24,$01,$C0,$01,$04
-F57A: 01 54 01 34 01 84 01 C0  FCB    $01,$54,$01,$34,$01,$84,$01,$C0
-F582: 01 F2 01 64 01 B4 01 94  FCB    $01,$F2,$01,$64,$01,$B4,$01,$94
-F58A: 01 23 01 C0 01 04 01 54  FCB    $01,$23,$01,$C0,$01,$04,$01,$54
-F592: 01 34 01 84 01 C0 01 F2  FCB    $01,$34,$01,$84,$01,$C0,$01,$F2
-F59A: 02 64 01 B4 01 94 01 23  FCB    $02,$64,$01,$B4,$01,$94,$01,$23
-F5A2: 01 C0 01 04 01 54 01 34  FCB    $01,$C0,$01,$04,$01,$54,$01,$34
-F5AA: 01 84 01 C0 01 F2 03 64  FCB    $01,$84,$01,$C0,$01,$F2,$03,$64
-F5B2: 01 B4 01 94 01 23 01 C0  FCB    $01,$B4,$01,$94,$01,$23,$01,$C0
-F5BA: 01 04 01 54 01 34 01 84  FCB    $01,$04,$01,$54,$01,$34,$01,$84
-F5C2: 01 C0 01 F2 04 64 01 B4  FCB    $01,$C0,$01,$F2,$04,$64,$01,$B4
-F5CA: 01 94 01 23 01 C0 01 04  FCB    $01,$94,$01,$23,$01,$C0,$01,$04
-F5D2: 01 54 01 34 01 84 01 C0  FCB    $01,$54,$01,$34,$01,$84,$01,$C0
-F5DA: 01 64 01 B4 01 94 01 23  FCB    $01,$64,$01,$B4,$01,$94,$01,$23
-F5E2: 01 C0 01 F0 10 00 C0 03  FCB    $01,$C0,$01,$F0,$10,$00,$C0,$03
-F5EA: F7 F5 2B F0 10 08 32 04  FCB    $F7,$F5,$2B,$F0,$10,$08,$32,$04
-F5F2: B3 02 12 04 62 02 C0 01  FCB    $B3,$02,$12,$04,$62,$02,$C0,$01
-F5FA: F0 40 08 B3 04 63 02 A3  FCB    $F0,$40,$08,$B3,$04,$63,$02,$A3
-F602: 04 12 02 C0 01 F0 20 00  FCB    $04,$12,$02,$C0,$01,$F0,$20,$00
+                                             ; F4:1 E4:1 D#4:1 D4:1
+F502: F2 04                    FCB    $F2,$04 ; envelope 4
+F504: 74 01 64 01 54 01 44 01  FCB    $74,$01,$64,$01,$54,$01,$44,$01
+                                             ; E4:1 D#4:1 D4:1 C#4:1
+F50C: 34 01 24 01 14 01 04 01  FCB    $34,$01,$24,$01,$14,$01,$04,$01
+                                             ; C4:1 B3:1 A#3:1 A3:1
+F514: F2 05                    FCB    $F2,$05 ; envelope 5
+F516: 14 01 04 01 B5 01 A5 01  FCB    $14,$01,$04,$01,$B5,$01,$A5,$01
+                                             ; A#3:1 A3:1 G#3:1 G3:1
+F51E: 95 01 85 01 75 01 65 01  FCB    $95,$01,$85,$01,$75,$01,$65,$01
+                                             ; F#3:1 F3:1 E3:1 D#3:1
+F526: C0 04                    FCB    $C0,$04 ; -:4
+F528: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E537 hdr_special_object
+special_object_v0:
+F529: 10 00                    FCB    $10,$00 ; waveform 1, envelope 0
+
+; Referenced from: $F5EA special_object_v1
+lF52B:
+F52B: 42 01 02 01 22 01 B3 01  FCB    $42,$01,$02,$01,$22,$01,$B3,$01
+                                             ; C#6:1 A5:1 B5:1 G#5:1
+F533: C0 01 02 01 73 01 93 01  FCB    $C0,$01,$02,$01,$73,$01,$93,$01
+                                             ; -:1 A5:1 E5:1 F#5:1
+F53B: 43 01 C0 01 63 01 33 01  FCB    $43,$01,$C0,$01,$63,$01,$33,$01
+                                             ; C#5:1 -:1 D#5:1 C5:1
+F543: 43 01 03 01 C0 01 23 01  FCB    $43,$01,$03,$01,$C0,$01,$23,$01
+                                             ; C#5:1 A4:1 -:1 B4:1
+F54B: A4 01 03 01 94 01 C0 01  FCB    $A4,$01,$03,$01,$94,$01,$C0,$01
+                                             ; G4:1 A4:1 F#4:1 -:1
+F553: A4 01 74 01 94 01 54 01  FCB    $A4,$01,$74,$01,$94,$01,$54,$01
+                                             ; G4:1 E4:1 F#4:1 D4:1
+F55B: C0 01 74 01 54 01 44 01  FCB    $C0,$01,$74,$01,$54,$01,$44,$01
+                                             ; -:1 E4:1 D4:1 C#4:1
+F563: 24 01 04 01 A5 01 95 01  FCB    $24,$01,$04,$01,$A5,$01,$95,$01
+                                             ; B3:1 A3:1 G3:1 F#3:1
+F56B: 75 01 C0 01 65 01 B5 01  FCB    $75,$01,$C0,$01,$65,$01,$B5,$01
+                                             ; E3:1 -:1 D#3:1 G#3:1
+F573: 95 01 24 01 C0 01 04 01  FCB    $95,$01,$24,$01,$C0,$01,$04,$01
+                                             ; F#3:1 B3:1 -:1 A3:1
+F57B: 54 01 34 01 84 01 C0 01  FCB    $54,$01,$34,$01,$84,$01,$C0,$01
+                                             ; D4:1 C4:1 F4:1 -:1
+F583: F2 01                    FCB    $F2,$01 ; envelope 1
+F585: 64 01 B4 01 94 01 23 01  FCB    $64,$01,$B4,$01,$94,$01,$23,$01
+                                             ; D#4:1 G#4:1 F#4:1 B4:1
+F58D: C0 01 04 01 54 01 34 01  FCB    $C0,$01,$04,$01,$54,$01,$34,$01
+                                             ; -:1 A3:1 D4:1 C4:1
+F595: 84 01 C0 01              FCB    $84,$01,$C0,$01 ; F4:1 -:1
+F599: F2 02                    FCB    $F2,$02 ; envelope 2
+F59B: 64 01 B4 01 94 01 23 01  FCB    $64,$01,$B4,$01,$94,$01,$23,$01
+                                             ; D#4:1 G#4:1 F#4:1 B4:1
+F5A3: C0 01 04 01 54 01 34 01  FCB    $C0,$01,$04,$01,$54,$01,$34,$01
+                                             ; -:1 A3:1 D4:1 C4:1
+F5AB: 84 01 C0 01              FCB    $84,$01,$C0,$01 ; F4:1 -:1
+F5AF: F2 03                    FCB    $F2,$03 ; envelope 3
+F5B1: 64 01 B4 01 94 01 23 01  FCB    $64,$01,$B4,$01,$94,$01,$23,$01
+                                             ; D#4:1 G#4:1 F#4:1 B4:1
+F5B9: C0 01 04 01 54 01 34 01  FCB    $C0,$01,$04,$01,$54,$01,$34,$01
+                                             ; -:1 A3:1 D4:1 C4:1
+F5C1: 84 01 C0 01              FCB    $84,$01,$C0,$01 ; F4:1 -:1
+F5C5: F2 04                    FCB    $F2,$04 ; envelope 4
+F5C7: 64 01 B4 01 94 01 23 01  FCB    $64,$01,$B4,$01,$94,$01,$23,$01
+                                             ; D#4:1 G#4:1 F#4:1 B4:1
+F5CF: C0 01 04 01 54 01 34 01  FCB    $C0,$01,$04,$01,$54,$01,$34,$01
+                                             ; -:1 A3:1 D4:1 C4:1
+F5D7: 84 01 C0 01 64 01 B4 01  FCB    $84,$01,$C0,$01,$64,$01,$B4,$01
+                                             ; F4:1 -:1 D#4:1 G#4:1
+F5DF: 94 01 23 01 C0 01        FCB    $94,$01,$23,$01,$C0,$01 ; F#4:1 B4:1 -:1
+F5E5: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E53A hdr_special_object
+special_object_v1:
+F5E6: 10 00                    FCB    $10,$00 ; waveform 1, envelope 0
+F5E8: C0 03                    FCB    $C0,$03 ; -:3
+F5EA: F7 F5 2B                 FCB    $F7,$F5,$2B ; jump lF52B
+F5ED: F0                       FCB    $F0    ; [unreached]
+
+; Referenced from: $E568 hdr_hit_challenge, $E56E hdr_hit_challenge
+hit_challenge_v0:
+F5EE: 10 08                    FCB    $10,$08 ; waveform 1, envelope 8
+F5F0: 32 04 B3 02 12 04 62 02  FCB    $32,$04,$B3,$02,$12,$04,$62,$02
+                                             ; C6:4 G#5:2 A#5:4 D#6:2
+F5F8: C0 01                    FCB    $C0,$01 ; -:1
+F5FA: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E56B hdr_hit_challenge, $E571 hdr_hit_challenge
+hit_challenge_v1:
+F5FB: 40 08                    FCB    $40,$08 ; waveform 4, envelope 8
+F5FD: B3 04 63 02 A3 04 12 02  FCB    $B3,$04,$63,$02,$A3,$04,$12,$02
+                                             ; G#5:4 D#5:2 G5:4 A#5:2
+F605: C0 01                    FCB    $C0,$01 ; -:1
+F607: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E5B8 hdr_shot_upgraded
+shot_upgraded_v0:
+F608: 20 00                    FCB    $20,$00 ; waveform 2, envelope 0
 F60A: 44 01 34 01 24 01 34 01  FCB    $44,$01,$34,$01,$24,$01,$34,$01
+                                             ; C#4:1 C4:1 B3:1 C4:1
 F612: 44 01 54 01 64 01 C0 01  FCB    $44,$01,$54,$01,$64,$01,$C0,$01
+                                             ; C#4:1 D4:1 D#4:1 -:1
 F61A: 33 01 23 01 13 01 03 01  FCB    $33,$01,$23,$01,$13,$01,$03,$01
-F622: B4 01 A4 01 94 01 F2 02  FCB    $B4,$01,$A4,$01,$94,$01,$F2,$02
-F62A: 84 01 74 01 F2 03 64 01  FCB    $84,$01,$74,$01,$F2,$03,$64,$01
-F632: 54 01 F2 04 44 01 34 01  FCB    $54,$01,$F2,$04,$44,$01,$34,$01
-F63A: 24 01 04 01 A5 01 85 01  FCB    $24,$01,$04,$01,$A5,$01,$85,$01
-F642: 65 01 45 01 25 01 05 01  FCB    $65,$01,$45,$01,$25,$01,$05,$01
-F64A: A6 01 86 01 F0 70 00 73  FCB    $A6,$01,$86,$01,$F0,$70,$00,$73
-F652: 01 63 01 53 01 63 01 73  FCB    $01,$63,$01,$53,$01,$63,$01,$73
-F65A: 01 83 01 93 01 C0 01 62  FCB    $01,$83,$01,$93,$01,$C0,$01,$62
-F662: 01 52 01 42 01 32 01 22  FCB    $01,$52,$01,$42,$01,$32,$01,$22
-F66A: 01 12 01 03 01 F2 02 A3  FCB    $01,$12,$01,$03,$01,$F2,$02,$A3
-F672: 01 93 01 F2 03 73 01 53  FCB    $01,$93,$01,$F2,$03,$73,$01,$53
-F67A: 01 F2 04 13 01 B4 01 94  FCB    $01,$F2,$04,$13,$01,$B4,$01,$94
-F682: 01 74 01 44 01 34 01 B5  FCB    $01,$74,$01,$44,$01,$34,$01,$B5
-F68A: 01 85 01 65 01 45 01 25  FCB    $01,$85,$01,$65,$01,$45,$01,$25
-F692: 01 C0 01 F0 10 00 C0 0A  FCB    $01,$C0,$01,$F0,$10,$00,$C0,$0A
-F69A: 24 01 14 01 04 01 14 01  FCB    $24,$01,$14,$01,$04,$01,$14,$01
-F6A2: 24 01 34 01 44 01 C0 01  FCB    $24,$01,$34,$01,$44,$01,$C0,$01
-F6AA: F2 02 B3 01 A3 01 93 01  FCB    $F2,$02,$B3,$01,$A3,$01,$93,$01
-F6B2: 83 01 73 01 F2 04 63 01  FCB    $83,$01,$73,$01,$F2,$04,$63,$01
-F6BA: 53 01 43 01 33 01 23 01  FCB    $53,$01,$43,$01,$33,$01,$23,$01
-F6C2: 13 01 03 01 B4 01 F0 50  FCB    $13,$01,$03,$01,$B4,$01,$F0,$50
-F6CA: 00 C0 0A 74 01 64 01 54  FCB    $00,$C0,$0A,$74,$01,$64,$01,$54
-F6D2: 01 64 01 74 01 84 01 94  FCB    $01,$64,$01,$74,$01,$84,$01,$94
-F6DA: 01 C0 01 F2 02 63 01 53  FCB    $01,$C0,$01,$F2,$02,$63,$01,$53
-F6E2: 01 43 01 33 01 23 01 F2  FCB    $01,$43,$01,$33,$01,$23,$01,$F2
-F6EA: 04 13 01 03 01 B4 01 A4  FCB    $04,$13,$01,$03,$01,$B4,$01,$A4
-F6F2: 01 94 01 84 01 74 01 64  FCB    $01,$94,$01,$84,$01,$74,$01,$64
-F6FA: 01 F0 50 10 35 06 45 06  FCB    $01,$F0,$50,$10,$35,$06,$45,$06
-F702: F7 F6 FE 50 10 A6 03 25  FCB    $F7,$F6,$FE,$50,$10,$A6,$03,$25
-F70A: 03 F7 F7 07 40 14 C0 30  FCB    $03,$F7,$F7,$07,$40,$14,$C0,$30
-F712: A5 24 F2 10 A5 04 A5 04  FCB    $A5,$24,$F2,$10,$A5,$04,$A5,$04
-F71A: A5 04 F2 14 95 24 F2 01  FCB    $A5,$04,$F2,$14,$95,$24,$F2,$01
-F722: 55 0C F2 14 85 30 F2 10  FCB    $55,$0C,$F2,$14,$85,$30,$F2,$10
-F72A: 75 04 F2 01 35 02 75 2A  FCB    $75,$04,$F2,$01,$35,$02,$75,$2A
-F732: F0 40 14 C0 30 65 24 F2  FCB    $F0,$40,$14,$C0,$30,$65,$24,$F2
-F73A: 10 65 04 65 04 65 04 F2  FCB    $10,$65,$04,$65,$04,$65,$04,$F2
-F742: 14 55 24 F2 01 05 0C F2  FCB    $14,$55,$24,$F2,$01,$05,$0C,$F2
-F74A: 14 55 30 F2 10 35 04 F2  FCB    $14,$55,$30,$F2,$10,$35,$04,$F2
-F752: 01 A6 02 35 2A F0 40 03  FCB    $01,$A6,$02,$35,$2A,$F0,$40,$03
+                                             ; C5:1 B4:1 A#4:1 A4:1
+F622: B4 01 A4 01 94 01        FCB    $B4,$01,$A4,$01,$94,$01 ; G#4:1 G4:1
+                                             ; F#4:1
+F628: F2 02                    FCB    $F2,$02 ; envelope 2
+F62A: 84 01 74 01              FCB    $84,$01,$74,$01 ; F4:1 E4:1
+F62E: F2 03                    FCB    $F2,$03 ; envelope 3
+F630: 64 01 54 01              FCB    $64,$01,$54,$01 ; D#4:1 D4:1
+F634: F2 04                    FCB    $F2,$04 ; envelope 4
+F636: 44 01 34 01 24 01 04 01  FCB    $44,$01,$34,$01,$24,$01,$04,$01
+                                             ; C#4:1 C4:1 B3:1 A3:1
+F63E: A5 01 85 01 65 01 45 01  FCB    $A5,$01,$85,$01,$65,$01,$45,$01
+                                             ; G3:1 F3:1 D#3:1 C#3:1
+F646: 25 01 05 01 A6 01 86 01  FCB    $25,$01,$05,$01,$A6,$01,$86,$01
+                                             ; B2:1 A2:1 G2:1 F2:1
+F64E: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E5BB hdr_shot_upgraded
+shot_upgraded_v1:
+F64F: 70 00                    FCB    $70,$00 ; waveform 7, envelope 0
+F651: 73 01 63 01 53 01 63 01  FCB    $73,$01,$63,$01,$53,$01,$63,$01
+                                             ; E5:1 D#5:1 D5:1 D#5:1
+F659: 73 01 83 01 93 01 C0 01  FCB    $73,$01,$83,$01,$93,$01,$C0,$01
+                                             ; E5:1 F5:1 F#5:1 -:1
+F661: 62 01 52 01 42 01 32 01  FCB    $62,$01,$52,$01,$42,$01,$32,$01
+                                             ; D#6:1 D6:1 C#6:1 C6:1
+F669: 22 01 12 01 03 01        FCB    $22,$01,$12,$01,$03,$01 ; B5:1 A#5:1 A4:1
+F66F: F2 02                    FCB    $F2,$02 ; envelope 2
+F671: A3 01 93 01              FCB    $A3,$01,$93,$01 ; G5:1 F#5:1
+F675: F2 03                    FCB    $F2,$03 ; envelope 3
+F677: 73 01 53 01              FCB    $73,$01,$53,$01 ; E5:1 D5:1
+F67B: F2 04                    FCB    $F2,$04 ; envelope 4
+F67D: 13 01 B4 01 94 01 74 01  FCB    $13,$01,$B4,$01,$94,$01,$74,$01
+                                             ; A#4:1 G#4:1 F#4:1 E4:1
+F685: 44 01 34 01 B5 01 85 01  FCB    $44,$01,$34,$01,$B5,$01,$85,$01
+                                             ; C#4:1 C4:1 G#3:1 F3:1
+F68D: 65 01 45 01 25 01 C0 01  FCB    $65,$01,$45,$01,$25,$01,$C0,$01
+                                             ; D#3:1 C#3:1 B2:1 -:1
+F695: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E5BE hdr_shot_upgraded
+shot_upgraded_v2:
+F696: 10 00                    FCB    $10,$00 ; waveform 1, envelope 0
+F698: C0 0A 24 01 14 01 04 01  FCB    $C0,$0A,$24,$01,$14,$01,$04,$01
+                                             ; -:10 B3:1 A#3:1 A3:1
+F6A0: 14 01 24 01 34 01 44 01  FCB    $14,$01,$24,$01,$34,$01,$44,$01
+                                             ; A#3:1 B3:1 C4:1 C#4:1
+F6A8: C0 01                    FCB    $C0,$01 ; -:1
+F6AA: F2 02                    FCB    $F2,$02 ; envelope 2
+F6AC: B3 01 A3 01 93 01 83 01  FCB    $B3,$01,$A3,$01,$93,$01,$83,$01
+                                             ; G#5:1 G5:1 F#5:1 F5:1
+F6B4: 73 01                    FCB    $73,$01 ; E5:1
+F6B6: F2 04                    FCB    $F2,$04 ; envelope 4
+F6B8: 63 01 53 01 43 01 33 01  FCB    $63,$01,$53,$01,$43,$01,$33,$01
+                                             ; D#5:1 D5:1 C#5:1 C5:1
+F6C0: 23 01 13 01 03 01 B4 01  FCB    $23,$01,$13,$01,$03,$01,$B4,$01
+                                             ; B4:1 A#4:1 A4:1 G#4:1
+F6C8: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E5C1 hdr_shot_upgraded
+shot_upgraded_v3:
+F6C9: 50 00                    FCB    $50,$00 ; waveform 5, envelope 0
+F6CB: C0 0A 74 01 64 01 54 01  FCB    $C0,$0A,$74,$01,$64,$01,$54,$01
+                                             ; -:10 E4:1 D#4:1 D4:1
+F6D3: 64 01 74 01 84 01 94 01  FCB    $64,$01,$74,$01,$84,$01,$94,$01
+                                             ; D#4:1 E4:1 F4:1 F#4:1
+F6DB: C0 01                    FCB    $C0,$01 ; -:1
+F6DD: F2 02                    FCB    $F2,$02 ; envelope 2
+F6DF: 63 01 53 01 43 01 33 01  FCB    $63,$01,$53,$01,$43,$01,$33,$01
+                                             ; D#5:1 D5:1 C#5:1 C5:1
+F6E7: 23 01                    FCB    $23,$01 ; B4:1
+F6E9: F2 04                    FCB    $F2,$04 ; envelope 4
+F6EB: 13 01 03 01 B4 01 A4 01  FCB    $13,$01,$03,$01,$B4,$01,$A4,$01
+                                             ; A#4:1 A4:1 G#4:1 G4:1
+F6F3: 94 01 84 01 74 01 64 01  FCB    $94,$01,$84,$01,$74,$01,$64,$01
+                                             ; F#4:1 F4:1 E4:1 D#4:1
+F6FB: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E5A8 hdr_star_warp
+star_warp_v0:
+F6FC: 50 10                    FCB    $50,$10 ; waveform 5, envelope 16
+
+; Referenced from: $F702 star_warp_v0
+lF6FE:
+F6FE: 35 06 45 06              FCB    $35,$06,$45,$06 ; C3:6 C#3:6
+F702: F7 F6 FE                 FCB    $F7,$F6,$FE ; jump lF6FE
+
+; Referenced from: $E5AB hdr_star_warp
+star_warp_v1:
+F705: 50 10                    FCB    $50,$10 ; waveform 5, envelope 16
+
+; Referenced from: $F70B star_warp_v1
+lF707:
+F707: A6 03 25 03              FCB    $A6,$03,$25,$03 ; G2:3 B2:3
+F70B: F7 F7 07                 FCB    $F7,$F7,$07 ; jump lF707
+
+; Referenced from: $E5AE hdr_star_warp
+star_warp_v2:
+F70E: 40 14                    FCB    $40,$14 ; waveform 4, envelope 20
+F710: C0 30 A5 24              FCB    $C0,$30,$A5,$24 ; -:48 G3:36
+F714: F2 10                    FCB    $F2,$10 ; envelope 16
+F716: A5 04 A5 04 A5 04        FCB    $A5,$04,$A5,$04,$A5,$04 ; G3:4 G3:4 G3:4
+F71C: F2 14                    FCB    $F2,$14 ; envelope 20
+F71E: 95 24                    FCB    $95,$24 ; F#3:36
+F720: F2 01                    FCB    $F2,$01 ; envelope 1
+F722: 55 0C                    FCB    $55,$0C ; D3:12
+F724: F2 14                    FCB    $F2,$14 ; envelope 20
+F726: 85 30                    FCB    $85,$30 ; F3:48
+F728: F2 10                    FCB    $F2,$10 ; envelope 16
+F72A: 75 04                    FCB    $75,$04 ; E3:4
+F72C: F2 01                    FCB    $F2,$01 ; envelope 1
+F72E: 35 02 75 2A              FCB    $35,$02,$75,$2A ; C3:2 E3:42
+F732: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E5B1 hdr_star_warp
+star_warp_v3:
+F733: 40 14                    FCB    $40,$14 ; waveform 4, envelope 20
+F735: C0 30 65 24              FCB    $C0,$30,$65,$24 ; -:48 D#3:36
+F739: F2 10                    FCB    $F2,$10 ; envelope 16
+F73B: 65 04 65 04 65 04        FCB    $65,$04,$65,$04,$65,$04 ; D#3:4 D#3:4
+                                             ; D#3:4
+F741: F2 14                    FCB    $F2,$14 ; envelope 20
+F743: 55 24                    FCB    $55,$24 ; D3:36
+F745: F2 01                    FCB    $F2,$01 ; envelope 1
+F747: 05 0C                    FCB    $05,$0C ; A2:12
+F749: F2 14                    FCB    $F2,$14 ; envelope 20
+F74B: 55 30                    FCB    $55,$30 ; D3:48
+F74D: F2 10                    FCB    $F2,$10 ; envelope 16
+F74F: 35 04                    FCB    $35,$04 ; C3:4
+F751: F2 01                    FCB    $F2,$01 ; envelope 1
+F753: A6 02 35 2A              FCB    $A6,$02,$35,$2A ; G2:2 C3:42
+F757: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E5B4 hdr_star_warp
+star_warp_v4:
+F758: 40 03                    FCB    $40,$03 ; waveform 4, envelope 3
 F75A: C0 32 A5 24 A5 04 A5 04  FCB    $C0,$32,$A5,$24,$A5,$04,$A5,$04
+                                             ; -:50 G3:36 G3:4 G3:4
 F762: A5 04 95 24 55 0C 85 2E  FCB    $A5,$04,$95,$24,$55,$0C,$85,$2E
-F76A: F2 11 75 04 F2 03 35 02  FCB    $F2,$11,$75,$04,$F2,$03,$35,$02
-F772: 75 2A F0 40 02 32 01 22  FCB    $75,$2A,$F0,$40,$02,$32,$01,$22
-F77A: 01 12 01 02 01 B3 01 A3  FCB    $01,$12,$01,$02,$01,$B3,$01,$A3
-F782: 01 93 01 83 01 12 01 02  FCB    $01,$93,$01,$83,$01,$12,$01,$02
-F78A: 01 B3 01 A3 01 93 01 83  FCB    $01,$B3,$01,$A3,$01,$93,$01,$83
-F792: 01 73 01 63 01 B3 01 A3  FCB    $01,$73,$01,$63,$01,$B3,$01,$A3
-F79A: 01 93 01 83 01 73 01 63  FCB    $01,$93,$01,$83,$01,$73,$01,$63
-F7A2: 01 53 01 43 01 93 01 83  FCB    $01,$53,$01,$43,$01,$93,$01,$83
-F7AA: 01 73 01 63 01 53 01 43  FCB    $01,$73,$01,$63,$01,$53,$01,$43
-F7B2: 01 33 01 23 01 73 01 63  FCB    $01,$33,$01,$23,$01,$73,$01,$63
-F7BA: 01 53 01 43 01 33 01 23  FCB    $01,$53,$01,$43,$01,$33,$01,$23
-F7C2: 01 13 01 03 01 53 01 43  FCB    $01,$13,$01,$03,$01,$53,$01,$43
-F7CA: 01 33 01 23 01 13 01 03  FCB    $01,$33,$01,$23,$01,$13,$01,$03
-F7D2: 01 B4 01 A4 01 33 01 23  FCB    $01,$B4,$01,$A4,$01,$33,$01,$23
-F7DA: 01 13 01 03 01 B4 01 A4  FCB    $01,$13,$01,$03,$01,$B4,$01,$A4
-F7E2: 01 94 01 84 01 13 01 03  FCB    $01,$94,$01,$84,$01,$13,$01,$03
-F7EA: 01 B4 01 A4 01 94 01 84  FCB    $01,$B4,$01,$A4,$01,$94,$01,$84
-F7F2: 01 74 01 64 01 B4 01 A4  FCB    $01,$74,$01,$64,$01,$B4,$01,$A4
-F7FA: 01 94 01 84 01 74 01 64  FCB    $01,$94,$01,$84,$01,$74,$01,$64
-F802: 01 54 01 44 01 94 01 84  FCB    $01,$54,$01,$44,$01,$94,$01,$84
-F80A: 01 74 01 64 01 54 01 44  FCB    $01,$74,$01,$64,$01,$54,$01,$44
-F812: 01 34 01 24 01 74 01 64  FCB    $01,$34,$01,$24,$01,$74,$01,$64
-F81A: 01 54 01 44 01 34 01 24  FCB    $01,$54,$01,$44,$01,$34,$01,$24
-F822: 01 14 01 04 01 F2 03 54  FCB    $01,$14,$01,$04,$01,$F2,$03,$54
-F82A: 01 44 01 34 01 24 01 14  FCB    $01,$44,$01,$34,$01,$24,$01,$14
-F832: 01 04 01 B5 01 A5 01 F2  FCB    $01,$04,$01,$B5,$01,$A5,$01,$F2
-F83A: 04 34 01 24 01 14 01 04  FCB    $04,$34,$01,$24,$01,$14,$01,$04
-F842: 01 B5 01 A5 01 95 01 85  FCB    $01,$B5,$01,$A5,$01,$95,$01,$85
-F84A: 01 F0 10 00 A3 01 B3 01  FCB    $01,$F0,$10,$00,$A3,$01,$B3,$01
-F852: A3 01 B3 01 C0 02 63 01  FCB    $A3,$01,$B3,$01,$C0,$02,$63,$01
-F85A: 73 01 83 01 C0 01 02 01  FCB    $73,$01,$83,$01,$C0,$01,$02,$01
-F862: 22 01 52 01 92 01 F0 20  FCB    $22,$01,$52,$01,$92,$01,$F0,$20
-F86A: 03 72 07 42 07 52 07 22  FCB    $03,$72,$07,$42,$07,$52,$07,$22
-F872: 07 F2 02 72 06 42 06 52  FCB    $07,$F2,$02,$72,$06,$42,$06,$52
-F87A: 06 22 06 F2 01 72 05 42  FCB    $06,$22,$06,$F2,$01,$72,$05,$42
-F882: 05 52 05 22 05 F2 00 72  FCB    $05,$52,$05,$22,$05,$F2,$00,$72
-F88A: 04 42 04 52 04 22 04 72  FCB    $04,$42,$04,$52,$04,$22,$04,$72
-F892: 04 42 04 52 04 22 04 72  FCB    $04,$42,$04,$52,$04,$22,$04,$72
-F89A: 04 42 04 52 04 22 04 F0  FCB    $04,$42,$04,$52,$04,$22,$04,$F0
-F8A2: 30 03 04 07 75 07 B5 07  FCB    $30,$03,$04,$07,$75,$07,$B5,$07
-F8AA: 75 07 F2 02 03 06 74 06  FCB    $75,$07,$F2,$02,$03,$06,$74,$06
-F8B2: B4 06 74 06 F2 01 03 05  FCB    $B4,$06,$74,$06,$F2,$01,$03,$05
-F8BA: 74 05 B4 05 74 05 F2 00  FCB    $74,$05,$B4,$05,$74,$05,$F2,$00
+                                             ; G3:4 F#3:36 D3:12 F3:46
+F76A: F2 11                    FCB    $F2,$11 ; envelope 17
+F76C: 75 04                    FCB    $75,$04 ; E3:4
+F76E: F2 03                    FCB    $F2,$03 ; envelope 3
+F770: 35 02 75 2A              FCB    $35,$02,$75,$2A ; C3:2 E3:42
+F774: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E533 hdr_dive
+dive_v0:
+F775: 40 02                    FCB    $40,$02 ; waveform 4, envelope 2
+F777: 32 01 22 01 12 01 02 01  FCB    $32,$01,$22,$01,$12,$01,$02,$01
+                                             ; C6:1 B5:1 A#5:1 A5:1
+F77F: B3 01 A3 01 93 01 83 01  FCB    $B3,$01,$A3,$01,$93,$01,$83,$01
+                                             ; G#5:1 G5:1 F#5:1 F5:1
+F787: 12 01 02 01 B3 01 A3 01  FCB    $12,$01,$02,$01,$B3,$01,$A3,$01
+                                             ; A#5:1 A5:1 G#5:1 G5:1
+F78F: 93 01 83 01 73 01 63 01  FCB    $93,$01,$83,$01,$73,$01,$63,$01
+                                             ; F#5:1 F5:1 E5:1 D#5:1
+F797: B3 01 A3 01 93 01 83 01  FCB    $B3,$01,$A3,$01,$93,$01,$83,$01
+                                             ; G#5:1 G5:1 F#5:1 F5:1
+F79F: 73 01 63 01 53 01 43 01  FCB    $73,$01,$63,$01,$53,$01,$43,$01
+                                             ; E5:1 D#5:1 D5:1 C#5:1
+F7A7: 93 01 83 01 73 01 63 01  FCB    $93,$01,$83,$01,$73,$01,$63,$01
+                                             ; F#5:1 F5:1 E5:1 D#5:1
+F7AF: 53 01 43 01 33 01 23 01  FCB    $53,$01,$43,$01,$33,$01,$23,$01
+                                             ; D5:1 C#5:1 C5:1 B4:1
+F7B7: 73 01 63 01 53 01 43 01  FCB    $73,$01,$63,$01,$53,$01,$43,$01
+                                             ; E5:1 D#5:1 D5:1 C#5:1
+F7BF: 33 01 23 01 13 01 03 01  FCB    $33,$01,$23,$01,$13,$01,$03,$01
+                                             ; C5:1 B4:1 A#4:1 A4:1
+F7C7: 53 01 43 01 33 01 23 01  FCB    $53,$01,$43,$01,$33,$01,$23,$01
+                                             ; D5:1 C#5:1 C5:1 B4:1
+F7CF: 13 01 03 01 B4 01 A4 01  FCB    $13,$01,$03,$01,$B4,$01,$A4,$01
+                                             ; A#4:1 A4:1 G#4:1 G4:1
+F7D7: 33 01 23 01 13 01 03 01  FCB    $33,$01,$23,$01,$13,$01,$03,$01
+                                             ; C5:1 B4:1 A#4:1 A4:1
+F7DF: B4 01 A4 01 94 01 84 01  FCB    $B4,$01,$A4,$01,$94,$01,$84,$01
+                                             ; G#4:1 G4:1 F#4:1 F4:1
+F7E7: 13 01 03 01 B4 01 A4 01  FCB    $13,$01,$03,$01,$B4,$01,$A4,$01
+                                             ; A#4:1 A4:1 G#4:1 G4:1
+F7EF: 94 01 84 01 74 01 64 01  FCB    $94,$01,$84,$01,$74,$01,$64,$01
+                                             ; F#4:1 F4:1 E4:1 D#4:1
+F7F7: B4 01 A4 01 94 01 84 01  FCB    $B4,$01,$A4,$01,$94,$01,$84,$01
+                                             ; G#4:1 G4:1 F#4:1 F4:1
+F7FF: 74 01 64 01 54 01 44 01  FCB    $74,$01,$64,$01,$54,$01,$44,$01
+                                             ; E4:1 D#4:1 D4:1 C#4:1
+F807: 94 01 84 01 74 01 64 01  FCB    $94,$01,$84,$01,$74,$01,$64,$01
+                                             ; F#4:1 F4:1 E4:1 D#4:1
+F80F: 54 01 44 01 34 01 24 01  FCB    $54,$01,$44,$01,$34,$01,$24,$01
+                                             ; D4:1 C#4:1 C4:1 B3:1
+F817: 74 01 64 01 54 01 44 01  FCB    $74,$01,$64,$01,$54,$01,$44,$01
+                                             ; E4:1 D#4:1 D4:1 C#4:1
+F81F: 34 01 24 01 14 01 04 01  FCB    $34,$01,$24,$01,$14,$01,$04,$01
+                                             ; C4:1 B3:1 A#3:1 A3:1
+F827: F2 03                    FCB    $F2,$03 ; envelope 3
+F829: 54 01 44 01 34 01 24 01  FCB    $54,$01,$44,$01,$34,$01,$24,$01
+                                             ; D4:1 C#4:1 C4:1 B3:1
+F831: 14 01 04 01 B5 01 A5 01  FCB    $14,$01,$04,$01,$B5,$01,$A5,$01
+                                             ; A#3:1 A3:1 G#3:1 G3:1
+F839: F2 04                    FCB    $F2,$04 ; envelope 4
+F83B: 34 01 24 01 14 01 04 01  FCB    $34,$01,$24,$01,$14,$01,$04,$01
+                                             ; C4:1 B3:1 A#3:1 A3:1
+F843: B5 01 A5 01 95 01 85 01  FCB    $B5,$01,$A5,$01,$95,$01,$85,$01
+                                             ; G#3:1 G3:1 F#3:1 F3:1
+F84B: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E53E hdr_hit, $E541 hdr_hit, $E544 hdr_hit
+hit_v0:
+F84C: 10 00                    FCB    $10,$00 ; waveform 1, envelope 0
+F84E: A3 01 B3 01 A3 01 B3 01  FCB    $A3,$01,$B3,$01,$A3,$01,$B3,$01
+                                             ; G5:1 G#5:1 G5:1 G#5:1
+F856: C0 02 63 01 73 01 83 01  FCB    $C0,$02,$63,$01,$73,$01,$83,$01
+                                             ; -:2 D#5:1 E5:1 F5:1
+F85E: C0 01 02 01 22 01 52 01  FCB    $C0,$01,$02,$01,$22,$01,$52,$01
+                                             ; -:1 A5:1 B5:1 D6:1
+F866: 92 01                    FCB    $92,$01 ; F#6:1
+F868: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E548 hdr_object_spawn, $E54E hdr_object_spawn
+object_spawn_v0:
+F869: 20 03                    FCB    $20,$03 ; waveform 2, envelope 3
+F86B: 72 07 42 07 52 07 22 07  FCB    $72,$07,$42,$07,$52,$07,$22,$07
+                                             ; E6:7 C#6:7 D6:7 B5:7
+F873: F2 02                    FCB    $F2,$02 ; envelope 2
+F875: 72 06 42 06 52 06 22 06  FCB    $72,$06,$42,$06,$52,$06,$22,$06
+                                             ; E6:6 C#6:6 D6:6 B5:6
+F87D: F2 01                    FCB    $F2,$01 ; envelope 1
+F87F: 72 05 42 05 52 05 22 05  FCB    $72,$05,$42,$05,$52,$05,$22,$05
+                                             ; E6:5 C#6:5 D6:5 B5:5
+F887: F2 00                    FCB    $F2,$00 ; envelope 0
+F889: 72 04 42 04 52 04 22 04  FCB    $72,$04,$42,$04,$52,$04,$22,$04
+                                             ; E6:4 C#6:4 D6:4 B5:4
+F891: 72 04 42 04 52 04 22 04  FCB    $72,$04,$42,$04,$52,$04,$22,$04
+                                             ; E6:4 C#6:4 D6:4 B5:4
+F899: 72 04 42 04 52 04 22 04  FCB    $72,$04,$42,$04,$52,$04,$22,$04
+                                             ; E6:4 C#6:4 D6:4 B5:4
+F8A1: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E54B hdr_object_spawn, $E551 hdr_object_spawn
+object_spawn_v1:
+F8A2: 30 03                    FCB    $30,$03 ; waveform 3, envelope 3
+F8A4: 04 07 75 07 B5 07 75 07  FCB    $04,$07,$75,$07,$B5,$07,$75,$07
+                                             ; A3:7 E3:7 G#3:7 E3:7
+F8AC: F2 02                    FCB    $F2,$02 ; envelope 2
+F8AE: 03 06 74 06 B4 06 74 06  FCB    $03,$06,$74,$06,$B4,$06,$74,$06
+                                             ; A4:6 E4:6 G#4:6 E4:6
+F8B6: F2 01                    FCB    $F2,$01 ; envelope 1
+F8B8: 03 05 74 05 B4 05 74 05  FCB    $03,$05,$74,$05,$B4,$05,$74,$05
+                                             ; A4:5 E4:5 G#4:5 E4:5
+F8C0: F2 00                    FCB    $F2,$00 ; envelope 0
 F8C2: 02 04 73 04 B3 04 73 04  FCB    $02,$04,$73,$04,$B3,$04,$73,$04
+                                             ; A5:4 E5:4 G#5:4 E5:4
 F8CA: 02 04 73 04 B3 04 73 04  FCB    $02,$04,$73,$04,$B3,$04,$73,$04
+                                             ; A5:4 E5:4 G#5:4 E5:4
 F8D2: 02 04 73 04 B3 04 73 04  FCB    $02,$04,$73,$04,$B3,$04,$73,$04
-F8DA: F0 50 08 93 02 53 01 73  FCB    $F0,$50,$08,$93,$02,$53,$01,$73
-F8E2: 02 F2 07 02 06 C0 01 F0  FCB    $02,$F2,$07,$02,$06,$C0,$01,$F0
-F8EA: 00 08 53 01 03 01 94 01  FCB    $00,$08,$53,$01,$03,$01,$94,$01
-F8F2: 03 02 F2 03 03 06 C0 01  FCB    $03,$02,$F2,$03,$03,$06,$C0,$01
-F8FA: F0 00 08 35 01 45 01 55  FCB    $F0,$00,$08,$35,$01,$45,$01,$55
-F902: 01 45 01 35 02 35 01 45  FCB    $01,$45,$01,$35,$02,$35,$01,$45
-F90A: 01 55 01 65 01 73 01 63  FCB    $01,$55,$01,$65,$01,$73,$01,$63
-F912: 01 53 01 43 01 33 02 33  FCB    $01,$53,$01,$43,$01,$33,$02,$33
-F91A: 01 43 01 53 01 63 01 73  FCB    $01,$43,$01,$53,$01,$63,$01,$73
-F922: 01 83 01 93 01 A3 01 93  FCB    $01,$83,$01,$93,$01,$A3,$01,$93
-F92A: 01 83 01 73 01 63 01 53  FCB    $01,$83,$01,$73,$01,$63,$01,$53
-F932: 01 43 01 33 02 C0 05 F0  FCB    $01,$43,$01,$33,$02,$C0,$05,$F0
-F93A: 00 08 05 01 15 01 25 01  FCB    $00,$08,$05,$01,$15,$01,$25,$01
-F942: 15 01 05 02 03 01 13 01  FCB    $15,$01,$05,$02,$03,$01,$13,$01
-F94A: 23 01 33 01 43 01 33 01  FCB    $23,$01,$33,$01,$43,$01,$33,$01
-F952: 23 01 13 01 03 02 03 01  FCB    $23,$01,$13,$01,$03,$02,$03,$01
-F95A: 13 01 23 01 33 01 43 01  FCB    $13,$01,$23,$01,$33,$01,$43,$01
-F962: 53 01 63 01 73 01 63 01  FCB    $53,$01,$63,$01,$73,$01,$63,$01
-F96A: 53 01 43 01 33 01 23 01  FCB    $53,$01,$43,$01,$33,$01,$23,$01
-F972: 13 01 03 02 C0 05 F0 10  FCB    $13,$01,$03,$02,$C0,$05,$F0,$10
-F97A: 00 12 12 B3 03 12 03 32  FCB    $00,$12,$12,$B3,$03,$12,$03,$32
-F982: 06 B3 06 12 03 83 03 C0  FCB    $06,$B3,$06,$12,$03,$83,$03,$C0
-F98A: 03 53 03 12 0C B3 04 12  FCB    $03,$53,$03,$12,$0C,$B3,$04,$12
-F992: 04 B3 04 A3 24 A3 24 A3  FCB    $04,$B3,$04,$A3,$24,$A3,$24,$A3
-F99A: 0C C0 18 F0 10 03 C0 02  FCB    $0C,$C0,$18,$F0,$10,$03,$C0,$02
-F9A2: F7 F9 7B 10 18 85 06 F2  FCB    $F7,$F9,$7B,$10,$18,$85,$06,$F2
-F9AA: 1E 85 02 85 02 85 02 F2  FCB    $1E,$85,$02,$85,$02,$85,$02,$F2
-F9B2: 18 85 06 F2 1E 85 02 85  FCB    $18,$85,$06,$F2,$1E,$85,$02,$85
-F9BA: 02 85 02 85 02 85 02 85  FCB    $02,$85,$02,$85,$02,$85,$02,$85
-F9C2: 02 85 02 85 02 85 02 F6  FCB    $02,$85,$02,$85,$02,$85,$02,$F6
-F9CA: 02 F9 D0 F7 F9 A7 F2 18  FCB    $02,$F9,$D0,$F7,$F9,$A7,$F2,$18
-F9D2: A5 06 F2 1E A5 02 A5 02  FCB    $A5,$06,$F2,$1E,$A5,$02,$A5,$02
-F9DA: A5 02 F2 18 A5 06 F2 1E  FCB    $A5,$02,$F2,$18,$A5,$06,$F2,$1E
+                                             ; A5:4 E5:4 G#5:4 E5:4
+F8DA: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E58E hdr_extra_ship, $E594 hdr_extra_ship
+extra_ship_v0:
+F8DB: 50 08                    FCB    $50,$08 ; waveform 5, envelope 8
+F8DD: 93 02 53 01 73 02        FCB    $93,$02,$53,$01,$73,$02 ; F#5:2 D5:1 E5:2
+F8E3: F2 07                    FCB    $F2,$07 ; envelope 7
+F8E5: 02 06 C0 01              FCB    $02,$06,$C0,$01 ; A5:6 -:1
+F8E9: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E591 hdr_extra_ship, $E597 hdr_extra_ship
+extra_ship_v1:
+F8EA: 00 08                    FCB    $00,$08 ; waveform 0, envelope 8
+F8EC: 53 01 03 01 94 01 03 02  FCB    $53,$01,$03,$01,$94,$01,$03,$02
+                                             ; D5:1 A4:1 F#4:1 A4:2
+F8F4: F2 03                    FCB    $F2,$03 ; envelope 3
+F8F6: 03 06 C0 01              FCB    $03,$06,$C0,$01 ; A4:6 -:1
+F8FA: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E59B hdr_coin, $E5A1 hdr_coin
+coin_v0:
+F8FB: 00 08                    FCB    $00,$08 ; waveform 0, envelope 8
+F8FD: 35 01 45 01 55 01 45 01  FCB    $35,$01,$45,$01,$55,$01,$45,$01
+                                             ; C3:1 C#3:1 D3:1 C#3:1
+F905: 35 02 35 01 45 01 55 01  FCB    $35,$02,$35,$01,$45,$01,$55,$01
+                                             ; C3:2 C3:1 C#3:1 D3:1
+F90D: 65 01 73 01 63 01 53 01  FCB    $65,$01,$73,$01,$63,$01,$53,$01
+                                             ; D#3:1 E5:1 D#5:1 D5:1
+F915: 43 01 33 02 33 01 43 01  FCB    $43,$01,$33,$02,$33,$01,$43,$01
+                                             ; C#5:1 C5:2 C5:1 C#5:1
+F91D: 53 01 63 01 73 01 83 01  FCB    $53,$01,$63,$01,$73,$01,$83,$01
+                                             ; D5:1 D#5:1 E5:1 F5:1
+F925: 93 01 A3 01 93 01 83 01  FCB    $93,$01,$A3,$01,$93,$01,$83,$01
+                                             ; F#5:1 G5:1 F#5:1 F5:1
+F92D: 73 01 63 01 53 01 43 01  FCB    $73,$01,$63,$01,$53,$01,$43,$01
+                                             ; E5:1 D#5:1 D5:1 C#5:1
+F935: 33 02 C0 05              FCB    $33,$02,$C0,$05 ; C5:2 -:5
+F939: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E59E hdr_coin, $E5A4 hdr_coin
+coin_v1:
+F93A: 00 08                    FCB    $00,$08 ; waveform 0, envelope 8
+F93C: 05 01 15 01 25 01 15 01  FCB    $05,$01,$15,$01,$25,$01,$15,$01
+                                             ; A2:1 A#2:1 B2:1 A#2:1
+F944: 05 02 03 01 13 01 23 01  FCB    $05,$02,$03,$01,$13,$01,$23,$01
+                                             ; A2:2 A4:1 A#4:1 B4:1
+F94C: 33 01 43 01 33 01 23 01  FCB    $33,$01,$43,$01,$33,$01,$23,$01
+                                             ; C5:1 C#5:1 C5:1 B4:1
+F954: 13 01 03 02 03 01 13 01  FCB    $13,$01,$03,$02,$03,$01,$13,$01
+                                             ; A#4:1 A4:2 A4:1 A#4:1
+F95C: 23 01 33 01 43 01 53 01  FCB    $23,$01,$33,$01,$43,$01,$53,$01
+                                             ; B4:1 C5:1 C#5:1 D5:1
+F964: 63 01 73 01 63 01 53 01  FCB    $63,$01,$73,$01,$63,$01,$53,$01
+                                             ; D#5:1 E5:1 D#5:1 D5:1
+F96C: 43 01 33 01 23 01 13 01  FCB    $43,$01,$33,$01,$23,$01,$13,$01
+                                             ; C#5:1 C5:1 B4:1 A#4:1
+F974: 03 02 C0 05              FCB    $03,$02,$C0,$05 ; A4:2 -:5
+F978: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E575 hdr_player_explode, $E584 hdr_player_explode
+player_explode_v0:
+F979: 10 00                    FCB    $10,$00 ; waveform 1, envelope 0
+
+; Referenced from: $F9A2 player_explode_v1
+lF97B:
+F97B: 12 12 B3 03 12 03 32 06  FCB    $12,$12,$B3,$03,$12,$03,$32,$06
+                                             ; A#5:18 G#5:3 A#5:3 C6:6
+F983: B3 06 12 03 83 03 C0 03  FCB    $B3,$06,$12,$03,$83,$03,$C0,$03
+                                             ; G#5:6 A#5:3 F5:3 -:3
+F98B: 53 03 12 0C B3 04 12 04  FCB    $53,$03,$12,$0C,$B3,$04,$12,$04
+                                             ; D5:3 A#5:12 G#5:4 A#5:4
+F993: B3 04 A3 24 A3 24 A3 0C  FCB    $B3,$04,$A3,$24,$A3,$24,$A3,$0C
+                                             ; G#5:4 G5:36 G5:36 G5:12
+F99B: C0 18                    FCB    $C0,$18 ; -:24
+F99D: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E578 hdr_player_explode
+player_explode_v1:
+F99E: 10 03                    FCB    $10,$03 ; waveform 1, envelope 3
+F9A0: C0 02                    FCB    $C0,$02 ; -:2
+F9A2: F7 F9 7B                 FCB    $F7,$F9,$7B ; jump lF97B
+
+; Referenced from: $E57B hdr_player_explode, $E587 hdr_player_explode, $E58A
+; hdr_player_explode
+player_explode_v2:
+F9A5: 10 18                    FCB    $10,$18 ; waveform 1, envelope 24
+
+; Referenced from: $F9CD player_explode_v2
+lF9A7:
+F9A7: 85 06                    FCB    $85,$06 ; F3:6
+F9A9: F2 1E                    FCB    $F2,$1E ; envelope 30
+F9AB: 85 02 85 02 85 02        FCB    $85,$02,$85,$02,$85,$02 ; F3:2 F3:2 F3:2
+F9B1: F2 18                    FCB    $F2,$18 ; envelope 24
+F9B3: 85 06                    FCB    $85,$06 ; F3:6
+F9B5: F2 1E                    FCB    $F2,$1E ; envelope 30
+F9B7: 85 02 85 02 85 02 85 02  FCB    $85,$02,$85,$02,$85,$02,$85,$02
+                                             ; F3:2 F3:2 F3:2 F3:2
+F9BF: 85 02 85 02 85 02 85 02  FCB    $85,$02,$85,$02,$85,$02,$85,$02
+                                             ; F3:2 F3:2 F3:2 F3:2
+F9C7: 85 02                    FCB    $85,$02 ; F3:2
+F9C9: F6 02 F9 D0              FCB    $F6,$02,$F9,$D0 ; to lF9D0 every 2 passes
+                                             ; (+F)
+F9CD: F7 F9 A7                 FCB    $F7,$F9,$A7 ; jump lF9A7
+
+; Referenced from: $F9C9 player_explode_v2, $F9F4 player_explode_v2
+lF9D0:
+F9D0: F2 18                    FCB    $F2,$18 ; envelope 24
+F9D2: A5 06                    FCB    $A5,$06 ; G3:6
+F9D4: F2 1E                    FCB    $F2,$1E ; envelope 30
+F9D6: A5 02 A5 02 A5 02        FCB    $A5,$02,$A5,$02,$A5,$02 ; G3:2 G3:2 G3:2
+F9DC: F2 18                    FCB    $F2,$18 ; envelope 24
+F9DE: A5 06                    FCB    $A5,$06 ; G3:6
+F9E0: F2 1E                    FCB    $F2,$1E ; envelope 30
 F9E2: A5 02 A5 02 A5 02 A5 02  FCB    $A5,$02,$A5,$02,$A5,$02,$A5,$02
+                                             ; G3:2 G3:2 G3:2 G3:2
 F9EA: A5 02 A5 02 A5 02 A5 02  FCB    $A5,$02,$A5,$02,$A5,$02,$A5,$02
-F9F2: A5 02 F3 02 F9 D0 F2 04  FCB    $A5,$02,$F3,$02,$F9,$D0,$F2,$04
-F9FA: A5 0C C0 18 F0 10 03 63  FCB    $A5,$0C,$C0,$18,$F0,$10,$03,$63
-FA02: 24 63 24 53 24 53 24 53  FCB    $24,$63,$24,$53,$24,$53,$24,$53
-FA0A: 0C C0 18 F0 10 03 33 24  FCB    $0C,$C0,$18,$F0,$10,$03,$33,$24
-FA12: 33 24 23 24 23 24 23 0C  FCB    $33,$24,$23,$24,$23,$24,$23,$0C
-FA1A: C0 18 F0 40 02 55 02 75  FCB    $C0,$18,$F0,$40,$02,$55,$02,$75
-FA22: 02 95 02 C0 03 04 02 24  FCB    $02,$95,$02,$C0,$03,$04,$02,$24
-FA2A: 02 44 02 C0 03 74 02 94  FCB    $02,$44,$02,$C0,$03,$74,$02,$94
-FA32: 02 B4 02 C0 03 F1 70 F2  FCB    $02,$B4,$02,$C0,$03,$F1,$70,$F2
-FA3A: 10 83 08 F0 31 39 38 34  FCB    $10,$83,$08,$F0,$31,$39,$38,$34
-FA42: 20 4E 41 4D 43 4F 20 41  FCB    $20,$4E,$41,$4D,$43,$4F,$20,$41
-FA4A: 4C 4C 20 52 49 47 48 54  FCB    $4C,$4C,$20,$52,$49,$47,$48,$54
-FA52: 53 20 52 45 53 45 52 56  FCB    $53,$20,$52,$45,$53,$45,$52,$56
-FA5A: 45 44                    FCB    $45,$44
+                                             ; G3:2 G3:2 G3:2 G3:2
+F9F2: A5 02                    FCB    $A5,$02 ; G3:2
+F9F4: F3 02 F9 D0              FCB    $F3,$02,$F9,$D0 ; repeat from lF9D0: 2
+                                             ; passes (+C)
+F9F8: F2 04                    FCB    $F2,$04 ; envelope 4
+F9FA: A5 0C C0 18              FCB    $A5,$0C,$C0,$18 ; G3:12 -:24
+F9FE: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E57E hdr_player_explode
+player_explode_v3:
+F9FF: 10 03                    FCB    $10,$03 ; waveform 1, envelope 3
+FA01: 63 24 63 24 53 24 53 24  FCB    $63,$24,$63,$24,$53,$24,$53,$24
+                                             ; D#5:36 D#5:36 D5:36 D5:36
+FA09: 53 0C C0 18              FCB    $53,$0C,$C0,$18 ; D5:12 -:24
+FA0D: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E581 hdr_player_explode
+player_explode_v4:
+FA0E: 10 03                    FCB    $10,$03 ; waveform 1, envelope 3
+FA10: 33 24 33 24 23 24 23 24  FCB    $33,$24,$33,$24,$23,$24,$23,$24
+                                             ; C5:36 C5:36 B4:36 B4:36
+FA18: 23 0C C0 18              FCB    $23,$0C,$C0,$18 ; B4:12 -:24
+FA1C: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Referenced from: $E5C5 hdr_bonus_ship, $E5C8 hdr_bonus_ship, $E5CB
+; hdr_bonus_ship, $E5CE hdr_bonus_ship
+bonus_ship_v0:
+FA1D: 40 02                    FCB    $40,$02 ; waveform 4, envelope 2
+FA1F: 55 02 75 02 95 02 C0 03  FCB    $55,$02,$75,$02,$95,$02,$C0,$03
+                                             ; D3:2 E3:2 F#3:2 -:3
+FA27: 04 02 24 02 44 02 C0 03  FCB    $04,$02,$24,$02,$44,$02,$C0,$03
+                                             ; A3:2 B3:2 C#4:2 -:3
+FA2F: 74 02 94 02 B4 02 C0 03  FCB    $74,$02,$94,$02,$B4,$02,$C0,$03
+                                             ; E4:2 F#4:2 G#4:2 -:3
+FA37: F1 70                    FCB    $F1,$70 ; waveform 7
+FA39: F2 10                    FCB    $F2,$10 ; envelope 16
+FA3B: 83 08                    FCB    $83,$08 ; F5:8
+FA3D: F0                       FCB    $F0    ; end: clear the request (op_end)
+
+; Copyright text, never read.
+copyright_text:
+;   "1984 NAMCO ALL RIGHTS RESERVED"
+FA3E: 31 39 38 34 20 4E 41 4D  FCB    $31,$39,$38,$34,$20,$4E,$41,$4D
+FA46: 43 4F 20 41 4C 4C 20 52  FCB    $43,$4F,$20,$41,$4C,$4C,$20,$52
+FA4E: 49 47 48 54 53 20 52 45  FCB    $49,$47,$48,$54,$53,$20,$52,$45
+FA56: 53 45 52 56 45 44        FCB    $53,$45,$52,$56,$45,$44
 FA5C: FF FF FF FF FF FF FF FF  FCB    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
                                              ; [fill $FF x 1427]
 FA64: FF FF FF FF FF FF FF FF  FCB    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
@@ -2042,8 +3832,8 @@ FFDC: FF FF FF FF FF FF FF FF  FCB    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
 FFE4: FF FF FF FF FF FF FF FF  FCB    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
 FFEC: FF FF FF                 FCB    $FF,$FF,$FF
 
-; Checksum adjust: the byte sum of $E000-$FFFF is 0 (tested at
-; boot or in the service mode).
+; Checksum adjust: the byte sum of $E000-$FFFF is 0 (tested by
+; reset_sound; an error is reported to the main CPU in $0380).
 checksum_E000:
 FFEF: 46                       FCB    $46
 FFF0: FF FF                    FDB    $FFFF  ; reserved

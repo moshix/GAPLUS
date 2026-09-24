@@ -22,7 +22,7 @@ Copyright 2026 by Moshix
 | `src/game/main/gp2_4_clock.js` | cycle accounting on the shared clock (`src/game/clock.js`) |
 | `test/oracle/main-gp2_4.test.mjs` | routine tests (mode 9, helpers, delay, easter egg) |
 | `test/oracle/main-gp2_4-svc.test.mjs` | the service mode, frame by frame, 12 runs |
-| `test/oracle/main-gp2_4-lib.test.mjs` | ROM runner (CWAI stepping, stops), stubs (no tests) |
+| `test/oracle/main-gp2_4.lib.mjs` | ROM runner (CWAI stepping, stops), stubs (no tests) |
 
 ## Routines
 
@@ -45,8 +45,11 @@ Copyright 2026 by Moshix
 
 Tasks follow the dispatcher convention (`INC <main_task` then return;
 task_dispatch loops). The `JNIWAR` secret name makes
-`hiscore_enter_name` loop forever on the staff message (one pass per
-`yield`, as the IRQ keeps running).
+`hiscore_enter_name` loop forever on the staff message (a charged busy
+loop with a SYNC before each store; the IRQ keeps running). All of mode 9
+and `load_formation_sprites` follow the timing contract (porting-guide
+6.4); test/oracle/main-gp2_4.test.mjs checks total cycles, every write
+and timed access at the ROM's cycle, and a SYNC before each.
 
 ## The service mode and time
 

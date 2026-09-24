@@ -3,7 +3,7 @@
 Copyright 2026 by Moshix
 
 The oracle is the real Gaplus ROM set running on three MC6809 cores
-(`test/m6809/m6809.mjs`) wired to the port's own memory map, latches and
+(`src/emu/m6809.js`) wired to the port's own memory map, latches and
 I/O chips (`src/machine/machine.js`, `namcoio.js`). Tests compare the port
 against it byte for byte; the "emulated preview" page runs it in the
 browser. This file describes the board, its timing model and what was
@@ -12,7 +12,7 @@ measured on it. `docs/hardware.md` is the hardware reference;
 
 | file | what |
 |------|------|
-| `test/m6809/board.mjs` | `Board`: three cores, MAME's scheduler, IRQs, I/O timing, watchdog, snapshots, hooks, coverage (browser-safe: no Node imports) |
+| `src/emu/board.js` | `Board`: three cores, MAME's scheduler, IRQs, I/O timing, watchdog, snapshots, hooks, coverage (browser-safe: no Node imports) |
 | `test/helpers/oracle.mjs` | Node side: `makeOracle`, `callRoutine`, `saveState`/`loadState`, `diffRam`, `fillRandom`, `makeRng`, `randomPlayer` |
 | `test/helpers/lockstep.mjs` | frame lockstep harness (`makePair`, `boardSide`, `oracleVsOracle`) |
 | `test/oracle/board.test.mjs` | boot, attract frame, determinism, snapshots, coins, `callRoutine`, stacks, IRQ timing, exact I/O timing, runaways |
@@ -22,7 +22,7 @@ measured on it. `docs/hardware.md` is the hardware reference;
 ## 1. Board API
 
 ```js
-import { Board } from './test/m6809/board.mjs';
+import { Board } from './src/emu/board.js';
 const board = new Board({ roms });  // roms = tools/romset.mjs loadGaplus()
 // Node: import { makeOracle } from './test/helpers/oracle.mjs'
 ```
@@ -229,13 +229,21 @@ hook; it needs the frame counter and the race order right.
 
 ## 7. Stack extents
 
-Measured with `trackStack` over all coverage sessions (~78,000 frames):
+Measured with `trackStack` over all coverage sessions (~78,000 frames)
+and 128 games of 6,000-12,000 frames with Round Advance to every PARSEC
+from 1 to 64 (random play after the advance):
 
 | CPU | S top | lowest S | exempt (`mem`) |
 |-----|-------|----------|----------------|
 | main | `$1600` | `$15E2` | `$15E2-$15FF` |
-| sub | `$1D80` | `$1D74` | `$1D74-$1D7F` |
-| sound | `$0400` | `$03EC` | `$63EC-$63FF` |
+| sub | `$1D80` | `$1D70` | `$1D70-$1D7F` |
+| sound | `$0400` | `$03EB` | `$63EB-$63FF` |
+
+The sub reaches `$1D70` from PARSEC 3 on (an IRQ frame 4 bytes deeper
+than anything stage 1 does; the coverage sessions only reached `$1D74`,
+so PARSEC 31 showed false lockstep differences at `$1D70-$1D72`). The
+sound CPU reached `$03EB` once (PARSEC 33). No variable lives in either
+new byte range (listings, symbols.json).
 
 Main's `$15E2` (2 below the earlier table's `$15E4`) is the vblank IRQ's
 12 bytes landing inside `$D07A`'s call chain at game start; every write
@@ -245,13 +253,35 @@ at `$15E2-$15E7` was checked to be a push. The service mode only reaches
 
 ## 8. ROM quirks found on the way
 
-* **Round Advance straight into a challenging stage corrupts RAM.** With
-  the DIP on before the first stage, advancing to PARSEC 3 (stage index
-  2) goes mode 0 -> 7 without mode 2, which is where the sub initialises
-  `formation_ptr $1086` (`$E1F2`); the sub's mode-7 code (`$B09B`) then
-  walks from a stale pointer and adds `$80` to bytes of `$1000-$10FF`
-  (`game_mode` becomes `$87`, lives `$83`, ...). After one normal stage
-  it works. Emulation-independent; the port must reproduce it.
+* **Round Advance straight into a challenging stage runs the main CPU
+  in video RAM.** With the DIP on before the first stage, advancing to
+  PARSEC 3, 8 or 13 (stage index 2, 7, 12) goes mode 0 -> 7 without
+  mode 2, which is where the sub initialises `formation_ptr $1086`
+  (`$E1F2`). The sub's formation mover (`$B014`) then walks from the
+  stale pointer ($0000) through all of RAM, counting every byte in
+  `$1096` and treating each one with b1 set as a formation slot: it
+  adds `$80` to it (`$B09B`) and points its slot variables (`$1084`-
+  `$10CB`) and their stores at addresses derived from the count. Three
+  frames into mode 7 (frame 1018 of the scenario) those stores zero
+  `$15FA-$15FF`: Y, U and PC of the frame the main CPU's `CWAI` at
+  `$D150` has stacked. The next vblank's `irq_main` ends with `RTI` to
+  `$0000`: the main CPU executes the tile RAM (`$20` = `BRA +$20`, a
+  `LEAY`, `NEG <$00` = `NEG $1000` 464 times with DP = `$10`) up to a
+  `SWI` (`$3F`) in the attribute RAM at `$07C6`, which vectors to
+  `irq_main` again (a second clock and frame-counter tick in frame
+  1019). From then on every `RTI` pops PC `$07C7` with I clear while the
+  IRQ line is up, so the main CPU only ever runs `irq_main`: its task
+  lists are dead, `game_mode` reads `$87` (the walk's `+$80`), and the
+  walk, reaching the main stack, reads and modifies return addresses and
+  stale frames there. Emulation-independent (the ROM on the board does
+  it at any quantum). **The port cannot follow**: it keeps no registers
+  and writes no stack frames or return addresses, which the walk reads
+  and the `RTI` pops. The scheduler detects the case (a sub-CPU write
+  into `$15E2-$15FF`, then the main CPU's `RTI`) and throws `RomQuirk`
+  in frame 1019, the frame the ROM leaves the program; up to there the
+  port equals the ROM (`test/oracle/lockstep-scenarios.test.mjs`, "RA
+  straight to PARSEC 3/8/13"). After one normal stage Round Advance
+  works; the browser has no Round Advance control.
 * `challenging_stages $D860` holds 0-based indexes 2, 7, 12, ... (PARSEC
   3, 8, 13): the listing comment said 3, 8, 13 (fixed in the annotation).
 * All TOP 5 entries are 50,000 at power-on, so a name entry needs more.

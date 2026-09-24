@@ -40,11 +40,14 @@
  */
 
 import { disp8 } from '../m6809ops.js';
+import { romSweep } from '../romdata.js';
 import { requestJump } from './jump.js';
-import { CYCLES_PER_FRAME } from '../../machine/machine.js';
 import {
-  Clock, SPIN, sync, advanceTo, freeClock, runFree,
+  Clock, sync, freeClock, runFree,
 } from './gp2_4_clock.js';
+import { burn, clockOf } from '../clock.js';
+import { pollAgain, ioRead, ioStore } from '../timing.js';
+import { cpuFrameCycle } from '../scheduler.js';
 
 /** @typedef {import('../../machine/machine.js').Machine} Machine */
 
@@ -60,46 +63,10 @@ const add16 = (v, d) => (v + d) & 0xffff;
 export const DELAY_CYCLES = 787734;
 
 /**
- * The handshakes after the release of the sub and sound CPUs ($B8B5).
- *
- * On the oracle (MAME's scheduler) the sub and sound CPUs restart at the
- * main CPU's time right after `STA SRESET_OFF` (the start of $B8B8,
- * "T0"), and store their `$22` a fixed number of their own cycles later
- * (their reset code and ROM checksums): WRITE_SOUND / WRITE_SUB below,
- * measured from T0 to the start of the storing instruction (the same on
- * every path measured but power-on, which is 2 cycles earlier and
- * changes nothing). The main CPU sees the store only from the next time
- * slice on: MAME runs the CPUs one after the other in slices (main first)
- * that start at vblank, at the I/O timer (vblank + 76.8 cycles) and every
- * 256 cycles after it. So the poll loop ends at the first poll that
- * STARTS at or after the end of the slice holding the store (checked on
- * the oracle for the power-on and IRQ entries and eight error paths,
- * whose releases fall at different points of the slices).
+ * The handshake poll loops ($B8C0 / $B8D5): `LDA addr (5) / LDY WATCHDOG
+ * (7) / CMPA #$22 (2) / BNE (3)`, the read first.
  */
-export const HANDSHAKE = Object.freeze({
-  /** reset_sound's `$22` store, cycles after T0. */
-  WRITE_SOUND: 147496,
-  /** reset_sub's `$22` store, cycles after T0. */
-  WRITE_SUB: 319552,
-});
-
-/** MAME's slices: 256 cycles from the I/O timer at vblank + 76.8. */
-const SLICE = 256;
-/** The I/O chips' timer, cycles after vblank. */
-const IO_TIMER = 76.8;
-
-/**
- * End of the scheduler slice holding in-frame cycle `w` (see HANDSHAKE):
- * slices are [0, 76.8), then 256 cycles each from 76.8, the last one cut
- * at the next vblank (FRAME).
- * @param {number} w cycle since vblank
- * @returns {number} the next slice boundary after w (may be fractional)
- */
-export function sliceEnd(w) {
-  if (w < IO_TIMER) return IO_TIMER;
-  return Math.min(IO_TIMER + SLICE * (Math.floor((w - IO_TIMER) / SLICE) + 1),
-    CYCLES_PER_FRAME);
-}
+const HANDSHAKE_POLL = pollAgain(5, 7, 2, 3);
 
 // ------------------------------------------------------------ helpers
 
@@ -113,6 +80,32 @@ function* st(m, c, addr, v, cyc) {
   yield* sync(c);
   m.poke(addr, v);
   c.t += cyc;
+}
+
+/**
+ * `sta ,u+` / `sta ,x+` (6) to an I/O chip: the write is on cycle index
+ * 5, not the extended 4 (timing.js ioStore; the chips' vblank run).
+ * @param {Machine} m @param {Clock} c @param {number} addr
+ * @param {number} v @param {number} cyc
+ * @returns {Generator<unknown, void, unknown>}
+ */
+function* stIdx(m, c, addr, v, cyc) {
+  yield* sync(c);
+  ioStore(m, addr, v, 5);
+  c.t += cyc;
+}
+
+/**
+ * `lda ,u+` (6) of an I/O chip: the read is on cycle index 5.
+ * @param {Machine} m @param {Clock} c @param {number} addr
+ * @param {number} cyc
+ * @returns {Generator<unknown, number, unknown>}
+ */
+function* ldIdx(m, c, addr, cyc) {
+  yield* sync(c);
+  const v = ioRead(m, addr, 5);
+  c.t += cyc;
+  return v;
 }
 
 /**
@@ -397,7 +390,8 @@ function* ramTest(m, c, lo, hi, rom, d0) {
     for (let u = lo; u !== hi; u += 2) {
       m.peek16(0x7c00); // ldy WATCHDOG (7)
       // ldx -$2000,u (9) / leax d,x (8): the pattern is ROM + D
-      x = (m.read16(add16(u, rom)) + d) & 0xffff;
+      // A whole-ROM sweep of code bytes (romdata.js SWEEPS)
+      x = (romSweep('main', () => m.read16(add16(u, rom))) + d) & 0xffff;
       c.t += 7 + 9 + 8;
       yield* sync(c);
       m.poke16(u, x); // stx ,u++ (8)
@@ -406,7 +400,8 @@ function* ramTest(m, c, lo, hi, rom, d0) {
     c.t += 3; // ldu #lo
     for (let u = lo; u !== hi;) {
       m.peek16(0x7c00);
-      x = (m.read16(add16(u, rom)) + d) & 0xffff;
+      // A whole-ROM sweep of code bytes (romdata.js SWEEPS)
+      x = (romSweep('main', () => m.read16(add16(u, rom))) + d) & 0xffff;
       c.t += 7 + 9 + 8;
       yield* sync(c);
       const got = m.peek16(u); // cmpx ,u++ (9)
@@ -424,44 +419,36 @@ function* ramTest(m, c, lo, hi, rom, d0) {
 }
 
 /**
- * Busy-poll a byte another CPU sets to $22 ($B8C0 / $B8D5: `LDA addr
- * (5) / LDY WATCHDOG (7) / CMPA #$22 (2) / BNE (3)`, 17 cycles a poll,
- * the first starting at `first`, absolute on the clock `c`). The clock
- * jumps to the poll that sees $22 on the oracle (HANDSHAKE; the first
- * poll starting at or after `poll`), then, if
- * the other CPU's port has not written $22 yet, `yield SPIN` until it
- * has.
+ * Busy-poll a byte another CPU sets to $22 ($B8C0 / $B8D5, 17 cycles a
+ * pass, see HANDSHAKE_POLL) after the release of the sub and sound CPUs.
+ * Each failed pass is burned on the foreground clock and yielded as a
+ * poll loop (timing.js poll), so the scheduler runs the reads where the
+ * 6809's are: the pass that sees the $22 is the first one in a later
+ * time slice than the other CPU's store, whatever the slices are.
  * @param {Machine} m @param {Clock} c @param {number} addr
- * @param {number} first absolute start of the first poll
- * @param {number} poll absolute start of the poll that sees the $22
  * @returns {Generator<unknown, void, unknown>}
  */
-function* handshake(m, c, addr, first, poll) {
-  const polls = Math.max(0, Math.ceil((poll - first) / 17));
-  // Every earlier poll read addr (plain RAM, no effect) and kicked the
-  // watchdog twice; the kicks are repeated.
-  for (let i = 0; i < polls; i += 1) m.peek16(0x7c00);
-  yield* advanceTo(c, first + polls * 17);
-  while (m.peek(addr) !== 0x22) {
-    m.peek16(0x7c00);
-    yield SPIN;
+function* handshake(m, c, addr) {
+  for (;;) {
+    yield* sync(c);
+    const v = m.peek(addr); // lda addr (5)
+    m.peek16(0x7c00); // ldy WATCHDOG (7): two watchdog reads
+    c.t += 17; // cmpa #$22 (2) / bne (3)
+    if (v === 0x22) return;
+    // The failed pass: its cycles now, then the poll marker.
+    c.burned += c.t;
+    const n = c.t;
+    c.t = 0;
+    if (c.free) continue;
+    yield* burn(m, n);
+    yield HANDSHAKE_POLL;
+    // The scheduler resumes the loop only at passes that can see a
+    // change (the others fail alike): the foreground clock follows the
+    // scheduler's (a test that drives this generator alone has none and
+    // resumes every pass).
+    const t = cpuFrameCycle();
+    if (!Number.isNaN(t)) clockOf(m).t = t;
   }
-  m.peek16(0x7c00);
-  c.t += 17;
-}
-
-/**
- * The poll (absolute on `c`) that first sees another CPU's store made
- * at absolute time `w`: the first of first + 17k that starts at or after
- * the end of the slice holding the store.
- * @param {number} t0 cycle since vblank at which `c` started
- * @param {number} first @param {number} w
- * @returns {number}
- */
-function pollAfter(t0, first, w) {
-  const inFrame = (t0 + w) % CYCLES_PER_FRAME;
-  const end = w - inFrame + sliceEnd(inFrame);
-  return first + 17 * Math.max(0, Math.ceil((end - first) / 17));
 }
 
 /**
@@ -545,22 +532,22 @@ function* serviceOn(m, c, a) {
   // lB7F4: the result digit, then the 56XX/58XX self-test commands
   yield* st(m, c, 0x0326, acc, 5);
   c.t += 3 + 3 + 3; // ldd #$080F / ldu #$6808 / ldx #$6818
-  yield* st(m, c, 0x6808, 0x08, 6); // sta ,u+
+  yield* stIdx(m, c, 0x6808, 0x08, 6); // sta ,u+
   c.t += 2; // lda #$05
-  yield* st(m, c, 0x6818, 0x05, 6); // sta ,x+
+  yield* stIdx(m, c, 0x6818, 0x05, 6); // sta ,x+
   c.t += 9; // lbsr delay_65536
   delayOn(m, c);
   // lB809: stb ,u+ (6) / stb ,x+ (6) / cmpu #$6810 (5) / bne (3)
   for (let i = 9; i < 0x10; i += 1) {
-    yield* st(m, c, 0x6800 + i, 0x0f, 6);
-    yield* st(m, c, 0x6810 + i, 0x0f, 6 + 5 + 3);
+    yield* stIdx(m, c, 0x6800 + i, 0x0f, 6);
+    yield* stIdx(m, c, 0x6810 + i, 0x0f, 6 + 5 + 3);
   }
   c.t += 9; // lbsr delay_65536
   delayOn(m, c);
   // $B816: ldd IO56XX (6): $6800 then $6801
   yield* sync(c);
   let hiN = m.peek(0x6800) & 0x0f;
-  let loN = m.peek(0x6801) & 0x0f;
+  let loN = ioRead(m, 0x6801, 5) & 0x0f; // ldd: the second byte on 5
   c.t += 6 + 2 + 2 + 5 + 3; // anda / andb / cmpd #$0609 / beq
   if (hiN !== 0x06 || loN !== 0x09) {
     acc = 0x20; // $B823: ldd #$2031 -- quirk: A = $20 is stored
@@ -569,7 +556,7 @@ function* serviceOn(m, c, a) {
     // lB828: ldd IO58XX (6)
     yield* sync(c);
     hiN = m.peek(0x6810) & 0x0f;
-    loN = m.peek(0x6811) & 0x0f;
+    loN = ioRead(m, 0x6811, 5) & 0x0f;
     c.t += 6 + 2 + 2 + 5 + 3;
     if (hiN !== 0x0f || loN !== 0x0f) {
       acc = 0x20; // $B835: ldd #$2032
@@ -612,7 +599,7 @@ function* serviceOn(m, c, a) {
     if (k > 0) c.t += 3; // ldd #0
     let sum = 0;
     for (let p = base; p < ends[k]; p += 1) {
-      sum += m.read(p);
+      sum += romSweep('main', () => m.read(p)); // code bytes too
       m.peek16(0x7c00);
     }
     c.t += 21 * 0x2000 + 2 + 3; // loop / cmpa #0 (2) / bne (3)
@@ -625,25 +612,19 @@ function* serviceOn(m, c, a) {
   if (digit !== 0x31) c.t += 3;
 
   // lB8B5: release the sub and sound CPUs, $11 to both handshakes
-  const rel = c.abs;
   yield* st(m, c, 0x8400, digit, 5); // SRESET_OFF
-  const t0 = rel + 5; // T0: the other CPUs restart here
   c.t += 2; // lda #$11
   yield* st(m, c, 0x6040, 0x11, 5); // snd_request
   yield* st(m, c, 0x0800, 0x11, 5); // sub_handshake
   // $B8C0: wait for the sound CPU's $22
-  let first = c.abs;
-  yield* handshake(m, c, 0x6040, first,
-    pollAfter(c.frame0, first, t0 + HANDSHAKE.WRITE_SOUND));
+  yield* handshake(m, c, 0x6040);
   // $B8CB: lda snd_rom_error (5) / beq (3) / lda #$37 / sta $0306
   if ((yield* ld(m, c, 0x6380, 5 + 3)) !== 0) {
     c.t += 2;
     yield* st(m, c, 0x0306, 0x37, 5);
   }
   // $B8D5: wait for the sub CPU's $22
-  first = c.abs;
-  yield* handshake(m, c, 0x0800, first,
-    pollAfter(c.frame0, first, t0 + HANDSHAKE.WRITE_SUB));
+  yield* handshake(m, c, 0x0800);
   // $B8E0: lda sub_rom_error (5) / beq (3) / sta $0306 (5)
   const subErr = yield* ld(m, c, 0x0801, 5 + 3);
   if (subErr !== 0) yield* st(m, c, 0x0306, subErr, 5);
@@ -667,7 +648,7 @@ function* serviceOn(m, c, a) {
   // $B90A: the four switch nibbles into boot_switches $1006-$1009
   c.t += 3 + 3; // ldu #$6800 / ldx #$1006
   for (let i = 0; i < 4; i += 1) {
-    const v = (yield* ld(m, c, 0x6800 + i, 6 + 2)) & 0x0f;
+    const v = (yield* ldIdx(m, c, 0x6800 + i, 6 + 2)) & 0x0f;
     yield* st(m, c, 0x1006 + i, v, 6 + 5 + 3);
   }
   yield* st(m, c, 0x100a, 0, 6); // clr <var_100A (the sound number)
@@ -840,7 +821,7 @@ function* loopPass(m, c) {
   let u = 0x6800;
   let x = 0x1006;
   for (;;) {
-    let a = yield* ld(m, c, u, 6); // lda ,u+ (6)
+    let a = yield* ldIdx(m, c, u, 6); // lda ,u+ (6)
     u += 1;
     c.t += 5; // cmpu #$6805
     if (u === 0x6805) { c.t += 6; return 'b970'; } // lbeq lB970 taken

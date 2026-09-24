@@ -3,7 +3,7 @@
 Copyright 2026 by Moshix
 
 Authoritative hardware description for the Gaplus port: what the oracle
-board under `test/m6809/` must emulate, and what `src/machine/` must model.
+board under `src/emu/` must emulate, and what `src/machine/` must model.
 Where MAME and FBNeo disagree, **MAME is the reference** unless noted.
 
 ## 0. Sources

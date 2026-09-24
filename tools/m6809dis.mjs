@@ -12,7 +12,7 @@
  *   STB    $E123,PCR   PC-relative, shown as the absolute address
  *   PSHS   U,Y,X,DP,D  register lists in MAME's order, A+B shown as D
  *
- * Decoding follows the CPU core (test/m6809/m6809.mjs), which follows
+ * Decoding follows the CPU core (src/emu/m6809.js), which follows
  * MAME's m6809 execution core. Where MAME's own disassembler disagrees with
  * MAME's core the core wins, because flow analysis must follow what runs:
  *  - "$10 xx" / "$11 xx" with xx not a page 2/3 opcode is shown as
@@ -33,7 +33,7 @@ import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import {
   PAGE1, PAGE2, PAGE3, TFR_REGS,
-} from '../test/m6809/opcodes.mjs';
+} from '../src/emu/opcodes.js';
 
 /** Index register names by postbyte bits 5-6. */
 const IREGS = ['X', 'Y', 'U', 'S'];

@@ -35,7 +35,7 @@ would RTS into RAM (no stream does it; the port throws there);
 
 ## Scheduler
 
-MAME's model, transcribed from test/m6809/board.mjs: ticks of 1/5
+MAME's model, transcribed from src/emu/board.js: ticks of 1/5
 cycle, slices of 256 cycles cut at vblank and at the I/O run, main then
 sub then sound per slice, a line-changing write (IRQ mask off, SRESET)
 ends the writer's slice at its time. Each CPU is an agent; `JsAgent`
@@ -49,14 +49,52 @@ cycles (before the first main access to $6800-$681F past it). SRESET
 releases the sub and sound where the `STA $8400` ends. IRQ entry 19
 cycles, from a CWAI 4, from `idle(p)` on the loop's pass boundary.
 
-Measured (test/oracle/lockstep.test.mjs, tools/lockstep-run.mjs):
+Measured (test/oracle/lockstep.test.mjs, lockstep-scenarios.test.mjs,
+tools/lockstep-run.mjs), every frame compared, no resync:
 
-* every CPU on a core under this scheduler = the oracle, 4,000 frames
-  (boot, attract, coin, start, a played game);
-* ported sound, main and sub on cores = the oracle, 4,000 frames;
-* full port = the oracle for frames 0-232; then main/sub timing blips
-  (docs/requests/integration.md 1-3). 12,000 played frames with resync:
-  9,365 differ today, 1,678 with task-boundary SYNCs.
+| run | round 2 | round 3 |
+|-----|---------|---------|
+| `lockstep-run 20000 --timing` (attract) | first difference frame 252 | 0 of 20,000 differ |
+| `20000 --play=1`, `=2`, `=3` | 12,000 `--resync`: 274 differ | 0 of 20,000 each |
+| coin on the title, 2P cocktail, challenging stage, Round Advance to PARSEC 11, operator stats, service mode, TOP 5 entry | - | 0 differ |
+
+IRQ handler start/end cycles are identical to the board's in every frame
+checked (`--timing`).
+
+## Round 3: what made it exact
+
+Scheduler (src/game/scheduler.js):
+
+* The I/O run's slice cut goes away exactly when the board's core would
+  make the early access: a ported chunk that runs past its slice keeps
+  the cut until the main CPU's clock reaches that instruction.
+* A slice ends where a CPU stops: a whole cycle short of a fractional
+  target pulls it (MAME), using the ported chunk's instruction
+  boundaries (one `charge()` per instruction) as the core's stop point.
+* An IRQ due in the middle of a foreground chunk starts at its first
+  instruction boundary after the vblank; the rest of the chunk is paid
+  after the RTI (dropped when the handler jumps away, NO_RTI).
+* Poll loops keep their phase (`pollAgain`, src/game/timing.js `poll`).
+* `frameDue()`: an access by a chunk already past the next vblank must
+  wait for it. BUSY is a timing point like SYNC.
+
+Edits in the porters' files (the timing contract, porting-guide 6.4):
+
+* All main and sub modules: grouped `charge(a + b)` split into one call
+  per instruction (mechanical, literal sums only).
+* main gp2-3b `irq_main`: accesses before their charges, SYNC at the
+  IRQ latch, attract_flag, the `$1E31` clears (read by the sub's sprite
+  copy), the coin sound, the coin-during-demo clears and `$22`;
+  `frame_sync` polls through `poll()`. Its test driver refunds waiting.
+* main gp2-2b: `RACY` + main_task `$1030` (the sub clears it on a mode
+  change); SYNC before every `inc/clr <$30`; `isRacy` also true when
+  `frameDue()`; the `$FC71` poll through `pollAgain`.
+* main gp2-3b hit: SYNC before its `main_task` writes.
+* main gp2-4 `Clock.sync()`: a SYNC after burning (the service mode's
+  sound test); its test drivers skip SYNC.
+* sub gp2-6: the `$0800` and `frame_sync` polls through `poll()`; test
+  kit refunds waiting.
+* sound gp2-1 (mine): SYNC before the store after the checksum stretch.
 
 ## Fallback bridge (test only)
 
@@ -69,7 +107,4 @@ what ran as ROM. Today nothing needs it: 0 stand-ins, no CPU bridged.
 
 ## Open
 
-* The `costs` table of the scheduler is supported but not shipped
-  (exact charges were chosen instead).
-* The engine keeps the "in progress" tag until the played-game
-  lockstep (`todo` tests) passes.
+* Nothing left from the port plan.

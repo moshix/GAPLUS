@@ -10,7 +10,7 @@
 ; (game_mode $102F, task index $107A); its IRQ copies its sprites into
 ; sprite RAM and meets the main CPU's IRQ at frame_sync ($10AF).
 ; 7723 code bytes, 16853 data bytes, 88 routines, 19 dispatch tables.
-; Coverage input: 2358 executed addresses.
+; Coverage input: 2750 executed addresses.
 
 ; Hardware (docs/hardware.md section 3)
 TILE_RAM         EQU   $0000                 ; tilemap codes
@@ -4475,24 +4475,24 @@ E107: E1 71                    FDB    sub_tasks_mode7 ; [7] $E171
 E109: E1 7B                    FDB    sub_tasks_mode8 ; [8] $E17B
 E10B: E1 7D                    FDB    sub_tasks_mode9 ; [9] $E17D
 
-; Referenced from: $E0F9 task_dispatch_sub
+; Referenced from: $E0F9 sub_mode_task_lists
 sub_tasks_mode0:
 E10D: FA 2E                    FDB    task_move_enemy_shots ; [0] $FA2E
 E10F: BF 58                    FDB    task_formation_init ; [1] $BF58
 
-; Referenced from: $E0FB task_dispatch_sub
+; Referenced from: $E0FB sub_mode_task_lists
 sub_tasks_mode1:
 E111: FA 2E                    FDB    task_move_enemy_shots ; [0] $FA2E
 E113: E1 7F                    FDB    task_end_frame_sub ; [1] $E17F
 
-; Referenced from: $E0FD task_dispatch_sub
+; Referenced from: $E0FD sub_mode_task_lists
 sub_tasks_mode2:
 E115: FA 2E                    FDB    task_move_enemy_shots ; [0] $FA2E
 E117: E5 AA                    FDB    copy_slot42_flag ; [1] $E5AA
 E119: E1 8A                    FDB    task_stage_setup ; [2] $E18A
 E11B: E1 7F                    FDB    task_end_frame_sub ; [3] $E17F
 
-; Referenced from: $E0FF task_dispatch_sub
+; Referenced from: $E0FF sub_mode_task_lists
 sub_tasks_mode3:
 E11D: F8 44                    FDB    task_enemy_shots ; [0] $F844
 E11F: FA 2E                    FDB    task_move_enemy_shots ; [1] $FA2E
@@ -4505,7 +4505,7 @@ E129: FB 09                    FDB    task_refresh_formation_sprites
 E12B: FB 58                    FDB    task_show_188A_pair ; [7] $FB58
 E12D: E1 7F                    FDB    task_end_frame_sub ; [8] $E17F
 
-; Referenced from: $E101 task_dispatch_sub
+; Referenced from: $E101 sub_mode_task_lists
 sub_tasks_mode4:
 E12F: F8 44                    FDB    task_enemy_shots ; [0] $F844
 E131: FA 2E                    FDB    task_move_enemy_shots ; [1] $FA2E
@@ -4518,7 +4518,7 @@ E13B: FB 58                    FDB    task_show_188A_pair ; [6] $FB58
 E13D: E1 7F                    FDB    task_end_frame_sub ; [7] $E17F
 
 ; Mode 5: normal play (the longest list).
-; Referenced from: $E103 task_dispatch_sub
+; Referenced from: $E103 sub_mode_task_lists
 sub_tasks_mode5:
 E13F: F8 44                    FDB    task_enemy_shots ; [0] $F844
 E141: FA 2E                    FDB    task_move_enemy_shots ; [1] $FA2E
@@ -4545,14 +4545,14 @@ E167: FE 82                    FDB    task_score_anim ; [20] $FE82
 E169: E1 7F                    FDB    task_end_frame_sub ; [21] $E17F
 
 ; Mode 6: stage clear.
-; Referenced from: $E105 task_dispatch_sub
+; Referenced from: $E105 sub_mode_task_lists
 sub_tasks_mode6:
 E16B: FA 2E                    FDB    task_move_enemy_shots ; [0] $FA2E
 E16D: B3 D1                    FDB    task_effect ; [1] $B3D1
 E16F: E1 7F                    FDB    task_end_frame_sub ; [2] $E17F
 
 ; Mode 7: challenging stage.
-; Referenced from: $E107 task_dispatch_sub
+; Referenced from: $E107 sub_mode_task_lists
 sub_tasks_mode7:
 E171: B0 14                    FDB    task_formation_move ; [0] $B014
 E173: BB 96                    FDB    task_challenge_seq ; [1] $BB96
@@ -4560,11 +4560,11 @@ E175: BC F3                    FDB    task_bonus_objects ; [2] $BCF3
 E177: BE E5                    FDB    task_bonus_colours ; [3] $BEE5
 E179: E1 7F                    FDB    task_end_frame_sub ; [4] $E17F
 
-; Referenced from: $E109 task_dispatch_sub
+; Referenced from: $E109 sub_mode_task_lists
 sub_tasks_mode8:
 E17B: E1 7F                    FDB    task_end_frame_sub ; [0] $E17F
 
-; Referenced from: $E10B task_dispatch_sub
+; Referenced from: $E10B sub_mode_task_lists
 sub_tasks_mode9:
 E17D: E1 7F                    FDB    task_end_frame_sub ; [0] $E17F
 

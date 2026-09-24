@@ -9,15 +9,22 @@
  * from the tile pointer Y (Y+5 is the most significant digit), leading
  * zero digits left untouched (not blanked).
  *
- * Plain functions: they never wait. Each charges its own cycles
- * (Machine.charge; see gp2_3b_state.js).
+ * add_score and update_hiscore never wait, but they are generators: they
+ * charge every instruction and yield SYNC before each access to shared
+ * RAM (the scores, the tiles; src/game/timing.js), so that an IRQ in
+ * the middle of a call lands between the right writes (an AI game hit
+ * it: the vblank between add_score's score update and its redraw, frame
+ * 19,806 of tools/ai-lockstep.mjs run 0). The BCD digit helpers touch
+ * no memory and stay plain.
  * @see reference/gaplus-main.asm $C1D6-$C295
  */
 
 import { add8, adc8, daa } from '../m6809ops.js';
 import { mainWord } from '../romdata.js';
+import { SYNC } from '../timing.js';
 
 /** @typedef {import('../../machine/machine.js').Machine} Machine */
+/** @typedef {Generator<symbol, void, unknown>} Gen */
 
 /**
  * $C287 bcd_hi_to_char: A = the tile code of A's high nibble (four LSRAs,
@@ -58,10 +65,11 @@ export function bcd_lo_to_char(m, { a }) {
  * starting at the first non-zero digit (at least one digit: Y+0). Ends
  * with the routine's RTS (charged).
  * @param {Machine} m @param {number} x @param {number} y
+ * @returns {Gen}
  */
-function drawNumber(m, x, y) {
-  // The skip tests: lda n,x / anda #$F0 (or #$0F) / bne (10 cycles, 9
-  // for the ,X ones), then `bra $C247` if all zero.
+function* drawNumber(m, x, y) {
+  // The skip tests: lda n,x (5, 4 for ,x) / anda #$F0 (or #$0F) (2) /
+  // bne (3), then `bra $C247` if all zero.
   const digits = [
     [2, true, 5], [2, false, 4], [1, true, 3], [1, false, 2],
     [0, true, 1], [0, false, 0],
@@ -69,17 +77,20 @@ function drawNumber(m, x, y) {
   let first = 5;
   for (; first > 0; first -= 1) {
     const [off, high] = digits[5 - first];
-    m.charge(off === 0 ? 4 + 2 + 3 : 5 + 2 + 3);
+    yield SYNC;
     const v = m.peek(x + off);
+    m.charge(off === 0 ? 4 + 2 + 3 : 5 + 2 + 3);
     if ((high ? v & 0xf0 : v & 0x0f) !== 0) break;
   }
   if (first === 0) m.charge(3); // $C222: bra $C247
   for (let i = 5 - first; i < 6; i += 1) {
     const [off, high, dst] = digits[i];
-    // lda n,x (4 for ,x) / lbsr / sta n,y (4 for ,y)
-    m.charge((off === 0 ? 4 : 5) + 9);
+    // lda n,x (5, 4 for ,x) / lbsr (9) / sta n,y (5, 4 for ,y)
+    yield SYNC;
     const v = m.peek(x + off);
+    m.charge((off === 0 ? 4 : 5) + 9);
     const t = high ? bcd_hi_to_char(m, { a: v }) : bcd_lo_to_char(m, { a: v });
+    yield SYNC;
     m.poke(y + dst, t.a);
     m.charge(dst === 0 ? 4 : 5);
   }
@@ -94,42 +105,61 @@ function drawNumber(m, x, y) {
  * @see gaplus-main.asm $C1D6
  * @param {Machine} m
  * @param {{ a: number }} regs A = points
+ * @returns {Gen}
  */
-export function add_score(m, { a }) {
-  // $C1D6: ldb $115F / bne rts
+export function* add_score(m, { a }) {
+  // $C1D6: ldb $115F (5) / bne rts (3)
+  yield SYNC;
+  const skip = m.peek(0x115f);
   m.charge(5); m.charge(3);
-  if (m.peek(0x115f) !== 0) {
+  if (skip !== 0) {
     m.charge(5);
     return;
   }
-  // $C1DB: ldx #score_p1 / ldb <cur_player / beq / ldx #score_p2
+  // $C1DB: ldx #score_p1 (3) / ldb <cur_player (4) / beq (3) /
+  // ldx #score_p2 (3)
   let x = 0x09b0;
-  m.charge(3); m.charge(4); m.charge(3);
-  if (m.peek(0x102d) !== 0) {
+  m.charge(3);
+  yield SYNC;
+  const cp = m.peek(0x102d);
+  m.charge(4); m.charge(3);
+  if (cp !== 0) {
     x = 0x09b3;
     m.charge(3);
   }
-  // adda ,x / daa / sta ,x -- then the carry is threaded through two
-  // `lda n,x / adca #0 / daa / sta n,x`: DAA only ever sets C.
+  // adda ,x (4) / daa (2) / sta ,x (4) -- then the carry is threaded
+  // through two `lda n,x (5) / adca #0 (2) / daa (2) / sta n,x (5)`:
+  // DAA only ever sets C.
+  yield SYNC;
   let r = add8(a, m.peek(x));
+  m.charge(4);
   r = daa(r.v, r.cc);
+  m.charge(2);
+  yield SYNC;
   m.poke(x, r.v);
-  m.charge(4); m.charge(2); m.charge(4);
+  m.charge(4);
   for (const off of [1, 2]) {
+    yield SYNC;
     r = adc8(m.peek(x + off), 0, r.cc);
+    m.charge(5);
     r = daa(r.v, r.cc);
+    m.charge(2); m.charge(2);
+    yield SYNC;
     m.poke(x + off, r.v);
-    m.charge(5); m.charge(2); m.charge(2); m.charge(5);
+    m.charge(5);
   }
-  // $C1F8: bsr update_hiscore
+  // $C1F8: bsr update_hiscore (7)
   m.charge(7);
-  update_hiscore(m, { x });
-  // $C1FA: ldy #score_tile_ptrs / lda <cur_player / asla / ldy a,y
-  // (a,y is a signed offset: cur_player >= $40 would index backwards)
+  yield* update_hiscore(m, { x });
+  // $C1FA: ldy #score_tile_ptrs (4) / lda <cur_player (4) / asla (2) /
+  // ldy a,y (7) (a signed offset: cur_player >= $40 would index back)
+  m.charge(4);
+  yield SYNC;
   const off = (m.peek(0x102d) << 1) & 0xff;
+  m.charge(4); m.charge(2);
   const y = mainWord((0xc24f + ((off ^ 0x80) - 0x80)) & 0xffff);
-  m.charge(4); m.charge(4); m.charge(2); m.charge(7);
-  drawNumber(m, x, y);
+  m.charge(7);
+  yield* drawNumber(m, x, y);
 }
 
 /**
@@ -141,12 +171,16 @@ export function add_score(m, { a }) {
  * @see gaplus-main.asm $C253
  * @param {Machine} m
  * @param {{ x: number }} regs
+ * @returns {Gen}
  */
-export function update_hiscore(m, { x }) {
-  // $C253: lda 2,x / cmpa $09B6 / bcs rts / beq $C271
-  m.charge(5); m.charge(5); m.charge(3);
+export function* update_hiscore(m, { x }) {
+  // $C253: lda 2,x (5) / cmpa $09B6 (5) / bcs rts (3) / beq $C271 (3)
+  yield SYNC;
   const s2 = m.peek(x + 2);
+  m.charge(5);
+  yield SYNC;
   const h0 = m.peek(0x09b6);
+  m.charge(5); m.charge(3);
   let from;
   if (s2 < h0) {
     m.charge(5);
@@ -154,13 +188,16 @@ export function update_hiscore(m, { x }) {
   }
   m.charge(3); // beq
   if (s2 > h0) {
-    from = 0; // $C25C: lda 2,x / sta $09B6
-    m.charge(5); m.charge(5);
+    from = 0; // falls into $C25C
   } else {
-    // $C271: lda 1,x / cmpa $09B7 / bcs rts / beq $C27C / bra $C261
-    m.charge(5); m.charge(5); m.charge(3);
+    // $C271: lda 1,x (5) / cmpa $09B7 (5) / bcs rts (3) / beq $C27C (3)
+    // / bra $C261 (3)
+    yield SYNC;
     const s1 = m.peek(x + 1);
+    m.charge(5);
+    yield SYNC;
     const h1 = m.peek(0x09b7);
+    m.charge(5); m.charge(3);
     if (s1 < h1) {
       m.charge(5);
       return;
@@ -170,10 +207,14 @@ export function update_hiscore(m, { x }) {
       from = 1;
       m.charge(3);
     } else {
-      // $C27C: lda ,x / cmpa $09B8 / bcs rts / beq rts / bra $C266
-      m.charge(4); m.charge(5); m.charge(3);
+      // $C27C: lda ,x (4) / cmpa $09B8 (5) / bcs rts (3) / beq rts (3)
+      // / bra $C266 (3)
+      yield SYNC;
       const s0 = m.peek(x);
+      m.charge(4);
+      yield SYNC;
       const h2 = m.peek(0x09b8);
+      m.charge(5); m.charge(3);
       if (s0 < h2) {
         m.charge(5);
         return;
@@ -187,15 +228,32 @@ export function update_hiscore(m, { x }) {
       m.charge(3);
     }
   }
-  if (from === 0) m.poke(0x09b6, m.peek(x + 2));
-  if (from <= 1) {
-    m.poke(0x09b7, m.peek(x + 1)); // $C261: lda 1,x / sta $09B7
-    m.charge(5); m.charge(5);
+  if (from === 0) {
+    // $C25C: lda 2,x (5) / sta $09B6 (5)
+    yield SYNC;
+    const v = m.peek(x + 2);
+    m.charge(5);
+    yield SYNC;
+    m.poke(0x09b6, v);
+    m.charge(5);
   }
-  // $C266: lda ,x / sta $09B8 / ldy #$03EF / bra $C204
-  m.poke(0x09b8, m.peek(x));
-  m.charge(4); m.charge(5); m.charge(4); m.charge(3);
-  drawNumber(m, x, 0x03ef);
+  if (from <= 1) {
+    // $C261: lda 1,x (5) / sta $09B7 (5)
+    yield SYNC;
+    const v = m.peek(x + 1);
+    m.charge(5);
+    yield SYNC;
+    m.poke(0x09b7, v);
+    m.charge(5);
+  }
+  // $C266: lda ,x (4) / sta $09B8 (5) / ldy #$03EF (4) / bra $C204 (3)
+  yield SYNC;
+  const v = m.peek(x);
+  m.charge(4);
+  yield SYNC;
+  m.poke(0x09b8, v);
+  m.charge(5); m.charge(4); m.charge(3);
+  yield* drawNumber(m, x, 0x03ef);
 }
 
 /** Every routine of this file by entry address. */

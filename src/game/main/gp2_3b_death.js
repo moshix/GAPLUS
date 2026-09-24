@@ -39,6 +39,7 @@ import { MAIN } from './routines.js';
 import { call } from '../call.js';
 import { add8, daa } from '../m6809ops.js';
 import { busy, requestJump } from './gp2_3b_state.js';
+import { ioStore } from '../timing.js';
 
 /** @typedef {import('../../machine/machine.js').Machine} Machine */
 /** @typedef {Generator<unknown, void, unknown>} Gen */
@@ -232,7 +233,11 @@ function* inBox(m, x) {
  * @param {Machine} m @returns {Gen}
  */
 function* hit(m) {
-  yield* rmw(m, 0x6829, 1, 7);
+  // inc $6829 (7): read, then the write on its last cycle (index 6),
+  // where the ROM engine sees the bang.
+  yield* busy(m, 0);
+  ioStore(m, 0x6829, (m.peek(0x6829) + 1) & 0xff, 6);
+  m.charge(7);
   yield* rmw(m, 0x682a, 1, 7);
   m.charge(2);
   yield* wr(m, 0x110f, 1, 5);

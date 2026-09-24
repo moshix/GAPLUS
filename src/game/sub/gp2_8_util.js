@@ -4,6 +4,8 @@
  * Every address is a sub-CPU address; `s` is always `m.sub`.
  */
 
+import { timed as timedFor } from '../timing.js';
+
 /** @typedef {import('../../machine/machine.js').CpuView} CpuView */
 
 /** `sub_task` ($107A): the sub scheduler's task index. */
@@ -97,19 +99,19 @@ export const SYNC = Symbol.for('gaplus.sync');
 export const CWAI_CYCLES = 16;
 
 /**
- * Is a sub-CPU access to `addr` visible to another CPU? All of shared
- * RAM $0000-$1FFF except the sub's own stack ($1D74-$1D7F, exempt, see
- * docs/porting-guide.md 5.3) and $1D80 (the byte above it, which only
- * the dummy read that ends a PULS / RTS touches; nothing lives there),
- * and the IRQ latch $6000-$6FFF. ROM and unmapped space are private. Ported code yields SYNC before every
- * instruction that touches such an address; the oracle tests stamp the
- * same instructions.
+ * Is a sub-CPU access to `addr` visible to another CPU? The same as
+ * src/game/timing.js `timed('sub', addr)`: all of shared RAM
+ * $0000-$1FFF except the sub's own stack (machine.js STACKS.sub,
+ * exempt, see docs/porting-guide.md 5.3) and $1D80 (the byte above it,
+ * which only the dummy read that ends a PULS / RTS touches; nothing
+ * lives there), and the IRQ latch $6000-$6FFF. ROM and unmapped space
+ * are private. Ported code yields SYNC before every instruction that
+ * touches such an address; the oracle tests stamp the same
+ * instructions.
  * @param {number} addr @returns {boolean}
  */
 export function timed(addr) {
-  const a = addr & 0xffff;
-  if (a < 0x2000) return a < 0x1d74 || a > 0x1d80;
-  return a >= 0x6000 && a < 0x7000;
+  return timedFor('sub', addr);
 }
 
 /**

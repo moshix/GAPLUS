@@ -37,7 +37,7 @@
  * MAME samples them.
  */
 
-import { UNDOC1, UNDOC2, UNDOC3 } from './opcodes.mjs';
+import { UNDOC1, UNDOC2, UNDOC3 } from './opcodes.js';
 
 /** Carry. */
 export const CC_C = 0x01;

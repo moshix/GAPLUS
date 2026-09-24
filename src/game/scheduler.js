@@ -3,7 +3,7 @@
  * Runs the three ported CPUs, frame by frame, the way the board does.
  *
  * On the board three MC6809Es run in parallel on shared RAM; MAME (and
- * the oracle, test/m6809/board.mjs) interleaves them in time slices of
+ * the oracle, src/emu/board.js) interleaves them in time slices of
  * at most 256 cycles, cut at every timer, running main, then sub, then
  * sound to the end of each slice. The programs race through shared RAM
  * (docs/oracle-notes.md section 3), so the port keeps the same model:
@@ -30,11 +30,8 @@
  *   charges too). One `charge()` call per instruction: each call marks
  *   an instruction boundary, which is where an IRQ can enter a chunk
  *   that runs across the vblank, and where an emulated core would stop
- *   at a slice's end (both decide the slice grid, hence the races). (2) Otherwise, if the chunk
- *   followed a progress marker (a number the code yielded), the cycles
- *   in the optional `costs` table for that address (measured medians,
- *   supplied by the caller; none is shipped: exact charges are the
- *   mechanism). (3) Else nothing: the chunk takes no time.
+ *   at a slice's end (both decide the slice grid, hence the races).
+ *   (2) Nothing else: a chunk that charged nothing takes no time.
  *
  *   So the order in which two CPUs' chunks run, and hence who wins a
  *   race through shared RAM, follows their clocks, with MAME's main ->
@@ -64,8 +61,6 @@
  *   yield RENDEZVOUS per slice at the slice's start (the phase is lost:
  *                    only the main boot's handshakes still use them, and
  *                    their end is re-aligned with setClock).
- *   yield <number>   a progress marker: "about to run the code at this
- *                    address" (costs, above); otherwise as SYNC.
  *   yield idle(p)    the CPU loops forever without effect in a loop of
  *                    p cycles (the sound CPU's BRA * at $E053). The
  *                    thread is never resumed; the clock runs on in steps
@@ -90,20 +85,29 @@
  * The port does the same: the run is delivered before the first main-CPU
  * access to the chips at or after that instant (the ported main CPU's
  * charged cycles give that time), else at the end of that slice, exactly
- * as the oracle's Board does. (`ioAtVblank: true` runs the chips at the
- * vblank itself instead, as docs/porting-guide.md section 6.1 first
- * proposed; it is off.)
+ * as the oracle's Board does.
  *
  * BOOT, RESETS, WATCHDOG. Power-on starts the main CPU; the sub and
  * sound CPUs stay held until the main CPU releases SRESET ($8400), then
  * restart from their reset vectors where that STA ends (MAME's
  * synchronize point), applied when the slice ends. A write that changes
  * an IRQ line or SRESET ends the writer's slice there, as in MAME, and
- * the CPUs after it run only up to the writer's time. The watchdog (3 s after the last kick) soft-
- * resets the board as MAME does; on a good run it never fires.
+ * the CPUs after it run only up to the writer's time. The watchdog (3 s
+ * after the last kick) soft-resets the board as MAME does; on a good run
+ * it never fires.
+ *
+ * WHAT THE PORT CANNOT FOLLOW. The ported code keeps no CPU registers
+ * and writes no stack frames, return addresses or pushes, so the S
+ * stacks are not compared (machine.js STACKS). If the sub CPU writes
+ * into the main CPU's stack, the ROM's next RTI may pop a return address
+ * the port does not have (Round Advance straight into a challenging
+ * stage: docs/oracle-notes.md section 8). The main CPU's next RTI then
+ * throws {@link RomQuirk} instead of silently going on.
  */
 
-import { CPU, CYCLES_PER_FRAME, CPU_CLOCK } from '../machine/machine.js';
+import {
+  CPU, CYCLES_PER_FRAME, CPU_CLOCK, STACKS,
+} from '../machine/machine.js';
 import { isGenerator } from './call.js';
 import { bindClock } from './clock.js';
 
@@ -172,6 +176,19 @@ export function idle(period) {
 }
 
 /**
+ * Thrown where the ROM leaves the program in a way a routine port cannot
+ * follow (see "What the port cannot follow" in the file header). The
+ * RAM is still the ROM's up to that point.
+ */
+export class RomQuirk extends Error {
+  /** @param {string} what */
+  constructor(what) {
+    super(what);
+    this.name = 'RomQuirk';
+  }
+}
+
+/**
  * Thrown by ported code where the 6809 would loop forever. The scheduler
  * parks that thread (the CPU keeps taking interrupts, as a real one
  * spinning in place would). Throw it only after the writes the endless
@@ -208,14 +225,15 @@ export const CWAI_WAKE_CYCLES = 4;
  */
 const LATCH_STA_CYCLES = 5;
 
-/** Cycle of an extended-addressing instruction's first data access. */
-const IO_ACCESS_CYCLE = 4;
+/**
+ * Cycle of an extended-addressing instruction's first data access (the
+ * 5th: opcode, address high, low, dead cycle): the default of
+ * `Machine.ioDataCycle`.
+ */
+export const IO_ACCESS_CYCLE = 4;
 
 /** CPU names by number. */
 const NAMES = /** @type {const} */ (['main', 'sub', 'sound']);
-
-/** IRQ vector target of each CPU (the marker a handler starts with). */
-export const IRQ_VECTOR = Object.freeze([0xc000, 0xe061, 0xe055]);
 
 /**
  * The entry points a ported CPU provides (src/game/<cpu>/index.js).
@@ -224,13 +242,6 @@ export const IRQ_VECTOR = Object.freeze([0xc000, 0xe061, 0xe055]);
  *   the reset vector (a generator)
  * @property {((m: Machine) => (Thread | unknown)) | null} irq  the IRQ
  *   handler (a generator or a plain function)
- */
-
-/**
- * Cycles from a marker address to the next marker, per CPU (optional,
- * for code that yields markers but charges nothing; see the header).
- * @typedef {{ main?: Record<number, number>, sub?: Record<number, number>,
- *   sound?: Record<number, number> }} CostTable
  */
 
 /**
@@ -316,6 +327,18 @@ export function frameDue() {
   return RUNNING !== null && RUNNING.now() >= RUNNING.s.nextVblankT;
 }
 
+/**
+ * The running ported CPU's cycle since the current frame's vblank, or
+ * NaN outside the scheduler (routine tests). A poll loop's passes that
+ * the scheduler skips (see pollAgain) still take time: code that keeps
+ * its own clock of the frame re-reads it here after the loop.
+ * @returns {number}
+ */
+export function cpuFrameCycle() {
+  if (RUNNING === null) return NaN;
+  return (RUNNING.now() - RUNNING.s.frameStartT) / TICKS_PER_CYCLE;
+}
+
 /** Consecutive zero-cost chunks that count as a JavaScript hang. */
 const STUCK_LIMIT = 1_000_000;
 
@@ -334,32 +357,26 @@ export class JsAgent {
   /**
    * @param {number} n CPU number
    * @param {CpuEntries} entries
-   * @param {Record<number, number>} [costs] marker address -> cycles
    */
-  constructor(n, entries, costs = {}) {
+  constructor(n, entries) {
     /** CPU number. */
     this.n = n;
     /** @type {CpuEntries} */
     this.entries = entries;
-    /** Measured marker costs of this CPU. */
-    this.costs = costs;
     this.local = 0;
     this.running = false;
     /** @type {Thread | null} the foreground */
     this.fg = null;
     /** @type {Thread | null} the IRQ handler running now, if any */
     this.handler = null;
-    /** Foreground wait state (RUN, FRAME, SPINNING, IDLE). */
+    /** Foreground wait state (RUN, FRAME, SPINNING, IDLE, POLL). */
     this.wait = RUN;
-    /** The IRQ handler's own wait state (RUN, FRAME, SPINNING). */
+    /** The IRQ handler's own wait state (RUN, FRAME, SPINNING, POLL). */
     this.hwait = RUN;
     /** Loop period of an IDLE foreground, in cycles. */
     this.period = 1;
     /** The foreground was woken from a CWAI-like wait this frame. */
     this.woke = false;
-    /** Pending marker of the foreground and of the handler (or -1). */
-    this.fgMark = -1;
-    this.hMark = -1;
     /** Why the foreground is parked, if it hung (CpuHang). */
     this.hung = '';
     /** @type {Scheduler | null} */
@@ -420,10 +437,14 @@ export class JsAgent {
     this.wait = RUN;
     this.hwait = RUN;
     this.woke = false;
-    this.fgMark = -1;
-    this.hMark = -1;
     this.owed = 0;
     this.straddle = false;
+    // A restart forgets the old run: its hang, poll loops and chunk.
+    this.hung = '';
+    this.fgPoll = null;
+    this.hPoll = null;
+    this.period = 1;
+    this.bounds.length = 0;
     this.running = true;
     this.local = t + RESET_CYCLES * TICKS_PER_CYCLE;
   }
@@ -443,7 +464,7 @@ export class JsAgent {
 
   /** @returns {string} */
   describe() {
-    const w = ['run', 'frame', 'spin', 'idle'][this.wait];
+    const w = ['run', 'frame', 'spin', 'idle', 'poll'][this.wait];
     return `${NAMES[this.n]} js ${this.handler ? 'irq' : 'fg'} ${w}`;
   }
 
@@ -467,12 +488,11 @@ export class JsAgent {
     if (isGenerator(r)) {
       this.handler = r;
       this.hwait = RUN;
-      this.hMark = IRQ_VECTOR[this.n];
       return;
     }
     // A plain function: the whole handler ran now. RTI (unless NO_RTI).
-    this.local += this.cost(m.charged[this.n] - before, IRQ_VECTOR[this.n]);
-    if (r !== NO_RTI) m.iMask[this.n] = false;
+    this.local += (m.charged[this.n] - before) * TICKS_PER_CYCLE;
+    if (r !== NO_RTI) this.rti();
     this.s.onIrq?.(this.n, false, this.local);
     if (r !== NO_RTI) this.local += this.owed;
     this.owed = 0;
@@ -517,14 +537,21 @@ export class JsAgent {
   }
 
   /**
-   * Ticks a chunk cost: the cycles it charged, else the measured cost
-   * of the marker it started from.
-   * @param {number} charged @param {number} mark @returns {number}
+   * RTI: the stacked CC had I clear (the IRQ was taken with it so). The
+   * main CPU's RTI pops the frame its IRQ (or CWAI) stacked; if the sub
+   * CPU wrote into that stack meanwhile, the ROM goes where the port
+   * cannot follow (see the file header).
    */
-  cost(charged, mark) {
-    if (charged > 0) return charged * TICKS_PER_CYCLE;
-    const c = mark >= 0 ? this.costs[mark] : undefined;
-    return c === undefined ? 0 : c * TICKS_PER_CYCLE;
+  rti() {
+    const s = this.s;
+    const hit = s.stackHit;
+    if (this.n === CPU.MAIN && hit !== null) {
+      throw new RomQuirk(`main CPU RTI at frame ${s.frame} after the sub `
+        + `CPU wrote $${hit.addr.toString(16).toUpperCase()} in its `
+        + `stack (frame ${hit.frame}): the ROM returns to a clobbered `
+        + 'address here (docs/oracle-notes.md section 8)');
+    }
+    s.m.iMask[this.n] = false;
   }
 
   /**
@@ -559,7 +586,7 @@ export class JsAgent {
     while (this.local < target && !s.abort) {
       if (stuck > STUCK_LIMIT) {
         throw new Error(`${NAMES[n]} CPU: ${STUCK_LIMIT} chunks without `
-          + 'time passing (a poll loop that yields BUSY but not SPIN?)');
+          + 'time passing (a loop that charges nothing per pass?)');
       }
       if (this.handler === null && m.irqPending(n)
           && (this.wait !== FRAME)) {
@@ -602,7 +629,6 @@ export class JsAgent {
       this.bounds.length = 0;
       this.recording = true;
       this.straddle = !inIrq;
-      const mark = inIrq ? this.hMark : this.fgMark;
       /** @type {IteratorResult<unknown, unknown>} */
       let r;
       s.current = n;
@@ -619,24 +645,20 @@ export class JsAgent {
         RUNNING = null;
         this.recording = false;
       }
-      const charged = m.charged[n] - before;
-      const spent = this.cost(charged, mark);
+      const spent = (m.charged[n] - before) * TICKS_PER_CYCLE;
       this.local += spent;
       stuck = spent > 0 ? 0 : stuck + 1;
       ranPast = this.local >= target;
       const v = r.value;
-      const next = typeof v === 'number' ? v : -1;
-      if (inIrq) this.hMark = next; else this.fgMark = next;
       if (r.done) {
         if (!inIrq) {
           throw new Error(`${NAMES[n]} CPU: foreground returned`);
         }
-        // RTI: the stacked CC had I clear (the IRQ was taken with it so),
-        // unless the handler left through a jump (NO_RTI): then CC.I
-        // stays set until the code jumped to clears it.
+        // RTI, unless the handler left through a jump (NO_RTI): then
+        // CC.I stays set until the code jumped to clears it.
         this.handler = null;
         this.hPoll = null;
-        if (r.value !== NO_RTI) m.iMask[n] = false;
+        if (r.value !== NO_RTI) this.rti();
         s.onIrq?.(n, false, this.local);
         // The interrupted foreground's time after the IRQ's entry point
         // (the rest of its chunk, or of its poll loop's pass) -- unless
@@ -711,36 +733,10 @@ function pollStop(p, target) {
 }
 
 /**
- * The task entry addresses of a dispatcher's two-level table: `modes`
- * pointers at `table`, each to a list of task pointers that ends with
- * `endTask` (the CWAI task) or where the next list begins.
- * @param {(addr: number) => number} word big-endian ROM word reader
- * @param {number} table @param {number} modes @param {number} endTask
- * @returns {number[]}
- */
-export function taskAddresses(word, table, modes, endTask) {
-  const lists = [];
-  for (let k = 0; k < modes; k += 1) lists.push(word(table + 2 * k));
-  const out = new Set();
-  for (let k = 0; k < modes; k += 1) {
-    const stop = k + 1 < modes ? lists[k + 1] : 0x10000;
-    for (let p = lists[k]; p + 1 < stop && p < 0xfffe; p += 2) {
-      const a = word(p);
-      out.add(a);
-      if (a === endTask) break;
-    }
-  }
-  return [...out].sort((a, b) => a - b);
-}
-
-/**
  * @typedef {object} SchedulerOptions
  * @property {Array<Agent | null | undefined>} [agents]  per CPU: an
  *   agent to use instead of a JsAgent (tests: the fallback bridge)
- * @property {CostTable} [costs] measured marker costs
  * @property {number} [quantum] slice length in cycles (default 256)
- * @property {boolean} [ioAtVblank] run the 56XX/58XX at the vblank
- *   instead of at +76.8 (default false)
  */
 
 export class Scheduler {
@@ -751,13 +747,17 @@ export class Scheduler {
    */
   constructor(m, cpus, opts = {}) {
     this.m = m;
-    const costs = opts.costs ?? {};
     /** @type {Agent[]} */
     this.agents = [0, 1, 2].map((n) => opts.agents?.[n]
-      ?? new JsAgent(n, cpus[NAMES[n]], costs[NAMES[n]] ?? {}));
+      ?? new JsAgent(n, cpus[NAMES[n]]));
     for (const a of this.agents) a.attach(this);
     this.quantum = opts.quantum ?? QUANTUM;
-    this.ioAtVblank = opts.ioAtVblank ?? false;
+    /**
+     * The first sub-CPU write into the main CPU's stack since power-on
+     * (see the file header), or null.
+     * @type {{ addr: number, frame: number } | null}
+     */
+    this.stackHit = null;
     this.watchIo(m);
     this.watchCharges(m);
     /** CPU running a chunk now (-1 between chunks). */
@@ -813,6 +813,8 @@ export class Scheduler {
     this.wd = { armed: false, lastKickT: 0, resets: 0 };
     this.sresetQueue = [];
     this.abort = false;
+    this.cutAt = NaN;
+    this.stackHit = null;
     this.agents[0].start(0);
     this.agents[1].hold();
     this.agents[2].hold();
@@ -870,10 +872,15 @@ export class Scheduler {
    * runs the chips at vblank + 76.8 cycles, in the middle of whatever
    * instruction is running), else at the end of that slice. A ported
    * main CPU's time at an access is the start of its instruction (the
-   * code charges up to there, then accesses); every access to the chips
-   * is extended addressing, whose first data cycle is the 5th (index 4:
-   * opcode, address high, low, dead cycle), hence +4 cycles. An emulated
-   * core (test bridge) reports its exact bus cycle itself.
+   * code charges up to there, then accesses); the access itself comes
+   * `m.ioDataCycle` cycles later: IO_ACCESS_CYCLE (4) for extended
+   * addressing, which most chip accesses use, or what ported code that
+   * reaches the chips through an index register set for that
+   * instruction (src/game/timing.js ioRead / ioStore). An emulated core (test
+   * bridge) reports its exact bus cycle itself.
+   *
+   * Also notes the sub CPU's writes into the main CPU's stack
+   * (`stackHit`, see the file header).
    * @param {Machine} m
    */
   watchIo(m) {
@@ -896,9 +903,10 @@ export class Scheduler {
           ? Math.min(agent.runTarget, self.abortAt) : agent.runTarget;
         const later = !(start < end);
         if (self.ioAt !== Infinity && later) self.cutAt = start;
-        self.ioCatchUp(start + IO_ACCESS_CYCLE * TICKS_PER_CYCLE, later);
+        self.ioCatchUp(start + m.ioDataCycle * TICKS_PER_CYCLE, later);
       }
     };
+    const { mainLow, mainTop } = STACKS.main;
     /** @param {number} cpu @param {number} a @returns {number} */
     m.busRead = function busRead(cpu, a) {
       check(cpu, a & 0xffff);
@@ -906,7 +914,12 @@ export class Scheduler {
     };
     /** @param {number} cpu @param {number} a @param {number} v */
     m.busWrite = function busWrite(cpu, a, v) {
-      check(cpu, a & 0xffff);
+      const at = a & 0xffff;
+      check(cpu, at);
+      if (cpu === CPU.SUB && self.stackHit === null && at >= mainLow
+          && at < mainTop) {
+        self.stackHit = { addr: at, frame: self.frame };
+      }
       write.call(this, cpu, a, v);
     };
   }
@@ -936,8 +949,7 @@ export class Scheduler {
     m.vblank();
     if (m.io.pending.n56 || m.io.pending.n58) {
       this.ioCut = this.t + IO_DELAY_TICKS;
-      if (this.ioAtVblank) m.ioUpdate();
-      else this.ioAt = this.ioCut;
+      this.ioAt = this.ioCut;
     }
     for (const a of this.agents) if (a.running) a.vblank();
   }
@@ -1008,8 +1020,7 @@ export class Scheduler {
       if (this.ioAt <= this.t) { this.ioAt = Infinity; m.ioUpdate(); }
       if (this.ioCut <= this.t) { this.ioCut = Infinity; this.cutAt = NaN; }
       // The I/O timer cuts the slices where it is due (the oracle's
-      // Board.advanceTo); with the run already done at vblank (a ported
-      // main CPU) the cut is kept, as the timer still exists on the board.
+      // Board.advanceTo).
 
       const limit = Math.min(this.t + this.quantum * TICKS_PER_CYCLE,
         this.nextVblankT, this.ioAt, this.ioCut, target);
@@ -1049,6 +1060,7 @@ export class Scheduler {
     this.wd.armed = false;
     this.m.machineReset();
     this.m.sreset = false;
+    this.stackHit = null;
     for (const a of this.agents) a.start(this.t);
   }
 
@@ -1071,5 +1083,18 @@ export class Scheduler {
   /** Cycles since the current frame's vblank (for hooks). */
   frameCycle() {
     return (this.now() - this.frameStartT) / TICKS_PER_CYCLE;
+  }
+
+  /**
+   * The frame cycle of the I/O-chip access being made now: a ported
+   * CPU's time is the start of its instruction, so its data cycle
+   * (`m.ioDataCycle`) comes on top; an emulated core's time is the
+   * access itself.
+   * @returns {number}
+   */
+  accessCycle() {
+    const js = this.current >= 0
+      && this.agents[this.current] instanceof JsAgent;
+    return this.frameCycle() + (js ? this.m.ioDataCycle : 0);
   }
 }

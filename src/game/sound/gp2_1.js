@@ -45,7 +45,7 @@
  */
 
 import { SOUND, SOUND_AT, soundAt } from './routines.js';
-import { soundWord } from '../romdata.js';
+import { soundWord, romSweep } from '../romdata.js';
 import { disp8 } from '../m6809ops.js';
 import { call } from '../call.js';
 import { SYNC, idle, frameDue } from '../scheduler.js';
@@ -170,22 +170,23 @@ export function* reset_sound(m) {
     yield SYNC;
     a = s.peek(SND_REQUEST);
     s.poke(0x3000, a); // watchdog
-    s.charge(4 + 5 + 2 + 3);
+    s.charge(4); s.charge(5); s.charge(2); s.charge(3);
     if (a === 0x11) break;
   }
   // $E00C: clra / ldx #$E000
   a = 0;
-  s.charge(2 + 3);
+  s.charge(2); s.charge(3);
   // $E010: sta $3000 / adda ,x+ / cmpx #$0000 / bne $E010 -- the byte sum
   // of the whole ROM (8192 passes of 18 cycles). Only the watchdog sees
   // it, so it runs as one stretch of charged time.
   for (let x = 0xe000; x <= 0xffff; x += 1) {
     s.poke(0x3000, a);
-    a = (a + s.read(x)) & 0xff;
+    // code bytes too: a whole-ROM sweep (romdata.js SWEEPS)
+    a = (a + romSweep('sound', () => s.read(x))) & 0xff;
   }
   s.charge(8192 * (5 + 6 + 4 + 3));
   // $E01A: cmpa #$00 / beq $E020 / lda #$01
-  s.charge(2 + 3);
+  s.charge(2); s.charge(3);
   if (a !== 0) { a = 1; s.charge(2); }
   // $E020: sta $0380 -- ROM error flag (after the long checksum stretch:
   // a timing point, or the store would land frames early)
@@ -198,7 +199,7 @@ export function* reset_sound(m) {
   s.poke(SND_REQUEST, 0x22);
   s.charge(4);
   // $E027: ldx #$0000 / ldd #$0000
-  s.charge(3 + 3);
+  s.charge(3); s.charge(3);
   // $E02D: ldy $3000 / std ,x++ / cmpx #$0300 / bcs $E02D -- 22 cycles
   // a pass. LDY reads $3000 and $3001: two watchdog kicks. The STDs that
   // reach $0040-$007F are visible to the main CPU (its $22 wait at $E0D2
@@ -208,16 +209,16 @@ export function* reset_sound(m) {
     if ((x >= 0x40 && x < 0x80) || frameDue()) yield SYNC;
     s.peek16(0x3000);
     s.poke16(x, 0);
-    s.charge(8 + 4 + 3);
+    s.charge(8); s.charge(4); s.charge(3);
   }
   // $E038: ldx #$E3EF / ldu #$00A0, then 16 x (ldd ,x++ / std ,u++ /
   // cmpx #$E40F / bcs $E03E): the tempo table (32 bytes).
-  s.charge(3 + 3);
+  s.charge(3); s.charge(3);
   for (let i = 0; i < 0x20; i += 2) {
     s.charge(8); // ldd ,x++
     if (frameDue()) yield SYNC;
     s.poke16(SND_TEMPO + i, s.read16(TEMPO_INIT + i));
-    s.charge(8 + 4 + 3);
+    s.charge(8); s.charge(4); s.charge(3);
   }
   // The last word loaded was $E40D-$E40E: A = $04 afterwards.
   a = s.read(TEMPO_INIT + 0x1e);
@@ -263,25 +264,26 @@ export function* irq_sound(m) {
   // $E05B: ldx #$0080 / ldu #$0003; per voice: ldd ,x++ / std ,u++ /
   // ldd ,x++ / std ,u / leau 6,u / cmpu #$0043 / bne -- the shadow's
   // four bytes go to WSG registers 8v+3 .. 8v+6.
-  s.charge(3 + 3);
+  s.charge(3); s.charge(3);
   for (let v = 0; v < 8; v += 1) {
     const src = WSG_SHADOW + 4 * v;
     const dst = 8 * v + 3;
     s.poke16(dst, s.peek16(src));
     s.poke16(dst + 2, s.peek16(src + 2));
-    s.charge(8 + 8 + 8 + 5 + 5 + 5 + 3);
+    s.charge(8); s.charge(8); s.charge(8); s.charge(5); s.charge(5);
+    s.charge(5); s.charge(3);
   }
   // $E071: ldx #$0080; clr ,x+ / cmpx #$00A0 / bne -- clear the shadow
   s.charge(3);
   for (let i = 0; i < 0x20; i += 1) {
     clr(s, WSG_SHADOW + i);
-    s.charge(8 + 4 + 3);
+    s.charge(8); s.charge(4); s.charge(3);
   }
   for (let n = 0; n < SOUND_COUNT; n += 1) {
     // lda <$40+n / beq
     yield SYNC;
     const req = s.peek(SND_REQUEST + n);
-    s.charge(4 + 3);
+    s.charge(4); s.charge(3);
     let play;
     if (RETRIGGERED.has(n)) {
       if (req !== 0) {
@@ -291,13 +293,13 @@ export function* irq_sound(m) {
         s.charge(6);
         yield SYNC;
         clr(s, SND_ACTIVE + n);
-        s.charge(6 + 3);
+        s.charge(6); s.charge(3);
         play = true;
       } else {
         // lda <$60+n / beq -- still running from an earlier request?
         yield SYNC;
         play = s.peek(SND_ACTIVE + n) !== 0;
-        s.charge(4 + 3);
+        s.charge(4); s.charge(3);
       }
     } else if (req !== 0) {
       play = true;
@@ -312,7 +314,7 @@ export function* irq_sound(m) {
       // lda #n / sta <$C0 / jsr play_sound
       s.charge(2);
       s.poke(SND_CURRENT, n);
-      s.charge(4 + 8);
+      s.charge(4); s.charge(8);
       yield* call(SOUND.play_sound, m, {});
       // bra past the clr (held sounds only; retriggered ones fall through)
       if (!RETRIGGERED.has(n)) s.charge(3);
@@ -324,7 +326,7 @@ export function* irq_sound(m) {
   s.charge(4);
   yield SYNC;
   s.poke(0x4000, 1);
-  s.charge(5 + 15);
+  s.charge(5); s.charge(15);
 }
 
 // ----------------------------------------------------------- play_sound
@@ -345,18 +347,18 @@ export function* play_sound(m) {
   // $E233: ldx #sound_voice / ldb <$C0 / lda b,x / sta <$C1
   let b = s.peek(SND_CURRENT);
   s.poke(SND_VOICE, s.read(disp8(SOUND_VOICE, b)));
-  s.charge(3 + 4 + 5 + 4);
+  s.charge(3); s.charge(4); s.charge(5); s.charge(4);
   // $E23C: ldx #sound_channels / aslb / ldx b,x -- B is an 8-bit shift,
   // and b,x a signed offset
   b = (b << 1) & 0xff;
   let x = s.read16(disp8(SOUND_CHANNELS, b));
   // $E242: ldu #$0060 / lsrb / lda b,u / bne play_voice
   b >>= 1;
-  s.charge(3 + 2 + 6 + 3 + 2);
+  s.charge(3); s.charge(2); s.charge(6); s.charge(3); s.charge(2);
   const active = disp8(SND_ACTIVE, b);
   yield SYNC;
   const first = s.peek(active) === 0;
-  s.charge(5 + 3);
+  s.charge(5); s.charge(3);
   if (first) {
     // $E24A: inc b,u -- the sound has started
     yield SYNC;
@@ -365,17 +367,17 @@ export function* play_sound(m) {
     // $E24C: ldu #sound_headers / aslb / ldu b,u / pshs x
     b = (b << 1) & 0xff;
     let u = s.read16(disp8(SOUND_HEADERS, b));
-    s.charge(3 + 2 + 6 + 7);
+    s.charge(3); s.charge(2); s.charge(6); s.charge(7);
     const blocks = x;
     for (;;) {
       // $E254: ldd ,u++ / cmpa #$11 / beq $E27B
       const d = s.read16(u);
       u = (u + 2) & 0xffff;
-      s.charge(8 + 2 + 3);
+      s.charge(8); s.charge(2); s.charge(3);
       if (d >> 8 === 0x11) {
         // $E27B: sta -1,x / puls x -- the last block's +$10 = $11
         s.poke((x - 1) & 0xffff, 0x11);
-        s.charge(5 + 7);
+        s.charge(5); s.charge(7);
         break;
       }
       // $E25A: std ,x / ldy ,x -- the note stream pointer
@@ -388,7 +390,8 @@ export function* play_sound(m) {
       // $E264: ldd ,y++ / std 3,x / sty ,x -- waveform and envelope
       s.poke16((x + 3) & 0xffff, s.read16(y));
       s.poke16(x, (y + 2) & 0xffff);
-      s.charge(5 + 6 + 6 + 2 + 5 + 8 + 6 + 6 + 8);
+      s.charge(5); s.charge(6); s.charge(6); s.charge(2); s.charge(5);
+      s.charge(8); s.charge(6); s.charge(6); s.charge(8);
       // $E26B: jsr next_note
       const r = /** @type {{ end?: boolean }} */ (
         yield* call(SOUND.next_note, m, { x }));
@@ -405,7 +408,8 @@ export function* play_sound(m) {
       s.poke16((x + 2) & 0xffff, 0);
       s.poke((x + 4) & 0xffff, 0);
       x = (x + 5) & 0xffff;
-      s.charge(5 + 3 + 8 + 8 + 6 + 3);
+      s.charge(5); s.charge(3); s.charge(8); s.charge(8); s.charge(6);
+      s.charge(3);
     }
     x = blocks;
   }
@@ -428,7 +432,7 @@ export function* play_voice(m, { x }) {
   for (;;) {
     // $E27F: lda 5,x / cmpa #$F0 / beq $E2DA -- resting?
     let a = s.peek((x + 5) & 0xffff);
-    s.charge(5 + 2 + 3);
+    s.charge(5); s.charge(2); s.charge(3);
     /** @type {EnvResult} */
     let r = { cont: ENV_INC_WRITE, a };
     if (a !== 0xf0) r = envelope_step(m, { x });
@@ -437,12 +441,12 @@ export function* play_voice(m, { x }) {
     if (out.end) return; // op_end: back to irq_sound
     // $E2F9: lda $10,x / cmpa #$11 / bne $E301 / rts
     a = s.peek((x + 0x10) & 0xffff);
-    s.charge(5 + 2 + 3);
+    s.charge(5); s.charge(2); s.charge(3);
     if (a === 0x11) { s.charge(5); return; }
     // $E301: inc <$C1 / leax $11,x / jmp play_voice
     s.poke(SND_VOICE, (s.peek(SND_VOICE) + 1) & 0xff);
     x = (x + 0x11) & 0xffff;
-    s.charge(6 + 5 + 4);
+    s.charge(6); s.charge(5); s.charge(4);
   }
 }
 
@@ -464,12 +468,13 @@ export function envelope_step(m, { x }) {
     const u0 = s.read16(disp8(ENVELOPES, a0));
     const b = s.peek((x + 0x0a) & 0xffff);
     let a = s.read(disp8(u0, b));
-    s.charge(3 + 5 + 2 + 6 + 5 + 5 + 2 + 3);
+    s.charge(3); s.charge(5); s.charge(2); s.charge(6); s.charge(5);
+    s.charge(5); s.charge(2); s.charge(3);
     if (a < 0x10) return { cont: ENV_INC_WRITE, a };
     // $E295: leau b,u / anda #$0F / ldy #envelope_ops / jmp [a,y]
     const u = disp8(u0, b);
     a &= 0x0f;
-    s.charge(5 + 2 + 4 + 7);
+    s.charge(5); s.charge(2); s.charge(4); s.charge(7);
     const op = soundAt(s.read16(disp8(ENVELOPE_OPS, a)));
     const r = /** @type {EnvResult} */ (op(m, { x, u }));
     if (r.cont !== ENV_STEP) return r;
@@ -490,28 +495,28 @@ export function env_op_hold(m, { x, u }) {
   const s = m.sound;
   // $E2A7: lda $B,x / cmpa #$FF / beq $E2C1
   let a = s.peek((x + 0x0b) & 0xffff);
-  s.charge(5 + 2 + 3);
+  s.charge(5); s.charge(2); s.charge(3);
   if (a === 0xff) {
     // $E2C1: lda -1,u / deca / sta $B,x / bra write_shadow
     a = (s.read((u - 1) & 0xffff) - 1) & 0xff;
     s.poke((x + 0x0b) & 0xffff, a);
-    s.charge(5 + 2 + 5 + 3);
+    s.charge(5); s.charge(2); s.charge(5); s.charge(3);
     return { cont: ENV_WRITE, a };
   }
   // $E2AD: ldb 1,u / incb / stb <$C3 / cmpa <$C3 / bne $E2BC
   const t = (s.read((u + 1) & 0xffff) + 1) & 0xff;
   s.poke(SND_TEMP, t);
-  s.charge(5 + 2 + 4 + 4 + 3);
+  s.charge(5); s.charge(2); s.charge(4); s.charge(4); s.charge(3);
   if (a === s.peek(SND_TEMP)) {
     // $E2B6: ldb #$FF / stb $B,x / bra $E2DA
     s.poke((x + 0x0b) & 0xffff, 0xff);
-    s.charge(2 + 5 + 3);
+    s.charge(2); s.charge(5); s.charge(3);
     return { cont: ENV_INC_WRITE, a };
   }
   // $E2BC: deca / sta $B,x / bra write_shadow
   a = (a - 1) & 0xff;
   s.poke((x + 0x0b) & 0xffff, a);
-  s.charge(2 + 5 + 3);
+  s.charge(2); s.charge(5); s.charge(3);
   return { cont: ENV_WRITE, a };
 }
 
@@ -526,7 +531,7 @@ export function env_op_loop(m, { x }) {
   const s = m.sound;
   // $E2C8: clr $A,x / bra envelope_step
   clr(s, (x + 0x0a) & 0xffff);
-  s.charge(7 + 3);
+  s.charge(7); s.charge(3);
   return { cont: ENV_STEP, a: 0 };
 }
 
@@ -541,7 +546,7 @@ export function env_op_keep(m, { u }) {
   const s = m.sound;
   // $E2CC: lda -1,u / bra write_shadow
   const a = s.read((u - 1) & 0xffff);
-  s.charge(5 + 3);
+  s.charge(5); s.charge(3);
   return { cont: ENV_WRITE, a };
 }
 
@@ -558,11 +563,11 @@ export function env_op_limit(m, { x, u }) {
   // $E2D0: lda -1,u / cmpa 9,x / bls write_shadow (unsigned)
   let a = s.read((u - 1) & 0xffff);
   const left = s.peek((x + 9) & 0xffff);
-  s.charge(5 + 5 + 3);
+  s.charge(5); s.charge(5); s.charge(3);
   if (a > left) {
     // $E2D6: lda 9,x / bra write_shadow
     a = s.peek((x + 9) & 0xffff);
-    s.charge(5 + 3);
+    s.charge(5); s.charge(3);
   }
   return { cont: ENV_WRITE, a };
 }
@@ -596,12 +601,13 @@ export function* write_shadow(m, { x, a, inc = false }) {
   const d7 = s.peek16((x + 7) & 0xffff);
   s.poke((u + 2) & 0xffff, d7 >> 8);
   s.poke((u + 1) & 0xffff, d7 & 0xff);
-  s.charge(5 + 3 + 4 + 2 + 2 + 5 + 6 + 4 + 5 + 6 + 5 + 5);
+  s.charge(5); s.charge(3); s.charge(4); s.charge(2); s.charge(2); s.charge(5);
+  s.charge(6); s.charge(4); s.charge(5); s.charge(6); s.charge(5); s.charge(5);
   // $E2F3: dec 9,x / bne $E2F9 / bsr next_note
   const p9 = (x + 9) & 0xffff;
   const left = (s.peek(p9) - 1) & 0xff;
   s.poke(p9, left);
-  s.charge(7 + 3);
+  s.charge(7); s.charge(3);
   if (left === 0) {
     s.charge(7);
     const r = /** @type {{ end?: boolean }} */ (
@@ -633,23 +639,23 @@ export function* next_note(m, { x }) {
   for (;;) {
     // $E30B: lda [,x] / cmpa #$F0 / bcc stream_command
     let a = s.read(s.peek16(x));
-    s.charge(7 + 2 + 3);
+    s.charge(7); s.charge(2); s.charge(3);
     if (a >= 0xf0) {
       const r = /** @type {StreamResult} */ (
         yield* call(SOUND.stream_command, m, { x, a }));
       if (r.cont === STREAM_END) return { end: true };
       // $E3BA: stu ,x / jmp $E30B
       s.poke16(x, r.u);
-      s.charge(5 + 4);
+      s.charge(5); s.charge(4);
       continue;
     }
     // $E311: anda #$F0 / cmpa #$C0 / beq $E349
     a &= 0xf0;
-    s.charge(2 + 2 + 3);
+    s.charge(2); s.charge(2); s.charge(3);
     if (a === 0xc0) {
       // $E349: lda #$F0 / sta 5,x -- a rest
       s.poke((x + 5) & 0xffff, 0xf0);
-      s.charge(2 + 5);
+      s.charge(2); s.charge(5);
     } else {
       // $E317: clr 5,x / ldu #freq_tables / ldb 2,x / ldu b,u
       clr(s, (x + 5) & 0xffff);
@@ -660,13 +666,16 @@ export function* next_note(m, { x }) {
       s.poke(SND_TEMP, a);
       a = ((a >> 1) + s.peek(SND_TEMP)) & 0xff;
       u = disp8(u, a);
-      s.charge(7 + 3 + 5 + 6 + 2 + 2 + 2 + 4 + 2 + 4 + 5);
+      s.charge(7); s.charge(3); s.charge(5); s.charge(6); s.charge(2);
+      s.charge(2); s.charge(2); s.charge(4); s.charge(2); s.charge(4);
+      s.charge(5);
       // $E32A: ldd ,u / std 6,x / lda 2,u / sta 8,x -- the 3 bytes
       s.poke16((x + 6) & 0xffff, s.read16(u));
       s.poke((x + 8) & 0xffff, s.read((u + 2) & 0xffff));
       // $E332: lda [,x] / anda #$0F / beq $E341 -- octave shifts
       let n = s.read(s.peek16(x)) & 0x0f;
-      s.charge(5 + 6 + 5 + 5 + 7 + 2 + 3);
+      s.charge(5); s.charge(6); s.charge(5); s.charge(5); s.charge(7);
+      s.charge(2); s.charge(3);
       // $E338: lsr 6,x / ror 7,x / ror 8,x / deca / bne -- 24-bit >> 1
       while (n !== 0) {
         const p6 = (x + 6) & 0xffff;
@@ -679,12 +688,12 @@ export function* next_note(m, { x }) {
         const v8 = s.peek(p8);
         s.poke(p8, ((v7 & 1) << 7) | (v8 >> 1));
         n -= 1;
-        s.charge(7 + 7 + 7 + 2 + 3);
+        s.charge(7); s.charge(7); s.charge(7); s.charge(2); s.charge(3);
       }
       // $E341: lda 3,x / ora 6,x / sta 6,x / bra $E34D -- the waveform
       const p6 = (x + 6) & 0xffff;
       s.poke(p6, s.peek((x + 3) & 0xffff) | s.peek(p6));
-      s.charge(5 + 5 + 5 + 3);
+      s.charge(5); s.charge(5); s.charge(5); s.charge(3);
     }
     // $E34D: ldu ,x / ldy #$00A0 / ldb <$C0 / lda b,y / ldb 1,u / mul /
     // stb 9,x -- note length x tempo (low byte)
@@ -698,7 +707,9 @@ export function* next_note(m, { x }) {
     clr(s, (x + 0x0a) & 0xffff);
     s.poke((x + 0x0b) & 0xffff, 0xff);
     // $E366: puls u / rts
-    s.charge(5 + 4 + 4 + 5 + 5 + 11 + 5 + 5 + 5 + 7 + 2 + 5 + 7 + 5);
+    s.charge(5); s.charge(4); s.charge(4); s.charge(5); s.charge(5);
+    s.charge(11); s.charge(5); s.charge(5); s.charge(5); s.charge(7);
+    s.charge(2); s.charge(5); s.charge(7); s.charge(5);
     return { end: false };
   }
 }
@@ -718,7 +729,7 @@ export function* stream_command(m, { x, a }) {
   const u = s.peek16(x);
   const b = s.read((u + 1) & 0xffff);
   const i = ((a & 0x0f) << 1) & 0xff;
-  s.charge(5 + 5 + 4 + 2 + 2 + 7);
+  s.charge(5); s.charge(5); s.charge(4); s.charge(2); s.charge(2); s.charge(7);
   const op = soundAt(s.read16(disp8(STREAM_OPS, i)));
   return yield* call(op, m, { x, u, b });
 }
@@ -733,7 +744,7 @@ export function op_jump(m, { u }) {
   const s = m.sound;
   // $E386: ldu 1,u / bra $E3BA
   const t = s.read16((u + 1) & 0xffff);
-  s.charge(6 + 3);
+  s.charge(6); s.charge(3);
   return { cont: STREAM_NEXT, u: t };
 }
 
@@ -747,7 +758,7 @@ export function op_wave(m, { x, u, b }) {
   const s = m.sound;
   // $E38A: stb 3,x / bra $E394; $E394: leau 2,u / bra $E3BA
   s.poke((x + 3) & 0xffff, b);
-  s.charge(5 + 3 + 5 + 3);
+  s.charge(5); s.charge(3); s.charge(5); s.charge(3);
   return { cont: STREAM_NEXT, u: (u + 2) & 0xffff };
 }
 
@@ -761,7 +772,7 @@ export function op_envelope(m, { x, u, b }) {
   const s = m.sound;
   // $E38E: stb 4,x / bra $E394; $E394: leau 2,u / bra $E3BA
   s.poke((x + 4) & 0xffff, b);
-  s.charge(5 + 3 + 5 + 3);
+  s.charge(5); s.charge(3); s.charge(5); s.charge(3);
   return { cont: STREAM_NEXT, u: (u + 2) & 0xffff };
 }
 
@@ -775,7 +786,7 @@ export function op_set_d(m, { x, u, b }) {
   const s = m.sound;
   // $E392: stb $D,x; $E394: leau 2,u / bra $E3BA
   s.poke((x + 0x0d) & 0xffff, b);
-  s.charge(5 + 5 + 3);
+  s.charge(5); s.charge(5); s.charge(3);
   return { cont: STREAM_NEXT, u: (u + 2) & 0xffff };
 }
 
@@ -789,7 +800,7 @@ function loopTail(s, u, jump) {
   if (jump) {
     // $E3B4: ldu 2,u / bra $E3BA
     const t = s.read16((u + 2) & 0xffff);
-    s.charge(6 + 3);
+    s.charge(6); s.charge(3);
     return { cont: STREAM_NEXT, u: t };
   }
   // $E3B8: leau 4,u
@@ -807,13 +818,13 @@ function loopTail(s, u, jump) {
 export function op_loop_c(m, { x, u, b }) {
   const s = m.sound;
   // $E398: lda $D,x / bne $E3B8
-  s.charge(5 + 3);
+  s.charge(5); s.charge(3);
   if (s.peek((x + 0x0d) & 0xffff) !== 0) return loopTail(s, u, false);
   // $E39C: inc $C,x / cmpb $C,x / beq $E3B8 / bra $E3B4
   const p = (x + 0x0c) & 0xffff;
   const c = (s.peek(p) + 1) & 0xff;
   s.poke(p, c);
-  s.charge(7 + 5 + 3);
+  s.charge(7); s.charge(5); s.charge(3);
   if (b === c) return loopTail(s, u, false);
   s.charge(3);
   return loopTail(s, u, true);
@@ -832,11 +843,11 @@ export function op_loop_f(m, { x, u, b }) {
   const p = (x + 0x0f) & 0xffff;
   const c = (s.peek(p) + 1) & 0xff;
   s.poke(p, c);
-  s.charge(7 + 5 + 3);
+  s.charge(7); s.charge(5); s.charge(3);
   if (b !== c) return loopTail(s, u, false);
   // $E3AA: clr $F,x / bra $E3B4
   clr(s, p);
-  s.charge(7 + 3);
+  s.charge(7); s.charge(3);
   return loopTail(s, u, true);
 }
 
@@ -853,7 +864,7 @@ export function op_loop_e(m, { x, u, b }) {
   const p = (x + 0x0e) & 0xffff;
   const c = (s.peek(p) + 1) & 0xff;
   s.poke(p, c);
-  s.charge(7 + 5 + 3);
+  s.charge(7); s.charge(5); s.charge(3);
   return loopTail(s, u, b === c);
 }
 
@@ -870,7 +881,7 @@ export function* op_end(m) {
   // $E3BF: ldx #$0040 / ldb <$C0 / abx / cmpb #$16 / beq $E3CD
   const n = s.peek(SND_CURRENT);
   const x = (SND_REQUEST + n) & 0xffff;
-  s.charge(3 + 4 + 3 + 2 + 3);
+  s.charge(3); s.charge(4); s.charge(3); s.charge(2); s.charge(3);
   yield SYNC;
   if (n === 0x16) {
     // $E3CD: dec ,x
@@ -879,12 +890,12 @@ export function* op_end(m) {
   } else {
     // $E3C9: clr ,x / bra $E3CF
     clr(s, x);
-    s.charge(6 + 3);
+    s.charge(6); s.charge(3);
   }
   // $E3CF: clr $20,x / puls x,u / rts
   yield SYNC;
   clr(s, (x + 0x20) & 0xffff);
-  s.charge(7 + 9 + 5);
+  s.charge(7); s.charge(9); s.charge(5);
   return { cont: STREAM_END, u: 0 };
 }
 

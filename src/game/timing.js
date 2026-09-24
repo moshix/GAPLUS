@@ -24,22 +24,70 @@
  * cycle-exact.
  */
 
-import { SYNC, pollAgain, frameDue } from './scheduler.js';
+import { SYNC, pollAgain, frameDue, IO_ACCESS_CYCLE } from './scheduler.js';
+import { STACKS } from '../machine/machine.js';
 
 export { SYNC, pollAgain, frameDue };
 
 /** @typedef {import('../machine/machine.js').CpuView} CpuView */
 /** @typedef {'main'|'sub'|'sound'} Cpu */
 
+const MAIN_S = STACKS.main;
+const SUB_S = STACKS.sub;
+
+/**
+ * A ported main-CPU read of the 56XX/58XX ($6800-$681F) whose access
+ * does not come on the 5th cycle of the instruction as an extended
+ * read's does: through an index register (`$CF67: LDA ,U` reads on
+ * cycle index 3, `$B910: LDA ,U+` on 5), or the second byte of a
+ * 16-bit read (`$C01A: LDD $6800` reads $6801 on 5). The scheduler is
+ * told the cycle (`dataCycle`, counted from 0 at the instruction's first
+ * cycle, as src/emu/m6809.js `cyc` counts it) to deliver the chips'
+ * vblank run exactly (scheduler.js watchIo).
+ * @param {CpuView} view the main CPU (the Machine)
+ * @param {number} addr @param {number} dataCycle
+ * @returns {number} the byte read
+ */
+export function ioRead(view, addr, dataCycle) {
+  const m = view.machine;
+  m.ioDataCycle = dataCycle;
+  try {
+    return view.peek(addr);
+  } finally {
+    m.ioDataCycle = IO_ACCESS_CYCLE;
+  }
+}
+
+/**
+ * A ported main-CPU write to the I/O chips whose data cycle is not the
+ * extended-addressing default (4): `STA ,U+` to the 56XX/58XX (cycle 5,
+ * for the vblank run as in {@link ioRead}), or the 62XX bang trigger
+ * $6829 by `STA ,X+` (5) or `INC $6829` (6), so that the host hears the
+ * bang at the cycle the ROM engine reports (Port.onBang).
+ * @param {CpuView} view the main CPU (the Machine)
+ * @param {number} addr @param {number} v
+ * @param {number} dataCycle the write's cycle within the instruction
+ */
+export function ioStore(view, addr, v, dataCycle) {
+  const m = view.machine;
+  m.ioDataCycle = dataCycle;
+  try {
+    view.poke(addr, v);
+  } finally {
+    m.ioDataCycle = IO_ACCESS_CYCLE;
+  }
+}
+
 /**
  * Can another CPU (or the scheduler) see this access, so that its cycle
  * matters?
  *
- *   main   $0000-$1FFF (shared with the sub; not its stack $15E2-$15FF),
- *          $6000-$63FF (shared with the sound CPU), $7000-$8FFF (the
- *          IRQ-mask and SRESET latches)
- *   sub    $0000-$1FFF (not its stack $1D74-$1D80, which includes the
- *          byte PULS/RTS dummy-read), $6000-$6FFF (its IRQ latch)
+ *   main   $0000-$1FFF (shared with the sub; not its stack, STACKS.main
+ *          [low, top) = $15E2-$15FF), $6000-$63FF (shared with the
+ *          sound CPU), $7000-$8FFF (the IRQ-mask and SRESET latches)
+ *   sub    $0000-$1FFF (not its stack STACKS.sub = $1D70-$1D7F, nor
+ *          $1D80, the byte PULS/RTS dummy-read), $6000-$6FFF (its IRQ
+ *          latch)
  *   sound  $0040-$007F (the request and active bytes the main CPU
  *          reads and writes; the rest of its RAM only the main CPU's
  *          service-mode RAM test touches), $4000-$7FFF (its IRQ latch)
@@ -52,11 +100,11 @@ export { SYNC, pollAgain, frameDue };
 export function timed(cpu, addr) {
   const a = addr & 0xffff;
   if (cpu === 'main') {
-    return (a < 0x2000 && (a < 0x15e2 || a >= 0x1600))
+    return (a < 0x2000 && (a < MAIN_S.low || a >= MAIN_S.top))
       || (a >= 0x6000 && a < 0x6400) || (a >= 0x7000 && a < 0x9000);
   }
   if (cpu === 'sub') {
-    return (a < 0x2000 && (a < 0x1d74 || a > 0x1d80))
+    return (a < 0x2000 && (a < SUB_S.low || a > SUB_S.top))
       || (a >= 0x6000 && a < 0x7000);
   }
   return (a >= 0x40 && a < 0x80) || (a >= 0x4000 && a < 0x8000);

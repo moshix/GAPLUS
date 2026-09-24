@@ -90,6 +90,13 @@ export function causeOfDeath(peek) {
  * @property {number[]} deathParsec PARSEC of each loss
  * @property {Record<string, number>} causes what the losses ran into
  * @property {number} shots      fire presses the AI made
+ * @property {number} moveFrames frames the fighter was under control
+ * @property {number} changes    frames on which its motion (the sign of
+ *                               its h and v steps) differed from the
+ *                               frame before: the visible "flicker"
+ * @property {number} reversals  times an axis of motion turned round
+ *                               (left to right, up to down; stops
+ *                               between do not count as a new start)
  * @property {boolean} capped    stopped by the frame cap
  * @property {string} error      the port's exception, if it threw
  * @property {number} aiMs       mean AI time per frame, milliseconds
@@ -111,8 +118,13 @@ export function playOneGame(run, frameCap) {
   /** @type {GameResult} */
   const r = {
     frames: 0, parsec: 0, score: 0, deaths: 0, deathParsec: [], causes: {},
-    shots: 0, capped: false, error: '', aiMs: 0,
+    shots: 0, capped: false, error: '', aiMs: 0, moveFrames: 0, changes: 0, reversals: 0,
   };
+  // Motion bookkeeping for the smoothness metrics.
+  let lastH = -1;
+  let lastV = 0;
+  let lastMotion = 0;
+  const lastSign = [0, 0];
   let started = false;
   let lives = -1;
   let wasExploding = false;
@@ -145,6 +157,31 @@ export function playOneGame(run, frameCap) {
       r.causes[cause] = (r.causes[cause] ?? 0) + 1;
     }
     wasExploding = exploding;
+    // Smoothness: while the fighter is under control, how often does its
+    // motion change, and how often does an axis turn round?
+    if (ai.world?.live === true && !exploding) {
+      const h = peek(PLAYER_H);
+      const v = entryV(peek, 0);
+      if (lastH >= 0) {
+        const sh = Math.sign(((h - lastH + 384) & 0xff) - 128);
+        const sv = Math.sign(v - lastV);
+        const motion = (sh + 1) * 3 + (sv + 1);
+        r.moveFrames += 1;
+        if (motion !== lastMotion) r.changes += 1;
+        lastMotion = motion;
+        for (const [axis, sgn] of [[0, sh], [1, sv]]) {
+          if (sgn === 0) continue;
+          if (lastSign[axis] !== 0 && sgn !== lastSign[axis]) r.reversals += 1;
+          lastSign[axis] = sgn;
+        }
+      }
+      lastH = h;
+      lastV = v;
+    } else {
+      lastH = -1;
+      lastSign[0] = 0;
+      lastSign[1] = 0;
+    }
     // A loss takes one off lives_p1; a bonus ship adds one.
     const l = peek(LIVES_P1);
     if (lives >= 0 && l === ((lives - 1) & 0xff)) {
@@ -226,6 +263,11 @@ async function main() {
   const causeText = Object.entries(causes).sort((a, b) => b[1] - a[1])
     .map(([k, v]) => `${k} ${v}`).join(', ');
   console.log(`  hit by       ${causeText || 'nothing'}`.slice(0, 79));
+  const moved = results.reduce((a, r) => a + r.moveFrames, 0) / FPS;
+  const perSec = (/** @type {number} */ n) => fmt(n / Math.max(1, moved), 2);
+  console.log(`  smoothness   ${perSec(results.reduce((a, r) => a + r.changes, 0))}`
+    + ` direction changes/s, ${perSec(results.reduce((a, r) => a + r.reversals, 0))}`
+    + ' reversals/s');
   console.log(`  AI cost      ${fmt(mean(results.map((r) => r.aiMs)), 3)} ms/frame`);
   const capped = results.filter((r) => r.capped).length;
   if (capped > 0) console.log(`  ${capped} game(s) hit the frame cap`);

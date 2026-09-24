@@ -12,7 +12,7 @@ are generated from the ROM bytes plus hand-written annotation files.
 | file | what |
 |------|------|
 | `tools/gen-listing.mjs` | the generator (no dependencies) |
-| `tools/js-routines.mjs` | finds the JS function (name, file) of every main/sub routine the port registers |
+| `tools/js-routines.mjs` | finds the JS function (name, file) of every routine the port registers (the generator adds the sound CPU's registry, `SOUND`/`SOUND_AT`) |
 | `reference/gaplus-main.asm` | main CPU, $A000-$FFFF (generated) |
 | `reference/gaplus-sub.asm` | sub CPU, $A000-$FFFF (generated) |
 | `reference/gaplus-sound.asm` | sound CPU, $E000-$FFFF (generated) |
@@ -129,7 +129,9 @@ C3C3: 20 20 20 35 30 30 30 30  FCB    $20,$20,$20,$35,$30,$30,$30,$30
   address the JS port implements. They list
   `Vector:`, `Called from:` (address and containing routine),
   `Jumped to from:` and `Table entry at:`. Data labels list
-  `Referenced from:`.
+  `Referenced from:` (address and the routine containing it, or for a
+  reference from inside a data region such as a pointer table the
+  nearest data label before it).
 * **JS cross-reference.** A routine the port registers in `MAIN_AT` /
   `SUB_AT` has, right under its name, the file that implements it, and
   its JS name when that differs from the label:
@@ -143,12 +145,14 @@ C3C3: 20 20 20 35 30 30 30 30  FCB    $20,$20,$20,$35,$30,$30,$30,$30
   when they ported it (`sub_B0D4`, `lD9CF`, ...), and other modules and
   the tests call it by that name, so **labels may be renamed but JS
   functions are not**: search the JS for the name after `JS:`.
-  `tools/js-routines.mjs` finds them by importing `src/game/{main,sub}/
-  index.js` (else each `gp2_*.js`) and walking `MAIN_AT`/`SUB_AT`: the
-  name is the function's key in `MAIN`/`SUB`, the file the one whose
-  source defines a function (or `const`) of that name. The listings
-  therefore change when the port adds or drops a routine (`--check`
-  reports them stale). The sound CPU has no cross-references yet.
+  `tools/js-routines.mjs` finds them by importing `src/game/{main,sub,
+  sound}/index.js` (else each `gp2_*.js`) and walking `MAIN_AT`/
+  `SUB_AT`/`SOUND_AT`: the name is the function's key in `MAIN`/`SUB`/
+  `SOUND`, the file the one whose source defines a function (or
+  `const`) of that name. The listings therefore change when the port
+  adds or drops a routine (`--check` reports them stale). All 20 sound
+  routines are in `src/game/sound/gp2_1.js`; only `env_op_ramp` has a
+  different JS name (`env_op_hold`).
 * **Quirks.** ROM bugs and odd behaviour the port reproduces on purpose
   are marked `BUG:` (a mistake in the ROM: wrong register stored,
   overrun, lost result) or `QUIRK:` (surprising but harmless or
@@ -163,7 +167,22 @@ C3C3: 20 20 20 35 30 30 30 30  FCB    $20,$20,$20,$35,$30,$30,$30,$30
   (sub $ADCF), `demo_script_1/2` (main $AADA/$ACBC), the stage parameter
   tables `stage_*` (main $EE84-$F496), the string tables
   (`hiscore_screen_text`, `str_*`, `alphabet_*`). The top of each listing has
-  `EQU` lines for every hardware and RAM symbol it uses.
+  `EQU` lines for every hardware and RAM symbol it uses, with the
+  listing's own annotation comment when it has one (else the shared
+  one).
+* **Sound data** (the `sounds` annotation, section 4) is decoded rather
+  than dumped: `hdr_<sound>` headers (one `FDB <stream>` + `FCB table`
+  per voice, `$11` end), note streams `<sound>_v<k>` (the first header
+  voice that points there; jump and loop targets inside streams are
+  `lXXXX`), envelopes `env_0`..`env_30` with the decoded levels,
+  frequency tables `freq_low` / `freq_a440` / `freq_high` with each
+  note's pitch in Hz, and `unused_XXXX` for streams no header points
+  to. In a stream, `waveform w, envelope e` is the stream's first two
+  bytes; consecutive notes are packed four to a line as `pitch:length`
+  (`C6:4` = C6 for 4 x tempo frames, `-:6` a rest); commands get one
+  line each (`waveform`, `envelope`, `repeat from X: n passes (+C)`,
+  `to X every n passes (+F)`, `to X on pass n only (+E)`, `jump X`,
+  `end`). The irq_sound slot of sound n is `slot_<sound>`.
 
 ## 4. Annotation files (`reference/annotations/<cpu>.json`)
 
@@ -212,6 +231,28 @@ address space. Every key is optional.
   stored right to left). The range is `addr` + `len` or `addr`..`end`
   inclusive; `name`/`doc` label its start. Data ranges are never traced
   as code.
+* `sounds` (sound.json only): where the sound driver's tables are and
+  what each sound is:
+
+  ```json
+  "sounds": {
+    "headers": "E43D", "voices": "E3D5", "tempo": "E3EF",
+    "channels": "E409", "envelopes": "E5D2", "env_count": 31,
+    "freq_tables": "E6D2", "freq_count": 3,
+    "freq_names": ["freq_low", "freq_a440", "freq_high"],
+    "retriggered": [1, 7, 10, 11, 12, 13, 14],
+    "orphans": ["F0FE"],
+    "names": [{"name": "start_tune", "doc": ["what it is, who asks"]}]
+  }
+  ```
+
+  `soundData()` in the generator walks the headers (one per entry of
+  `names`), every stream they point to and every jump/loop target, the
+  envelopes and the frequency tables; `orphans` are streams to decode
+  that nothing points to. Each header's doc gets a generated line with
+  its WSG voices, tempo, channel blocks and held/retriggered. A walk
+  that lands inside an item decoded by another walk stops the generator
+  (the data would be ambiguous).
 * `ram`: names for RAM. Main and sub share $0000-$1FFF; the sound CPU's
   $0000-$03FF is main $6000-$63FF, so sound-file entries are converted to
   main addresses in `symbols.json` (and shown in sound addresses in the
@@ -330,10 +371,15 @@ sound 957 / 7235.
 | range | contents |
 |-------|----------|
 | $E000-$E054 | `reset_sound` |
-| $E055-$E232 | `irq_sound` (shadow to WSG, 26 request slots) |
-| $E233-$E3D4 | `play_sound`, envelopes, `next_note`, stream commands |
-| $E3D5-$E6D7 | per-sound tables: first voice, tempo, channel block, header; headers; envelopes; frequency table pointers |
-| $E6D8-$FFEE | frequency tables and note streams |
+| $E055-$E232 | `irq_sound` (shadow to WSG, 26 request slots `slot_*`) |
+| $E233-$E3D4 | `play_sound`, `play_voice`, envelope ops, `write_shadow`, `next_note`, stream commands, `op_end` |
+| $E3D5-$E470 | per-sound tables: `sound_voice`, `tempo_init`, `sound_channels`, `sound_headers` |
+| $E471-$E5D1 | the 26 headers `hdr_*` |
+| $E5D2-$E6D1 | `envelopes` (31 pointers) and the envelopes `env_*` |
+| $E6D2-$E746 | `freq_tables`: `freq_low`, `freq_a440`, `freq_high` (12 notes + an unused $00 each) |
+| $E747-$FA3D | note streams (`<sound>_v<k>`); $F0FE-$F23B five streams no header uses (`unused_*`) |
+| $FA3E-$FA5B | "1984 NAMCO ALL RIGHTS RESERVED" (`copyright_text`) |
+| $FA5C-$FFEE | $FF fill |
 | $FFEF-$FFFF | checksum byte, vectors (only RESET and IRQ used) |
 
 ## 9. What the code does (first pass)
@@ -461,19 +507,106 @@ parked off screen. Slot 0 is never written by either.
 
 ### Sound driver
 
-The main CPU is the only one that can reach the sound RAM. It requests
-sound n (0-25) by writing 1 to `snd_request+n` ($6040+n; `INC` for the
-coin sound $16, which the driver counts down). Each sound owns a range
-of WSG voices (`sound_voice`), a channel block in RAM (17 bytes per
-voice, `sound_channels`) and a header of (note stream, frequency table)
-pairs. `play_sound` steps each voice once per frame: a volume envelope
-(levels then an op byte $10/$12/$14/$16), and a note stream of notes
-(pitch nibble + octave shift, length x tempo), rests ($Cx) and commands
-$F0-$F7 (end, waveform, envelope, loops, jump). Results go to the voice
-shadow $0080 (vol, freq lo, mid, hi|wave), which the next IRQ copies into
-WSG registers 3-6 of each voice. Sounds 1, 7 and $0A-$0E are retriggered
-by a new request; the others play while requested. `sound_all_off`
-($DF19) clears every request.
+Ported as `src/game/sound/gp2_1.js` (cycle-exact, docs/modules/
+integration.md); every routine header in `gaplus-sound.asm` names it.
+
+**Requests.** Only the main CPU reaches the sound RAM (main $6000-$63FF
+= sound $0000-$03FF). It requests sound n (0-25) by writing 1 to
+`snd_request+n` ($6040+n); the coin sound $16 is `INC`ed per credit
+and counted down by `op_end`, so it plays once per coin. The sub CPU
+writes the same pattern into a queue at $0840+n, which the main task
+`task_sound_queue` ($D8B0) forwards (1 per non-zero byte, queue
+cleared) unless `player_dying`, when it clears every request except $14
+and $16. `sound_all_off` ($DF19) clears all requests and active flags,
+`sound_demo_gate` ($DF27) the ones the demo may not play.
+
+**Held and retriggered.** Sounds 1, 7 and $0A-$0E are retriggered:
+`irq_sound` consumes the request, clears `snd_active+n` and restarts
+the sound, which then runs on while `snd_active+n` is set. All others
+are held: they play while `snd_request+n` is set, which stays set until
+the stream ends (`op_end` clears it); a held sound requested every
+frame (8, 9, $10, $11, $18) therefore restarts each time it ends. The
+main CPU stops a held sound early by clearing both bytes (e.g. $E36F,
+$C07A). QUIRK (sub side): the sub's `CLR $0850/$0870` ($E6D3), `CLR
+$0851/$0871` ($B623) and `CLR $0852/$0872` ($B577) only cancel a
+request not yet forwarded (and nothing ever writes the queue's
+$0860-$087F), so those sounds play to the end of their streams.
+
+**Per frame** (`irq_sound`): the voice shadow `wsg_shadow` ($0080, per
+voice: volume, freq bits 0-7, 8-15, 16-19 | waveform << 4) goes to WSG
+registers 8v+3..8v+6 and is cleared; then sounds 0-25 in order each run
+one frame (`play_sound`); a later sound overwrites the shadow of a
+voice it shares with an earlier one, so it wins; `snd_irq_done` = 1
+(never read).
+
+**A sound** owns WSG voices `sound_voice[n]` + k, a 17-byte channel
+block per voice at `sound_channels[n]` (`snd_blocks`, $0100-$0352;
+layout in the `play_sound` header) and a header `hdr_<name>`: per voice
+a note stream pointer and a frequency table number, $11 ends. On the
+first frame `play_sound` builds the blocks and fetches each voice's
+first note; each frame `play_voice` steps every voice's volume envelope
+and note stream and writes the shadow (`write_shadow`).
+
+**Note streams.** Two bytes first: waveform (bits 4-6) and envelope.
+Then events: a note `$pn len` (p = entry 0-11, A..G#, of the voice's
+frequency table; n = octave shift right; `len` x the sound's tempo
+`snd_tempo+n` = frames, low byte of the MUL), a rest `$Cx len`, or a
+command: $F0 end (`op_end`: clear the request, count the coin down,
+clear `snd_active+n`, return straight to `irq_sound`), $F1 w waveform,
+$F2 e envelope, $F3 n addr repeat (jump back until counter +C = n),
+$F4 n set +D (makes $F3 pass; unused), $F5 n addr (jump on pass n of
++E only), $F6 n addr (jump every n passes of +F, cleared), $F7 addr
+jump. The listing decodes every stream (`C6:4`, `-:6`, section 3).
+
+**Envelopes** (`env_0`..`env_30`): levels 0-$F, one a frame, restarted
+by every note; then $10 sustain the last level, $12 sustain but no
+louder than the frames left in the note (fade at its end), $14 repeat,
+$16 n ramp: down one step a frame from the previous level to n
+(`env_op_ramp`, JS `env_op_hold`).
+
+**Frequency tables:** `freq_a440` is equal temperament at A = 440 Hz
+(A7 = 3520 Hz at shift 0; tone = freq x 24000 / 2^20 Hz); `freq_low`
+and `freq_high` are the same scale 12 cents flat and sharp, used by
+doubled voices for a chorus effect.
+
+**The 26 sounds.** Found from the request sites in the main and sub
+listings and by logging every write to $6040-$6059 and the queue with
+the game mode while the port ran the attract mode, a coin-and-start
+game with a random player, and the challenging stage (Round Advance);
+"frames" is the length of one play from a single request (the port's
+`irq_sound` run alone). Blocks = `sound_channels[n]`.
+
+| n | name | what requests it | voices | tempo | frames |
+|---|------|------------------|--------|-------|--------|
+| 0 | start_tune | game start ($CE17, the main waits at $CE7F); demo start | 0-7 | 2 | 384 |
+| 1 | shot | fighter shot ($D1B5); R | 0-3 | 1 | 18 |
+| 2 | challenge_tune | stage clear before a challenging stage ($D6E3) | 1-6 | 1 | 144 |
+| 3 | entry_tune_1st | TOP 5 name entry, rank 1 ($B52F) | 0-6 | 3 | 576 |
+| 4 | entry_tune | TOP 5 name entry, ranks 2-5 | 0-6 | 1 | 960 |
+| 5 | stage_tune | "PARSEC nn" stage start: after the start tune, stage clear, ship lost, results | 1-6 | 2 | 108 |
+| 6 | payout_tune | challenging-stage results pay-out (payout_lucky/byebye) | 0-5 | 7 | 280 |
+| 7 | shot_upgraded | shot of the upgraded fighter ($0EA2 not $2F, $D1BB); R | 0-3 | 1 | 31 |
+| 8 | button_wait | results: every frame until fire is pressed ($E35F) | 4-7 | 5 | 20 |
+| 9 | formation_hum | sub: every frame while the formation is assembled ($E34B) | 4-7 | 2 | 168 |
+| $0A | hit_challenge | hit in a challenging stage ($D3F1), last results hit; R | 4-7 | 3 | 39 |
+| $0B | hit | enemy hit ($D3F8), captured ship shot ($FA57); R | 5-7 | 2 | 28 |
+| $0C | flyin | sub: enemy flying into the formation; R | 5 | 1 | 87 |
+| $0D | dive | sub: enemies launched to attack; R | 5 | 1 | 104 |
+| $0E | special_object | sub: the object at formation slot 42 starts; R | 4-5 | 1 | 89 |
+| $0F | object_spawn | sub: object_spawn_random | 2-5 | 1 | 120 |
+| $10 | capture | sub: task_capture_steer, bonus_seq_fall (every frame) | 2-3 | 4 | 120 |
+| $11 | effect_rise | sub: power-up effect 0 (effect_rising) | 2-3 | 5 | 120 |
+| $12 | effect_spread | sub: power-up effect 1 (effect_sequence) | 1-3 | 5 | 120 |
+| $13 | powerup | sub: fighter upgrade, effects 2-5 (effect_setup) | 2-3 | 1 | 72 |
+| $14 | player_explode | the fighter explodes ($DA0B) | 0-7 | 3 | 540 |
+| $15 | extra_ship | bonus life, pay-out extend, bonus ship caught, sub $F789 | 0-3 | 6 | 72 |
+| $16 | coin | each credit (irq_main $C05C, a count) | 0-3 | 2 | 74 |
+| $17 | count_tick | results: one hit counted ($E2B2) | 0-3 | 1 | 4 |
+| $18 | star_warp | starfield event, mode 1 ($EAD7, 60 frames) and mode 5 ($EBA0) | 3-7 | 4 | 960 |
+| $19 | bonus_ship | the bonus ship appears ($FE6A) | 4-7 | 1 | 35 |
+
+R = retriggered. Five streams at $F0FE-$F23B (a five-voice piece,
+waveform 2/5, `unused_*`) are never played: no header points to them.
 
 ## 10. RAM map (named so far)
 
@@ -509,12 +642,15 @@ Main-CPU addresses. Main and sub share $0000-$1FFF.
 | $1600 (down) | main stack (S = $1600) | |
 | $1860-$188C | formation_flags | b0 occupied |
 | $1D80 (down) | sub stack | |
-| $6040-$605F | snd_request | sound $0040 |
-| $6060-$607F | snd_active | sound $0060 |
-| $6080-$609F | wsg_shadow | sound $0080 |
-| $60A0-$60BF | snd_tempo | sound $00A0 |
-| $60C0-$60C3 | snd_current, snd_voice, snd_irq_done, snd_temp | |
-| $6100-$63xx | sound channel blocks | 17 bytes per voice |
+| $0840-$087F | (sound queue) | the sub CPU's requests, $0840+n = sound n; forwarded by task_sound_queue |
+| $6000-$603F | WSG | 15XX registers, 8 per voice (sound $0000) |
+| $6040-$605F | snd_request | sound $0040: sound n requested (1; $16 a coin count); +0 boot handshake |
+| $6060-$607F | snd_active | sound $0060: sound n started (blocks built) |
+| $6080-$609F | wsg_shadow | sound $0080: vol, freq lo, mid, hi\|wave per voice; to the WSG each IRQ |
+| $60A0-$60BF | snd_tempo | sound $00A0: frames per note-length unit (tempo_init) |
+| $60C0 / $60C1 | snd_current / snd_voice | sound and WSG voice being played |
+| $60C2 / $60C3 | snd_irq_done / snd_temp | 1 after every IRQ (never read) / scratch (pitch x 2, ramp end) |
+| $6100-$6352 | snd_blocks | channel blocks, 17 bytes per voice (layout: play_sound) |
 | $6380 | snd_rom_error | sound $0380 |
 | $0400 (down) | sound stack (sound S = $0400 = main $6400) | |
 
@@ -571,12 +707,13 @@ task_move_bonus_objects: it moves the enemy shots $0ECE-$0EDA).
   cleared in the IRQ, and the game meaning of several sub RAM variables
   and power-up effects (names in $1080-$11FF are inferred from the code).
   The path stream format is understood (docs/modules/sub-C.md).
-* **Sound numbers**: which of the 26 sounds is which effect (request
-  sites are in the listing as `snd_request+n`); sound 0 is the start
-  tune, 3/4 the high-score music, $16 the coin sound, $15 is requested
-  on extra lives and shots use 1 and 7.
-* The sub CPU's 256 writes to **$500F** and the sound CPU's write to
-  **$2007** (a watchdog kick with an odd address) at boot.
+* **Sound numbers** are identified (section 9, sound driver). Still
+  vague in game terms: $0E `special_object` (the object at formation
+  slot 42), $0F `object_spawn`, $10 `capture` and the power-up effects
+  $11-$13, named after the sub routines that request them.
+* The sub CPU's 256 writes to **$500F** at boot. (The sound CPU's
+  write to $2007 is just a watchdog kick: any $2000-$3FFF access kicks
+  it.)
 * SW1:6 is not "unused": it enables the operator stats display.
 
 ## 12. Quirk index
@@ -616,6 +753,23 @@ docs/oracle-notes.md section 8). B = `BUG:`, Q = `QUIRK:`.
 | $F673 | Q | leaves the task from inside a JSR |
 | $F921 | Q | one hit a frame; $F924-$F9CF dead |
 | $FB65 | B | STA for STB: P2 bonus step corrupt with bonus_every 0 (crash) |
+
+### Sound CPU
+
+| addr | kind | what |
+|------|------|------|
+| $E050, $E02D | Q | watchdog kicked at $2007; `LDY $3000` kicks it twice |
+| $E233 ($E252) | Q | `op_end` during the block set-up would RTS into RAM (no stream does it) |
+| $E2A7 | Q | the "hold" op $16 n is a ramp: the counter is played as the volume; n >= previous - 1 would wrap to $F |
+| $E309 ($E359) | Q | note frames = low byte of length x tempo; pitch $D/$E past the table (no stream) |
+| $E369 | Q | commands $F8-$FF would jump through code (no stream) |
+| $E398 | Q | the $F3 counter +C is never reset (no voice has two $F3) |
+| $E3BF | Q | `op_end` returns straight to irq_sound (PULS X,U / RTS); the first voice to reach $F0 ends the whole sound |
+| $E3EF | Q | the tempo copy is 32 bytes: 6 bytes of sound_channels |
+| $E409 | Q | sounds sharing channel blocks garble each other when they overlap |
+| $E6FC, $E721, $E746; $E941, $E947, $ED9D, $F5ED | Q | unused pad bytes; dead $F0 after $F7 jumps |
+| $F0FE-$F23B | Q | five note streams no header uses |
+| sub $E6D3, $B623, $B577 | Q | the sub's CLRs of queued requests cannot stop a sound already playing |
 
 ### Sub CPU
 

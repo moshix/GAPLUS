@@ -29,10 +29,13 @@
  * IRQ handler timing per CPU (docs/oracle-notes.md). `--quick` runs every
  * session ten times shorter (a smoke test of the tool itself).
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { makeOracle, randomPlayer } from '../test/helpers/oracle.mjs';
-import { CPU_NAME } from '../test/m6809/board.mjs';
+import { makeOracle } from '../test/helpers/oracle.mjs';
+import {
+  SESSIONS as SCENARIOS, playGame, newFacts, observe, RAM,
+} from '../test/helpers/scenarios.mjs';
+import { CPU_NAME } from '../src/emu/board.js';
 import { ROOT } from './romset.mjs';
 
 const args = process.argv.slice(2);
@@ -42,12 +45,7 @@ const OUT = outArg ? outArg.slice(6) : join(ROOT, 'reference/coverage');
 /** Session length scale. @param {number} n */
 const len = (n) => (quick ? Math.ceil(n / 10) : n);
 
-/** RAM addresses the scripts look at (reference/symbols.json names). */
-const GAME_MODE = 0x102f;
-const LIVES_P1 = 0x1104;
-const SCORE_P1 = 0x09b0;
-
-/** @typedef {import('../test/m6809/board.mjs').Board} Board */
+/** @typedef {import('../src/emu/board.js').Board} Board */
 
 /**
  * Instructions whose data reads sweep a whole ROM ([ROM], listings):
@@ -64,158 +62,62 @@ const IGNORED_READERS = [
 ];
 
 /**
- * @typedef {object} Session
+ * A coverage session: test/helpers/scenarios.mjs's Session, whose goal
+ * is optional here (attract and the random games have none).
+ * @typedef {object} CovSession
  * @property {string} name
  * @property {number} frames
  * @property {(b: Board) => void} setup  DIPs, taps, scripts before frame 0
+ * @property {(f: number, mem: Uint8Array) => void} [pokes]
+ * @property {(facts: import('../test/helpers/scenarios.mjs').Facts,
+ *   b: Board) => string} [goal]
  */
 
 /**
- * Coin + start at power-on + 300/360, then random play (seed).
- * @param {Board} b @param {number} seed @param {number} [from]
+ * Long attract, three random 1P games to game over, then the sessions
+ * of the lockstep scenario test (test/helpers/scenarios.mjs: a 2P
+ * cocktail game, the challenging stage, Round Advance to PARSEC 11, a
+ * TOP 5 name entry, the service mode, the operator-stats DIP).
+ * @type {CovSession[]}
  */
-function playGame(b, seed, from = 300) {
-  b.tap('coin1', from);
-  b.tap('start1', from + 60);
-  b.inputScript = randomPlayer(seed, { from: from + 70 });
-}
-
-/**
- * Round Advance: with the DIP on, the main IRQ loops in round_select
- * ($C163) and each P1 "up" adds one to stage_p1; switching it off
- * resumes. Done after the game has started (game start clears the stage).
- * `when` picks the first frame (a number, or a predicate checked each
- * frame). The random player is paused meanwhile.
- *
- * ROM quirk: advancing straight to a challenging stage as the FIRST stage
- * after power-on corrupts RAM -- the sub's mode-7 code walks
- * formation_ptr ($1086), which only mode 2 ($E1F2) initialises, and ORs
- * $80 into $1000-$10FF. So the challenging-stage session advances after
- * the first life is lost instead.
- * @param {Board} b
- * @param {number | ((f: number, b: Board) => boolean)} when
- * @param {number} steps
- */
-function roundAdvance(b, when, steps) {
-  const prev = b.inputScript;
-  let at = typeof when === 'number' ? when : Infinity;
-  b.inputScript = (f, bb) => {
-    if (at === Infinity && typeof when === 'function' && when(f, bb)) at = f;
-    const end = at + 20 + steps * 20;
-    if (f === at) bb.setDip('roundAdvance', 0);
-    // One press every 20 frames from at + 10: exactly `steps` presses.
-    const k = f - at - 10;
-    if (k >= 0 && k < steps * 20 && k % 20 === 0) bb.setInput('up', true);
-    if (k >= 0 && k < steps * 20 && k % 20 === 8) bb.setInput('up', false);
-    if (f === end) bb.setDip('roundAdvance', 8);
-    if (f < at || f > end) prev?.(f, bb);
-  };
-}
-
-/** @type {Session[]} */
 const SESSIONS = [
   {
     name: 'attract (power-on, self test, title, demos)',
-    frames: len(20000),
+    frames: 20000,
     setup() {},
   },
   ...[1, 2, 3].map((seed) => ({
     name: `1P game, random play seed ${seed}, to game over`,
-    frames: len(7000),
+    frames: 7000,
     /** @param {Board} b */
     setup(b) { playGame(b, seed); },
   })),
+  SCENARIOS.cocktail2P,
+  SCENARIOS.challenging,
+  SCENARIOS.parsec11,
+  SCENARIOS.hiscore,
+  SCENARIOS.service,
+  SCENARIOS.operatorStats,
   {
-    name: 'coin during the demo, 2P cocktail game',
-    frames: len(9000),
+    // Random play dies in PARSEC 1-2: the stage clears, later stages and
+    // the challenging stage's full count come from an AI game's inputs
+    // (test/oracle/lockstep-ai.test.mjs replays the same log).
+    name: 'AI game (tools/ai-lockstep.mjs run 0 log) to PARSEC 9',
+    frames: 20000,
     /** @param {Board} b */
     setup(b) {
-      b.inputs.in2 = 0x0b;              // IN2 b2 = 0: cocktail cabinet
-      b.tap('coin1', 1300);             // during the attract demo
-      b.tap('coin2', 1330);
-      b.tap('start2', 1400);
-      const p1 = randomPlayer(21, { from: 1410 });
-      const p2 = randomPlayer(22, { from: 1410 });
+      const log = JSON.parse(readFileSync(
+        join(ROOT, 'test/oracle/data/ai-run0.json'), 'utf8'));
+      let next = 0;
       b.inputScript = (f, bb) => {
-        p1(f, bb);
-        // Player 2's stick and button mirror a second random stream.
-        const saved = { ...bb.inputs.p1 };
-        const fire = bb.inputs.fire1;
-        p2(f, bb);
-        Object.assign(bb.inputs.p2, bb.inputs.p1);
-        bb.inputs.fire2 = bb.inputs.fire1;
-        Object.assign(bb.inputs.p1, saved);
-        bb.inputs.fire1 = fire;
+        while (next < log.changes.length && log.changes[next][0] <= f) {
+          const mask = log.changes[next][1];
+          /** @type {string[]} */
+          const names = log.SWITCHES;
+          names.forEach((n, k) => bb.setInput(n, (mask & (1 << k)) !== 0));
+          next += 1;
+        }
       };
-    },
-  },
-  {
-    name: 'PARSEC 3 (challenging stage) after the first death',
-    frames: len(7000),
-    /** @param {Board} b */
-    setup(b) {
-      playGame(b, 4);
-      roundAdvance(b, (f, bb) => f > 400 && bb.mem[GAME_MODE] === 0
-        && bb.mem[LIVES_P1] === 2, 2);
-    },
-  },
-  {
-    name: 'round advance to PARSEC 11, harder DIPs, 5 lives',
-    frames: len(8000),
-    /** @param {Board} b */
-    setup(b) {
-      b.setDip('difficulty', 0);
-      b.setDip('lives', 0);
-      b.setDip('bonus', 0);
-      playGame(b, 41);
-      roundAdvance(b, 460, 10);
-    },
-  },
-  {
-    name: 'high score: score and lives poked, name entry',
-    frames: len(6000),
-    /** @param {Board} b */
-    setup(b) {
-      playGame(b, 4);
-      const prev = b.inputScript;
-      b.inputScript = (f, bb) => {
-        // A poke of the score during play (the only way random input
-        // reaches the TOP 5; BCD, least significant byte first), then
-        // lives = 1 (the jump in score awards bonus lives). The random
-        // stick and fire then drive the name entry.
-        if (f === 1300) bb.mem.set([0x00, 0x60, 0x00], SCORE_P1);
-        if (f === 1310) bb.mem[LIVES_P1] = 1;
-        prev?.(f, bb);
-      };
-    },
-  },
-  {
-    name: 'service / test mode (DIP SW2:1), inputs exercised',
-    frames: len(4000),
-    /** @param {Board} b */
-    setup(b) {
-      b.setDip('serviceMode', 0);
-      const names = ['up', 'down', 'left', 'right', 'fire1', 'fire2',
-        'start1', 'start2', 'coin1', 'coin2', 'service'];
-      for (let i = 0; i < 60; i += 1) {
-        b.tap(names[i % names.length], 400 + i * 50, 6);
-      }
-      b.inputScript = (f, bb) => { if (f === 3600) bb.setDip('serviceMode', 8); };
-    },
-  },
-  {
-    name: 'operator stats (SW1:6), demo sounds off, coinage 2C/1C',
-    frames: len(4000),
-    /** @param {Board} b */
-    setup(b) {
-      b.setDip('sw1_6', 0);
-      b.setDip('demoSounds', 0);
-      b.setDip('coinA', 1);
-      b.setDip('coinB', 2);
-      b.tap('coin1', 1300); b.tap('coin1', 1320);
-      b.tap('coin2', 1340); b.tap('service', 1360);
-      b.tap('start1', 1420);
-      b.inputScript = randomPlayer(61, { from: 1430 });
     },
   },
 ];
@@ -231,7 +133,15 @@ for (const s of SESSIONS) {
   b.trackStack = true;
   s.setup(b);
   const t = Date.now();
-  b.runFrames(s.frames);
+  const facts = newFacts();
+  const frames = len(s.frames);
+  for (let i = 0; i < frames; i += 1) {
+    // The pokes go in before the frame's inputs, as in the scenario
+    // test (which runs the board's input handling itself).
+    s.pokes?.(b.frame, b.mem);
+    b.runFrame();
+    observe(facts, b);
+  }
   for (let n = 0; n < 3; n += 1) {
     const cov = /** @type {NonNullable<Board['coverage']>} */ (b.coverage);
     for (let a = 0; a < 0x10000; a += 1) {
@@ -244,8 +154,10 @@ for (const s of SESSIONS) {
     stackLow[n] = Math.min(stackLow[n], b.stackLow[n]);
   }
   console.log(`${s.name}`);
-  console.log(`  ${s.frames} frames in ${Date.now() - t} ms; mode `
-    + `${b.mem[GAME_MODE]}, S low ${b.stackLow.map(hex4).join(' ')}`
+  const miss = quick || !s.goal ? '' : s.goal(facts, b);
+  if (miss) console.log(`  NOT REACHED: ${miss}`);
+  console.log(`  ${frames} frames in ${Date.now() - t} ms; mode `
+    + `${b.mem[RAM.GAME_MODE]}, S low ${b.stackLow.map(hex4).join(' ')}`
     + `${b.watchdogResets ? `, WATCHDOG x${b.watchdogResets}` : ''}`
     + `${b.runawayCount ? `, RUNAWAY x${b.runawayCount}` : ''}`);
   for (let n = 0; n < 3; n += 1) {

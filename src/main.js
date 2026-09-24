@@ -26,6 +26,16 @@
  *   &coin=F&start=G   with ?frames: tap coin at frame F, start at frame G
  *   ?zoom=Z           initial zoom 1-6
  * `globalThis.gaplus` exposes the game object in the console.
+ *
+ * FAILURES. Each stage of a frame (the AI, the engine, the renderer, the
+ * sound hand-off) is guarded. A failing AI is switched off with a note and
+ * the game carries on; any other failure stops the simulation with the
+ * reason in the #status overlay, silences the sound (enable off, a zero
+ * register image, mixer paused -- or the mixer would hold the last
+ * registers and a tone would play forever) and logs the error with its
+ * frame number. The frame clock itself always re-queues, so the page
+ * never dies silently. `gaplus.testFault(stage)` injects a failure (for
+ * the browser smoke test).
  */
 
 import { FRAME_RATE } from './machine/machine.js';
@@ -42,12 +52,13 @@ import {
 } from './engine.js';
 import { EngineChooser } from './ui/chooser.js';
 import { aiAllowed, autoplayInputs, createPageAutoplayer } from './ai/hook.js';
+import { REG_COUNT } from './audio/wsg15xx.js';
 
 /**
  * Displayed in the corner of the page and the single place this is written
  * down. Bump it here when a feature lands, and keep `package.json` in step.
  */
-export const VERSION = '0.1';
+export const VERSION = '0.2';
 
 const FRAME_MS = 1000 / FRAME_RATE;
 /** Never try to catch up more than this after a tab has been backgrounded. */
@@ -136,6 +147,8 @@ export class Game {
     this.ai = null;
     /** The AI's own switches; the engine runs on these while it plays. */
     this.aiInputs = createInputState();
+    /** Why the simulation stopped on an error, or '' while it runs. */
+    this.failure = '';
     /** Last seen state of the pad's pause control, for edge detection. */
     this.padPauseHeld = false;
     this.zoom = 2;
@@ -161,6 +174,7 @@ export class Game {
   setEngine(engine) {
     this.engine = engine;
     this.frameCount = 0;
+    this.clearFailure();
     this.soundOn = false;
     this.sound.setSoundEnable(false);
     // The bang lands on the stream sample of the CPU cycle that fired it.
@@ -255,9 +269,27 @@ export class Game {
 
   stop() { this.running = false; }
 
-  /** @param {number} now milliseconds from requestAnimationFrame */
+  /**
+   * One animation frame. The next one is queued whatever happens here: an
+   * exception that escaped would otherwise end the loop for good.
+   * @param {number} now milliseconds from requestAnimationFrame
+   */
   tick = (now) => {
     if (!this.running) return;
+    try {
+      this.advance(now);
+    } catch (err) {
+      this.halt('page', err);
+    } finally {
+      requestAnimationFrame(this.tick);
+    }
+  };
+
+  /**
+   * The body of tick(): run the game frames that are due and show them.
+   * @param {number} now milliseconds from requestAnimationFrame
+   */
+  advance(now) {
     if (this.lastTime === null) this.lastTime = now;
     this.accumulator += now - this.lastTime;
     this.lastTime = now;
@@ -272,7 +304,6 @@ export class Game {
       // Drop the accumulator, or the time spent paused would be owed to the
       // simulation and it would fast-forward the instant it resumed.
       this.accumulator = 0;
-      requestAnimationFrame(this.tick);
       return;
     }
 
@@ -288,9 +319,7 @@ export class Game {
 
     for (let i = 0; i < due; i += 1) this.stepFrame(padActions);
     if (due > 0) this.present();
-
-    requestAnimationFrame(this.tick);
-  };
+  }
 
   /**
    * Advance the simulation by exactly one 1/60.606 s frame.
@@ -299,23 +328,138 @@ export class Game {
    */
   stepFrame(padActions, draw = true) {
     const engine = this.engine;
-    if (engine === null || !engine.ready) return;
+    if (engine === null || !engine.ready || this.failure !== '') return;
     this.frameCount += 1;
     this.mux.setAll('gamepad', toSwitchNames(padActions ?? this.gamepad.poll()));
-    // The AI hook: while the AI plays the port, the frame runs on its
-    // switches; otherwise (and always on the ROM) on the page's.
-    engine.runFrame(autoplayInputs(engine, this.ai, this.inputs, this.aiInputs));
-    // The frame shown is RAM at the vblank instant, then the starfield
-    // advances (MAME: screen_update, then screen_vblank(0)). The stars
-    // advance every frame even when it is not drawn.
-    if (draw) this.renderer.render(engine.mem, { starControl: engine.starControl });
-    this.renderer.vblank(engine.starControl);
-    const on = engine.soundEnable();
-    if (on !== this.soundOn) {
-      this.soundOn = on;
-      this.sound.setSoundEnable(on);
+    const input = this.frameInputs(engine);
+    // Each stage is guarded on its own so the message names the culprit.
+    // The port engine catches its own errors and goes not-ready (with
+    // `why`) instead of throwing; the ROM engine throws.
+    try {
+      engine.runFrame(input);
+    } catch (err) {
+      this.halt('engine', err);
+      return;
     }
-    this.sound.update(engine.soundRegs());
+    if (!engine.ready) {
+      this.halt('engine', 'error' in engine ? engine.error : null, engine.why);
+      return;
+    }
+    try {
+      // The frame shown is RAM at the vblank instant, then the starfield
+      // advances (MAME: screen_update, then screen_vblank(0)). The stars
+      // advance every frame even when it is not drawn.
+      if (draw) this.renderer.render(engine.mem, { starControl: engine.starControl });
+      this.renderer.vblank(engine.starControl);
+    } catch (err) {
+      this.halt('renderer', err);
+      return;
+    }
+    try {
+      const on = engine.soundEnable();
+      if (on !== this.soundOn) {
+        this.soundOn = on;
+        this.sound.setSoundEnable(on);
+      }
+      this.sound.update(engine.soundRegs());
+    } catch (err) {
+      this.halt('sound', err);
+    }
+  }
+
+  /**
+   * The inputs to run the next frame on. While the AI plays the port, the
+   * frame runs on its switches; otherwise (and always on the ROM) on the
+   * page's. An AI that throws is switched off, with a note under the
+   * screen, and the frame runs on the page's switches: a broken AI must
+   * never stop the game.
+   * @param {NonNullable<Game['engine']>} engine
+   * @returns {import('./machine/namcoio.js').InputState}
+   */
+  frameInputs(engine) {
+    try {
+      return autoplayInputs(engine, this.ai, this.inputs, this.aiInputs);
+    } catch (err) {
+      console.error(`gaplus: AI failed at frame ${this.frameCount}:`, err);
+      this.setAi(false);
+      showNote(`AI switched off after an error: ${messageOf(err)}`);
+      return this.inputs;
+    }
+  }
+
+  /**
+   * Stop the simulation on an error: say why on the page, silence the
+   * sound and log the error with the frame number. The frame loop keeps
+   * running (so pause, E and the settings still work) but runs no frames
+   * until a new engine or a reset (F2).
+   * @param {string} stage what failed: engine, renderer, sound, page
+   * @param {unknown} err the exception (null if only `why` is known)
+   * @param {string} [why] the message to show; default from `err`
+   */
+  halt(stage, err, why = '') {
+    if (this.failure !== '') return;
+    const text = why !== '' ? why : `${stage} stopped: ${messageOf(err)}`;
+    this.failure = text;
+    console.error(`gaplus: ${stage} failed at frame ${this.frameCount}:`,
+      err ?? text);
+    this.silence();
+    this.canvas.dataset.ready = 'false';
+    this.canvas.dataset.failed = stage;
+    const kind = this.engine?.kind;
+    if (kind === 'port') {
+      showStatus(text, 'play the ROM version', () => { void this.switchEngine('rom'); });
+    } else if (kind !== undefined) {
+      showStatus(text, 'restart', () => { void this.switchEngine(kind); });
+    } else showStatus(text);
+  }
+
+  /**
+   * Make the sound engine silent for good, even if its own update() is
+   * what failed: sound off, an all-zero register image (volume 0 on every
+   * voice), and the mixer paused (it outputs zeros while paused).
+   */
+  silence() {
+    this.soundOn = false;
+    try {
+      this.sound.setSoundEnable(false);
+      this.sound.update(new Uint8Array(REG_COUNT));
+    } catch (err) {
+      // Only a warning: the error that stopped the game is already logged,
+      // and the paused mixer below is silent anyway.
+      console.warn('gaplus: could not silence the sound engine:', err);
+    }
+    try { this.sound.setPaused(true); } catch { /* nothing more to do */ }
+  }
+
+  /** Forget a failure (new engine, reset): the simulation may run again. */
+  clearFailure() {
+    if (this.failure === '') return;
+    this.failure = '';
+    delete this.canvas.dataset.failed;
+    showStatus('');
+    this.sound.setPaused(this.frozen);
+  }
+
+  /**
+   * Test hook (test/browser/smoke.mjs): make one stage throw on every
+   * frame from now on. 'port' breaks the port inside the port engine,
+   * 'engine' the engine object itself (as the ROM engine would throw),
+   * 'ai' switches the AI on and breaks it.
+   * @param {'engine' | 'port' | 'ai' | 'renderer' | 'sound'} stage
+   */
+  testFault(stage) {
+    const boom = () => { throw new Error(`injected ${stage} fault`); };
+    const engine = this.engine;
+    if (stage === 'ai') {
+      if (this.ai === null) this.setAi(true);
+      if (this.ai !== null) Reflect.set(this.ai, 'step', boom);
+    } else if (stage === 'port') {
+      const port = engine !== null && 'port' in engine ? engine.port : null;
+      if (port !== null) Reflect.set(port, 'runFrame', boom);
+    } else if (stage === 'engine') {
+      if (engine !== null) Reflect.set(engine, 'runFrame', boom);
+    } else if (stage === 'renderer') Reflect.set(this.renderer, 'render', boom);
+    else Reflect.set(this.sound, 'update', boom);
   }
 
   /** True while the simulation is stopped, for any reason. */
@@ -348,7 +492,9 @@ export class Game {
    */
   applyFrozen() {
     const frozen = this.frozen;
-    this.sound.setPaused(frozen);
+    // After a failure the mixer stays paused: its held registers may be
+    // a tone that would otherwise play forever.
+    this.sound.setPaused(frozen || this.failure !== '');
     // A still screen looks like a crash, so a pause is announced.
     showNote(this.paused ? 'PAUSED — P to resume' : '');
     if (!frozen) {
@@ -384,6 +530,8 @@ export class Game {
     setTestSwitch(this.inputs, on);
     setPressed('set-test', on);
     this.engine?.reset();
+    // A reset starts from power-on, so a stopped engine may run again.
+    if (this.engine?.ready === true) this.clearFailure();
     this.soundOn = false;
     this.sound.setSoundEnable(false);
   }
@@ -406,11 +554,32 @@ export class Game {
     };
   }
 
-  /** @param {number} z */
+  /**
+   * Set the CSS scale of the screen. Fit-to-window zooms may be fractional;
+   * the +/- keys step to the next whole factor (see stepZoom).
+   * @param {number} z
+   */
   setZoom(z) {
     this.zoom = Math.max(1, Math.min(6, z));
     this.canvas.style.setProperty('--zoom', String(this.zoom));
   }
+
+  /**
+   * +/- keys: move to the next whole zoom factor up or down, so a
+   * fractional fit (say 2.6) goes to 3 or 2, never to 3.6 or 1.6. Once the
+   * player zooms by hand, resizing the window no longer refits.
+   * @param {1 | -1} dir
+   */
+  stepZoom(dir) {
+    this.manualZoom = true;
+    const z = this.zoom;
+    this.setZoom(dir > 0 ? Math.floor(z + 1e-6) + 1 : Math.ceil(z - 1e-6) - 1);
+  }
+}
+
+/** @param {unknown} err @returns {string} */
+function messageOf(err) {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /**
@@ -489,8 +658,8 @@ function attachInput(game) {
     } else if (e.code === 'KeyE') {
       void game.openChooser();
       e.preventDefault();
-    } else if (e.code === 'Equal' || e.code === 'NumpadAdd') game.setZoom(game.zoom + 1);
-    else if (e.code === 'Minus' || e.code === 'NumpadSubtract') game.setZoom(game.zoom - 1);
+    } else if (e.code === 'Equal' || e.code === 'NumpadAdd') game.stepZoom(1);
+    else if (e.code === 'Minus' || e.code === 'NumpadSubtract') game.stepZoom(-1);
     else if (e.code === 'Slash' || e.key === '?') { toggleHelp(); e.preventDefault(); }
   };
   // Any key is a user gesture, which is what browsers require before audio.
@@ -598,14 +767,44 @@ function toggleHelp() {
 }
 
 /**
- * The largest integer zoom (1-6) at which the screen plus the controls
- * under it (~170 px) fit the window; at least 1.
+ * The largest zoom (1-6, fractional allowed) at which the screen and
+ * everything else on the page fit the window without scrolling.
+ *
+ * The space the page needs besides the canvas is measured, not guessed:
+ * the content's height minus the canvas's own height is what the legend,
+ * settings bar, gaps and padding take (nothing, when they sit beside the
+ * screen). The result is rounded down so the screen's height is a whole
+ * number of device pixels.
+ * @param {HTMLCanvasElement} canvas
  * @returns {number}
  */
-function fitZoom() {
-  const w = Math.floor((window.innerWidth - 32) / 224);
-  const h = Math.floor((window.innerHeight - 170) / 288);
-  return Math.max(1, Math.min(6, w, h));
+function fitZoom(canvas) {
+  const canvasH = canvas.getBoundingClientRect().height;
+  // body is height:100%, so its scrollHeight is the window, not the
+  // content. Measure the content instead: the lowest bottom edge of any
+  // in-flow child (fixed-position ones like #version don't take space),
+  // plus the body's bottom padding.
+  let bottom = 0;
+  for (const el of document.body.children) {
+    if (!(el instanceof HTMLElement) || el.tagName === 'DIALOG') continue;
+    if (getComputedStyle(el).position === 'fixed') continue;
+    bottom = Math.max(bottom, el.getBoundingClientRect().bottom + window.scrollY);
+  }
+  const padBottom = Number.parseFloat(getComputedStyle(document.body).paddingBottom) || 0;
+  const others = Math.max(0, bottom + padBottom - canvasH);
+  const dpr = window.devicePixelRatio || 1;
+  // Beside-the-screen layout (landscape): the screen shares the width with
+  // the side panel on its right and an equal empty column on its left
+  // (the grid keeps it centred), so both come off the width.
+  const side = document.getElementById('side');
+  const beside = window.matchMedia('(min-aspect-ratio: 1/1)').matches;
+  const sideW = beside && side !== null ? side.getBoundingClientRect().width + 16 : 16;
+  const byW = (window.innerWidth - 2 * sideW) / 224;
+  const byH = (window.innerHeight - others) / 288;
+  // Snap down so the screen's height is a whole number of device pixels
+  // (keeps its edges crisp); the zoom itself may be fractional.
+  const z = Math.floor(Math.min(byW, byH) * 288 * dpr) / (288 * dpr);
+  return Math.max(1, Math.min(6, z));
 }
 
 /** Stamp the version into the corner of the page. */
@@ -620,8 +819,20 @@ async function boot() {
   if (canvas === null) return;
   const params = new URLSearchParams(location.search);
   const game = new Game(canvas);
-  const zoom = Number.parseInt(params.get('zoom') ?? '', 10);
-  game.setZoom(Number.isFinite(zoom) ? zoom : fitZoom());
+  const zoom = Number.parseFloat(params.get('zoom') ?? '');
+  if (Number.isFinite(zoom)) {
+    game.manualZoom = true;
+    game.setZoom(zoom);
+  } else {
+    // Two passes: the first measures the page at the default zoom, the
+    // second corrects for rows (like the settings bar) that re-wrap once
+    // the canvas width changes.
+    game.setZoom(fitZoom(canvas));
+    game.setZoom(fitZoom(canvas));
+    window.addEventListener('resize', () => {
+      if (!game.manualZoom) game.setZoom(fitZoom(canvas));
+    });
+  }
   game.remap = new RemapUI(game.gamepad);
   game.chooser = new EngineChooser({ gamepad: game.gamepad, onGesture: () => game.startSound() });
   attachInput(game);

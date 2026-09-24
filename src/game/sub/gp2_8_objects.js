@@ -50,25 +50,25 @@ export function* task_animate_objects(m) {
   /** @param {number} n */
   const c = (n) => s.charge(n);
   // ldy #$111D (4) / ldu #object_sprites (3)
-  c(4 + 3);
+  c(4); c(3);
   let u = 0xbb1a;
   for (let y = 0x111d; y !== 0x1121; y += 1) {
     // $B915: lda ,y (4) / beq (3)
     yield SYNC;
     const a = s.peek(y);
-    c(4 + 3);
+    c(4); c(3);
     if (a !== 0) {
       // pshs u (7) / ldu ,u (5, ROM) / bsr object_state_call (7)
       yield* syncAt(u, u + 1);
       const obj = s.peek16(u);
-      c(7 + 5 + 7);
+      c(7); c(5); c(7);
       const r = yield* object_state_call(m, { a, u: obj, y });
       if (r === TO_DISPATCH) return;
       c(7); // puls u
     }
     // leay 1,y / leau 2,u (5 + 5) / cmpy #$1121 (5) / bne (3)
     u += 2;
-    c(5 + 5 + 5 + 3);
+    c(5); c(5); c(5); c(3);
   }
   yield* sub_B92B(m);
 }
@@ -133,12 +133,12 @@ export function* object_spawn_random(m, { u, y }) {
   c(4);
   // lda a,x (5) -- signed offset; cmpa #$20 / bcc (2 + 3)
   let a = subRom(disp8(0xe000, fc));
-  c(5 + 2 + 3);
+  c(5); c(2); c(3);
   if (a < 0x20) {
     a = 0x90;
-    c(2 + 3); // lda #$90 / bra
+    c(2); c(3); // lda #$90 / bra
   } else {
-    c(2 + 3); // cmpa #$D0 / bcs
+    c(2); c(3); // cmpa #$D0 / bcs
     if (a >= 0xd0) { a = 0x60; c(2); }
   }
   // $B94B: sta $0800,u (8) / lda <frame_counter (4) / ora #$B0 (2) /
@@ -148,7 +148,7 @@ export function* object_spawn_random(m, { u, y }) {
   c(8);
   yield SYNC;
   a = s.peek(0x1016) | 0xb0;
-  c(4 + 2);
+  c(4); c(2);
   yield* syncAt(u + 0x0801);
   s.poke((u + 0x0801) & 0xffff, a);
   c(8);
@@ -156,17 +156,17 @@ export function* object_spawn_random(m, { u, y }) {
   c(3);
   yield* syncAt(u, u + 1);
   s.poke16(u, 0x4806);
-  c(5 + 3);
+  c(5); c(3);
   yield* syncAt(u + 0x1000, u + 0x1001);
   s.poke16((u + 0x1000) & 0xffff, 0x6880);
   c(9);
   // inc ,y (6) / lda #1 (2) / sta $084F (5) / rts (5)
   yield* syncAt(y);
   inc(s, y);
-  c(6 + 2);
+  c(6); c(2);
   yield SYNC;
   s.poke(0x084f, 1);
-  c(5 + 5);
+  c(5); c(5);
 }
 
 /**
@@ -252,7 +252,7 @@ export function* sub_B983(m, { u, y }) {
   const p = (u + 0x0800) & 0xffff;
   yield* syncAt(p, p + 1);
   const d = (s.peek16(p) + 0x0808) & 0xffff;
-  c(9 + 4);
+  c(9); c(4);
   yield* syncAt(p, p + 1);
   s.poke16(p, d);
   c(9);
@@ -263,7 +263,7 @@ export function* sub_B983(m, { u, y }) {
   c(9);
   yield* syncAt(y);
   inc(s, y);
-  c(6 + 5);
+  c(6); c(5);
 }
 
 /**
@@ -578,7 +578,7 @@ export function* sub_BB50(m) {
   // lda $1122 (5) / beq (3)
   yield SYNC;
   const on = s.peek(0x1122) !== 0;
-  c(5 + 3);
+  c(5); c(3);
   if (on) {
     // lda $1119 (5) / cmpa $111A (5) / beq (3)
     yield SYNC;
@@ -586,28 +586,28 @@ export function* sub_BB50(m) {
     c(5);
     yield SYNC;
     const all = a === s.peek(0x111a);
-    c(5 + 3);
+    c(5); c(3);
     if (all) {
       // $BB84: lda $1123 (5) / beq (3) / inc $1123 (7) / bra (3)
       yield SYNC;
       const t = s.peek(0x1123);
-      c(5 + 3);
+      c(5); c(3);
       if (t !== 0) {
         yield SYNC;
         inc(s, 0x1123);
-        c(7 + 3);
+        c(7); c(3);
       }
     } else {
       // dec $111B (7) / bne (3)
       yield SYNC;
       const t = dec(s, 0x111b);
-      c(7 + 3);
+      c(7); c(3);
       if (t === 0) {
         // lda #1 (2) / sta $1123 (5) / lda #$2D (2) / sta $111B (5)
         c(2);
         yield SYNC;
         s.poke(0x1123, 1);
-        c(5 + 2);
+        c(5); c(2);
         yield SYNC;
         s.poke(0x111b, 0x2d);
         c(5);
@@ -616,11 +616,11 @@ export function* sub_BB50(m) {
         c(3);
         yield SYNC;
         const i = (s.peek(0x111a) & 0x03) << 1;
-        c(5 + 4);
+        c(5); c(4);
         const p = s.peek16(0xbb8e + i);
         yield* syncAt(p);
         const b = s.peek(p);
-        c(8 + 3);
+        c(8); c(3);
         if (b === 0) {
           // incb (2) / stb [a,x] (8) / inc $111A (7)
           c(2);

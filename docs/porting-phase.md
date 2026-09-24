@@ -23,7 +23,7 @@ and the listing for your CPU: `reference/gaplus-{main,sub,sound}.asm`
 
 Everything else is shared and **read-only** during this phase
 (`src/machine/**`, `src/game/{call,m6809ops,romdata}.js`, the
-`routines.js` registries, `test/m6809/**`, `test/helpers/oracle.mjs`,
+`routines.js` registries, `src/emu/**`, `test/helpers/oracle.mjs`,
 `reference/*.asm`, `reference/annotations/*.json`). If you need a change
 there (a bug, a missing helper), put a precise request in
 `docs/requests/<your-agent>.md` and work around it locally; the lead merges

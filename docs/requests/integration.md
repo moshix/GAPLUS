@@ -2,6 +2,14 @@
 
 Copyright 2026 by Moshix
 
+**Round 3: items 1-3 are superseded.** The port now matches the ROM on
+every frame (20,000 frames of attract and of three played games, plus
+the scenario sessions); see docs/modules/integration.md for the changes
+made to the scheduler and, under the timing contract (porting-guide
+section 6.4), to the chip modules. Open: main gp2-4's high-score code
+should charge its cycles like the rest (not raced today). Round 2 text
+follows for the record.
+
 Measured with `node tools/lockstep-run.mjs` and
 `test/oracle/lockstep.test.mjs`. What is exact today: every CPU emulated
 by the port's scheduler = the oracle (3,000 frames, a played game); the

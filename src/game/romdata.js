@@ -6,12 +6,37 @@
  * so the port reads data exactly where the 6809 did, never from copies.
  *
  * `mask` is a bitmap of the bytes that are data (bit i of byte i >> 3,
- * counted from `base`). While it is null every byte is readable (bring-up
- * mode); once the listing has separated code from data, reading a code
- * byte throws, because that can only be a porting mistake.
+ * counted from `base`): what the listing tracer did not decode as code,
+ * plus the code bytes the ROM itself reads as data (below). Reading any
+ * other code byte throws, because that can only be a porting mistake.
+ * (null = every byte is data.)
+ *
+ * Code bytes the ROM reads as data (marked data in `mask`):
+ *   main $D321-$D420 $D388 LDD A,Y:
+ *     boss bonus sprite index runs past its table into code
+ *   sub $DF80-$E07F $B93B LDA A,X:
+ *     noise table: the sub reads its own boot code as random bytes
+ *   sub $C000-$DFFF path streams, gp2_7_paths.js:
+ *     the path chip is read in full as data
+ *   sub $B860-$B860 $B5D8 LDD ,X++:
+ *     a word read of the end marker takes one byte of code into B
+ *   sub $F041-$F140 $FEBF LDD A,X:
+ *     the first frame indexes flyin_frames with a score byte
+ *
+ * Whole-ROM sweeps (readable only inside `romSweep`):
+ *   main $A000-$FFFF $B865/$B878/$B88B ADDA ,U+:
+ *     service mode ROM checksums, one per 8 KB chip
+ *   main $E000-$FFFF $B743/$B758 LDX -$2000,U:
+ *     service RAM test of $0000-$1FFF: the pattern is $E000-$FFFF
+ *   main $E000-$E3BF $B7AC/$B7C1 LDX $7FC0,U:
+ *     sound-RAM test of $6040-$63FF: the pattern is $E000-$E3BF
+ *   sub $A000-$FFFF $E018/$E02B/$E03E ADDA ,X+:
+ *     reset_sub checksums its three ROMs
+ *   sound $E000-$FFFF $E013 ADDA ,X+:
+ *     reset_sound checksums its ROM
  *
  * Words are big-endian (6809): high byte at the lower address.
- * @see docs/porting-guide.md section 5
+ * @see docs/porting-guide.md section 5, tools/gen-romdata.mjs
  */
 
 /** @typedef {'main'|'sub'|'sound'} Cpu */
@@ -497,7 +522,67 @@ const RAW = {
     + 'Zvwz0VDqifja1nbR0NIj9cT1+tFQ+7HqIfja2PjSivp9zxTPT9Fo0dDSI9iw0VDPT9HQ+n'
     + '3iGtFQr778M9FQMTk4NCBOQU1DTyBBTEwgUklHSFRTIFJFU0VSVkVE/yr//8AAwADAAMAA'
     + 'wADAAOAA',
-    mask: null,
+    mask: 
+    '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '////////////////////////////////////////8/gB8AAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AP////////////////////////////////////////////////////////////////////'
+    + '8DAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAwP///////wcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPz///////8/'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD4'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '///////////////////////////////////////////////////////////////////wcA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//////////////////////////////'
+    + '///////////////////////////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPw/AAAAAAAAAAAAAAAAAACABwAAAA'
+    + 'AAAAAAAAAAAAAAAP//////DwAAAAAAAAAAAAAAAAAAAAAAAAD+//////////////////9/'
+    + 'AAAAAAAAAACAfwAAAAD4AwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAA4P//////AAAAAPz/////////////////////////////////'
+    + '/////////////////////////////wEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD+/////////////////////z8AAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD+//////+P//////////////////////////////'
+    + '///x8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAA4B8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/n8AAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA8P//////AwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD4AwAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAP7/////////////////////////////////////////AQAAAAAAAAAAAAAA'
+    + 'AAAAAAAAwP///////////////////w8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD///////8HAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAA+P//////////AAAAAAAAAAAAAAAAAAAAAAAAgP8fAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD4////fwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwP////8AAAAA/v'
+    + '8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwP//////'
+    + '//////8DAAAAAAAAAAAAAPh/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD8/wPg'
+    + '/x8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA8P//BwAAAAAAAAAAAAAAAID/fwAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAPD///////////////////////////////////////////////////////////'
+    + '////////////8BAAAAAAAAAAAAAAAAAAAAAAAA/P//HwAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'APz//wcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPD///////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '////////////////////////////////////////8fAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgP//////////BwAAAAAAAAAAAAAAAAAAAA'
+    + 'Dw/w8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAODx////////////////////////////AAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAADwDwAAAAAAAAAAAAAAAAAAAADgHwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAID//38AAAAAAAAAAAAAAAAAAAAAAAD4/////38AAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/////////////////'
+    + '////////////////////////////////////',
+    sweeps: [[0xA000, 0xFFFF], [0xE000, 0xFFFF], [0xE000, 0xE3BF]],
   },
   sub: {
     base: 0xA000,
@@ -971,7 +1056,67 @@ const RAW = {
     + 'WlpaWlpaWlpaWlpaWlpaWlpaWlpa8P7sMTk4NCBOQU1DTyBBTEwgUklHSFRTIFJFU0VSVk'
     + 'VE/////////////////////////////////////////////////////93//+Bh4GHgYeBh'
     + '4GHgYeAA',
-    mask: null,
+    mask: 
+    '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '///////////////////////////////////////////////////////w8AAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAwP8DAAAAAAAAAAAAAAAAAAAAAAD4//////8HAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+P//////////////////////////'
+    + '////////////////////////////////////////////////////////////AQAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/P///////wAAAAAAAADAPwAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPD///////////8HAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD+/////////////////x8AAAAAAAAAgP'
+    + '///////wAAAAAAAPj/////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////AAAAAAAAAAAAAAAAAAAA/v///////////////////38AAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+P///////////////////////////w'
+    + 'EAAP7/AQAAAAAAAAAAAAAAwP8DAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAA/v//AwAAAAAAAAAAAAAABwAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAA/v//////AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOB/AAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAACA//9/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADw////////////'
+    + '//////////////////8PAPAHAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAI'
+    + 'D/////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '////////////////////////////////////8BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD4'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '/////////////x8AAAAAAAAAAAAAAAAAAAAA+P8HAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAADg/////////////////////////w8AAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAPz///////////////////////////////////////8/AA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/AAAAAAAA'
+    + 'AAAAAAD+//////////////8fAAAAAADAPwAAAAAAAAAAAACA//////////////8BAAAAAA'
+    + 'AAAAAAAAAAAAAAAAD+//////////8BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPD/////////'
+    + '////////////////////////////////////',
+    sweeps: [[0xA000, 0xFFFF]],
   },
   sound: {
     base: 0xE000,
@@ -1133,7 +1278,28 @@ const RAW = {
     + '//////////////////////////////////////////////////////////////////////'
     + '//////////////////////////////////////////////////Rv//////////4FX/////'
     + '4AA=',
-    mask: null,
+    mask: 
+    'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAfwAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    + 'AAAAAADA/z8AAAAAAAAAAADg//////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '//////////////////////////////////////////////////////////////////////'
+    + '///////////////////////////////////w==',
+    sweeps: [[0xE000, 0xFFFF]],
   },
 };
 
@@ -1142,17 +1308,22 @@ const RAW = {
  * @property {number} base first ROM address
  * @property {Uint8Array} data bytes from base to $FFFF
  * @property {Uint8Array|null} mask data bitmap, or null = all data
+ * @property {number[][]} sweeps [lo, hi] inclusive, see romSweep
  */
 
+/** @param {typeof RAW.main} r @returns {RomImage} */
+const unpack = (r) => ({ base: r.base, data: decode(r.data),
+  mask: r.mask === null ? null : decode(r.mask), sweeps: r.sweeps });
+
 /** @type {Record<Cpu, RomImage>} */
-const ROMS = {
-  main: { base: RAW.main.base, data: decode(RAW.main.data),
-    mask: RAW.main.mask === null ? null : decode(RAW.main.mask) },
-  sub: { base: RAW.sub.base, data: decode(RAW.sub.data),
-    mask: RAW.sub.mask === null ? null : decode(RAW.sub.mask) },
-  sound: { base: RAW.sound.base, data: decode(RAW.sound.data),
-    mask: RAW.sound.mask === null ? null : decode(RAW.sound.mask) },
-};
+const ROMS = { main: unpack(RAW.main), sub: unpack(RAW.sub),
+  sound: unpack(RAW.sound) };
+
+/** The CPU whose sweep is open (romSweep), or null. @type {Cpu|null} */
+let sweeping = null;
+
+/** Tests only: every byte readable (allowCodeReads). */
+let codeReads = false;
 
 /** First ROM address of each CPU. */
 export const ROM_BASE = Object.freeze({
@@ -1168,7 +1339,7 @@ export function isRom(cpu, addr) {
 }
 
 /**
- * Is the ROM byte at `addr` readable as data?
+ * Is the ROM byte at `addr` readable as data (outside a sweep)?
  * @param {Cpu} cpu @param {number} addr @returns {boolean}
  */
 export function isData(cpu, addr) {
@@ -1176,6 +1347,39 @@ export function isData(cpu, addr) {
   const i = (addr & 0xffff) - r.base;
   if (i < 0) return false;
   return r.mask === null || ((r.mask[i >> 3] >> (i & 7)) & 1) === 1;
+}
+
+/**
+ * Run `fn` with the whole-ROM sweep of `cpu` open: code bytes in that
+ * CPU's declared sweep ranges (the checksums, the service RAM test's
+ * pattern; listed above) read without throwing. Only the ports of those
+ * loops use it, around each read, so a generator never yields while a
+ * sweep is open.
+ * @template T @param {Cpu} cpu @param {() => T} fn @returns {T}
+ */
+export function romSweep(cpu, fn) {
+  const prev = sweeping;
+  sweeping = cpu;
+  try {
+    return fn();
+  } finally {
+    sweeping = prev;
+  }
+}
+
+/**
+ * TESTS ONLY: let every ROM byte read, code included, until switched off.
+ * For oracle tests that drive routines from random RAM (every mode
+ * $00-$FF, random pointers and indexes): states the game never reaches,
+ * where the real CPU reads code bytes too and the comparison with the
+ * oracle checks the result. The port never calls this (checked by
+ * test/unit/game-infra.test.mjs).
+ * @param {boolean} on @returns {boolean} the previous setting
+ */
+export function allowCodeReads(on) {
+  const prev = codeReads;
+  codeReads = on;
+  return prev;
 }
 
 /**
@@ -1188,7 +1392,8 @@ export function romByte(cpu, addr) {
   const i = a - r.base;
   const hex = a.toString(16).toUpperCase().padStart(4, '0');
   if (i < 0) throw new Error(`${cpu} $${hex} is not ROM`);
-  if (r.mask !== null && !((r.mask[i >> 3] >> (i & 7)) & 1)) {
+  if (r.mask !== null && !codeReads && !((r.mask[i >> 3] >> (i & 7)) & 1)
+    && !(sweeping === cpu && r.sweeps.some(([lo, hi]) => a >= lo && a <= hi))) {
     throw new Error(`${cpu} ROM $${hex} is code, not data`);
   }
   return r.data[i];

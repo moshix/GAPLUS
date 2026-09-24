@@ -9,7 +9,7 @@
 ; scheduler at $FEB5, scoring and all sound requests (the sub CPU cannot
 ; reach the sound RAM). DP is $10 everywhere after boot.
 ; 13945 code bytes, 10631 data bytes, 159 routines, 23 dispatch tables.
-; Coverage input: 4308 executed addresses.
+; Coverage input: 4352 executed addresses.
 
 ; Hardware (docs/hardware.md section 3)
 TILE_RAM         EQU   $0000                 ; tilemap codes
@@ -3225,38 +3225,38 @@ C3B9: 09 80 C3 F9              FDB    $0980,dat_C3F9 ; [16] $C3F9
 C3BD: 09 90 C4 08              FDB    $0990,dat_C408 ; [18] $C408
 C3C1: 00 00                    FDB    $0000  ; [20]
 
-; Referenced from: $C39B game_init, $C39F game_init, $C3A3 game_init, $C3A7
-; game_init, $C3AB game_init
+; Referenced from: $C39B hiscore_init_table, $C39F hiscore_init_table, $C3A3
+; hiscore_init_table, $C3A7 hiscore_init_table, $C3AB hiscore_init_table
 dat_C3C3:
 ;   "   50000"
 C3C3: 20 20 20 35 30 30 30 30  FCB    $20,$20,$20,$35,$30,$30,$30,$30
 C3CB: 00                       FCB    $00
 
-; Referenced from: $C3AF game_init
+; Referenced from: $C3AF hiscore_init_table
 dat_C3CC:
 ;   "GAPLUS  20  AB"
 C3CC: 47 41 50 4C 55 53 20 20  FCB    $47,$41,$50,$4C,$55,$53,$20,$20
 C3D4: 32 30 20 20 41 42 00     FCB    $32,$30,$20,$20,$41,$42,$00
 
-; Referenced from: $C3B3 game_init
+; Referenced from: $C3B3 hiscore_init_table
 dat_C3DB:
 ;   "GAPLUS  21   O"
 C3DB: 47 41 50 4C 55 53 20 20  FCB    $47,$41,$50,$4C,$55,$53,$20,$20
 C3E3: 32 31 20 20 20 4F 00     FCB    $32,$31,$20,$20,$20,$4F,$00
 
-; Referenced from: $C3B7 game_init
+; Referenced from: $C3B7 hiscore_init_table
 dat_C3EA:
 ;   "GAPLUS  22   B"
 C3EA: 47 41 50 4C 55 53 20 20  FCB    $47,$41,$50,$4C,$55,$53,$20,$20
 C3F2: 32 32 20 20 20 42 00     FCB    $32,$32,$20,$20,$20,$42,$00
 
-; Referenced from: $C3BB game_init
+; Referenced from: $C3BB hiscore_init_table
 dat_C3F9:
 ;   "GAPLUS  23   A"
 C3F9: 47 41 50 4C 55 53 20 20  FCB    $47,$41,$50,$4C,$55,$53,$20,$20
 C401: 32 33 20 20 20 41 00     FCB    $32,$33,$20,$20,$20,$41,$00
 
-; Referenced from: $C3BF game_init
+; Referenced from: $C3BF hiscore_init_table
 dat_C408:
 ;   "GAPLUS  24  AB"
 C408: 47 41 50 4C 55 53 20 20  FCB    $47,$41,$50,$4C,$55,$53,$20,$20
@@ -7331,19 +7331,19 @@ E176: E1 7E E1 80 E1 82 E1 84  FDB    dat_E17E,dat_E180,dat_E182,dat_E184
                                              ; coin A: coins, credits [0] $E17E
                                              ; $E180 $E182 $E184
 
-; Referenced from: $E176 boot_handshake
+; Referenced from: $E176 dsw_coin_a_ptrs
 dat_E17E:
 E17E: 01 01                    FCB    $01,$01
 
-; Referenced from: $E178 boot_handshake
+; Referenced from: $E178 dsw_coin_a_ptrs
 dat_E180:
 E180: 01 02                    FCB    $01,$02
 
-; Referenced from: $E17A boot_handshake
+; Referenced from: $E17A dsw_coin_a_ptrs
 dat_E182:
 E182: 02 01                    FCB    $02,$01
 
-; Referenced from: $E17C boot_handshake
+; Referenced from: $E17C dsw_coin_a_ptrs
 dat_E184:
 E184: 03 01                    FCB    $03,$01
 
@@ -7353,19 +7353,19 @@ E186: E1 8E E1 90 E1 92 E1 94  FDB    dat_E18E,dat_E190,dat_E192,dat_E194
                                              ; coin B: coins, credits [0] $E18E
                                              ; $E190 $E192 $E194
 
-; Referenced from: $E186 boot_handshake
+; Referenced from: $E186 dsw_coin_b_ptrs
 dat_E18E:
 E18E: 01 01                    FCB    $01,$01
 
-; Referenced from: $E188 boot_handshake
+; Referenced from: $E188 dsw_coin_b_ptrs
 dat_E190:
 E190: 01 02                    FCB    $01,$02
 
-; Referenced from: $E18A boot_handshake
+; Referenced from: $E18A dsw_coin_b_ptrs
 dat_E192:
 E192: 02 01                    FCB    $02,$01
 
-; Referenced from: $E18C boot_handshake
+; Referenced from: $E18C dsw_coin_b_ptrs
 dat_E194:
 E194: 03 01                    FCB    $03,$01
 
@@ -7385,36 +7385,36 @@ E1A2: E1 B2 E1 B5 E1 B8 E1 BB  FDB    dat_E1B2,dat_E1B5,dat_E1B8,dat_E1BB
 E1AA: E1 BE E1 C1 E1 C4 E1 C7  FDB    dat_E1BE,dat_E1C1,dat_E1C4,dat_E1C7
                                              ; [4] $E1BE $E1C1 $E1C4 $E1C7
 
-; Referenced from: $E1A2 boot_handshake
+; Referenced from: $E1A2 dsw_bonus_ptrs
 dat_E1B2:
 E1B2: 05 15 0F                 FCB    $05,$15,$0F ; bonus life: first, second,
                                              ; every (x 10000, BCD)
 
-; Referenced from: $E1A4 boot_handshake
+; Referenced from: $E1A4 dsw_bonus_ptrs
 dat_E1B5:
 E1B5: 05 15 00                 FCB    $05,$15,$00
 
-; Referenced from: $E1A6 boot_handshake
+; Referenced from: $E1A6 dsw_bonus_ptrs
 dat_E1B8:
 E1B8: 05 15 1E                 FCB    $05,$15,$1E
 
-; Referenced from: $E1A8 boot_handshake
+; Referenced from: $E1A8 dsw_bonus_ptrs
 dat_E1BB:
 E1BB: 05 10 14                 FCB    $05,$10,$14
 
-; Referenced from: $E1AA boot_handshake
+; Referenced from: $E1AA dsw_bonus_ptrs
 dat_E1BE:
 E1BE: 05 10 0A                 FCB    $05,$10,$0A
 
-; Referenced from: $E1AC boot_handshake
+; Referenced from: $E1AC dsw_bonus_ptrs
 dat_E1C1:
 E1C1: 03 10 14                 FCB    $03,$10,$14
 
-; Referenced from: $E1AE boot_handshake
+; Referenced from: $E1AE dsw_bonus_ptrs
 dat_E1C4:
 E1C4: 03 10 0A                 FCB    $03,$10,$0A
 
-; Referenced from: $E1B0 boot_handshake
+; Referenced from: $E1B0 dsw_bonus_ptrs
 dat_E1C7:
 E1C7: 03 07 07                 FCB    $03,$07,$07
 
@@ -10984,7 +10984,7 @@ FED0: FF C0                    FDB    tasks_mode8 ; [8] $FFC0
 FED2: FF CA                    FDB    tasks_mode9 ; [9] $FFCA
 
 ; Mode 0: stage start.
-; Referenced from: $FEC0 task_dispatch
+; Referenced from: $FEC0 mode_task_lists
 tasks_mode0:
 FED4: EA 89                    FDB    task_clear_parked_flags ; [0] $EA89
 FED6: F8 DA                    FDB    task_cycle_colours ; [1] $F8DA
@@ -10999,7 +10999,7 @@ FEE6: F6 DD                    FDB    task_player_explosion ; [9] $F6DD
 FEE8: D7 1B                    FDB    task_stage_start ; [10] $D71B
 FEEA: D1 5B                    FDB    task_next_mode ; [11] $D15B
 
-; Referenced from: $FEC2 task_dispatch
+; Referenced from: $FEC2 mode_task_lists
 tasks_mode1:
 FEEC: EA 89                    FDB    task_clear_parked_flags ; [0] $EA89
 FEEE: F8 DA                    FDB    task_cycle_colours ; [1] $F8DA
@@ -11017,7 +11017,7 @@ FF04: F6 DD                    FDB    task_player_explosion ; [12] $F6DD
 FF06: EA A4                    FDB    task_stage_events ; [13] $EAA4
 FF08: D1 50                    FDB    task_end_frame ; [14] $D150
 
-; Referenced from: $FEC4 task_dispatch
+; Referenced from: $FEC4 mode_task_lists
 tasks_mode2:
 FF0A: EA 89                    FDB    task_clear_parked_flags ; [0] $EA89
 FF0C: F8 DA                    FDB    task_cycle_colours ; [1] $F8DA
@@ -11034,7 +11034,7 @@ FF20: F5 FA                    FDB    task_animate_effects ; [11] $F5FA
 FF22: F6 DD                    FDB    task_player_explosion ; [12] $F6DD
 FF24: D1 50                    FDB    task_end_frame ; [13] $D150
 
-; Referenced from: $FEC6 task_dispatch
+; Referenced from: $FEC6 mode_task_lists
 tasks_mode3:
 FF26: FB B1                    FDB    task_ready_timer ; [0] $FBB1
 FF28: EA 89                    FDB    task_clear_parked_flags ; [1] $EA89
@@ -11055,7 +11055,7 @@ FF44: F6 DD                    FDB    task_player_explosion ; [15] $F6DD
 FF46: D8 B0                    FDB    task_sound_queue ; [16] $D8B0
 FF48: D1 50                    FDB    task_end_frame ; [17] $D150
 
-; Referenced from: $FEC8 task_dispatch
+; Referenced from: $FEC8 mode_task_lists
 tasks_mode4:
 FF4A: EA 89                    FDB    task_clear_parked_flags ; [0] $EA89
 FF4C: F8 DA                    FDB    task_cycle_colours ; [1] $F8DA
@@ -11074,7 +11074,7 @@ FF64: F6 DD                    FDB    task_player_explosion ; [13] $F6DD
 FF66: D8 B0                    FDB    task_sound_queue ; [14] $D8B0
 FF68: D1 50                    FDB    task_end_frame ; [15] $D150
 
-; Referenced from: $FECA task_dispatch
+; Referenced from: $FECA mode_task_lists
 tasks_mode5:
 FF6A: FB B1                    FDB    task_ready_timer ; [0] $FBB1
 FF6C: FE 18                    FDB    task_bonus_ship ; [1] $FE18
@@ -11100,7 +11100,7 @@ FF92: FC 33                    FDB    task_game_over_check ; [20] $FC33
 FF94: D1 50                    FDB    task_end_frame ; [21] $D150
 
 ; Mode 6: stage clear.
-; Referenced from: $FECC task_dispatch
+; Referenced from: $FECC mode_task_lists
 tasks_mode6:
 FF96: EA 89                    FDB    task_clear_parked_flags ; [0] $EA89
 FF98: F8 DA                    FDB    task_cycle_colours ; [1] $F8DA
@@ -11112,7 +11112,7 @@ FFA2: F5 FA                    FDB    task_animate_effects ; [6] $F5FA
 FFA4: D1 50                    FDB    task_end_frame ; [7] $D150
 
 ; Mode 7: challenging stage.
-; Referenced from: $FECE task_dispatch
+; Referenced from: $FECE mode_task_lists
 tasks_mode7:
 FFA6: FB B1                    FDB    task_ready_timer ; [0] $FBB1
 FFA8: EA 21                    FDB    task_challenge_marks ; [1] $EA21
@@ -11129,7 +11129,7 @@ FFBC: D8 B0                    FDB    task_sound_queue ; [11] $D8B0
 FFBE: D1 50                    FDB    task_end_frame ; [12] $D150
 
 ; Mode 8: challenging stage results.
-; Referenced from: $FED0 task_dispatch
+; Referenced from: $FED0 mode_task_lists
 tasks_mode8:
 FFC0: CF 4F                    FDB    task_move_player ; [0] $CF4F
 FFC2: D1 D0                    FDB    task_move_shots ; [1] $D1D0
@@ -11138,7 +11138,7 @@ FFC6: E2 1A                    FDB    task_results ; [3] $E21A
 FFC8: D1 50                    FDB    task_end_frame ; [4] $D150
 
 ; Mode 9: high score check and name entry.
-; Referenced from: $FED2 task_dispatch
+; Referenced from: $FED2 mode_task_lists
 tasks_mode9:
 FFCA: AF BE                    FDB    task_hiscore_entry ; [0] $AFBE
 FFCC: FC 33                    FDB    task_game_over_check ; [1] $FC33

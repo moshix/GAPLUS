@@ -63,12 +63,25 @@ const COIN_CYCLE = 20;
  * of their way in time.
  */
 const HOME_PLAY = V_BOTTOM - 17;
-/** In a challenging stage nothing can hit it: rest high, near the
- * enemies' paths, so shots arrive sooner. */
-const HOME_CHALLENGE = V_TOP + 24;
+/**
+ * In a challenging stage nothing can hit it, and every pattern flies
+ * through a different part of the screen (PARSEC 3's sweep low, PARSEC
+ * 8's stay high): the fighter rests on whichever of these rows has the
+ * most to shoot at (buildAimMap's total), counting the time to get there.
+ */
+const CHALLENGE_ROWS = Object.freeze([V_TOP, V_TOP + 32, V_TOP + 64, V_TOP + 96, V_BOTTOM - 1]);
+/** Another row must be this much better to be worth moving to. */
+const ROW_HYSTERESIS = 1.25;
 /** When both shot slots are free, a shot within this much of a hit is
  * worth taking (negative: a wider box than the real one). */
 const LOOSE_TOLERANCE = -4;
+/** Frames a direction is held before the search may change it. */
+const MIN_HOLD = 8;
+/** In a challenging stage (nothing can hit; every hit counts): none -- a
+ * 4-frame hold cost a tenth of the hits. */
+const MIN_HOLD_CHALLENGE = 0;
+/** ... unless holding it meets a threat within this many frames. */
+const URGENT = 20;
 /** Size of the seeded tie-breaks, in plan score (100 = a frame of life). */
 const BIAS = 2;
 
@@ -106,8 +119,13 @@ export class AutoPlayer {
     this.delayVotes = new Int32Array(MAX_DELAY + 1);
     /** The fighter as last seen; h < 0: not in play. */
     this.last = { h: -1, v: 0 };
-    this.lastDir = 0;
+    /** The stick as it is, for the planner's commitment costs. */
+    this.steer = { dir: 0, since: 0, signH: 0, signV: 0 };
     this.coinPhase = 0;
+    /** A coin went in and start has not yet been answered. */
+    this.coined = false;
+    /** The challenging stage's resting row (challengeRow()). */
+    this.row = HOME_PLAY;
     /** Frames of play in the current game so far (for startIdle). */
     this.gameFrames = 0;
     /** The last world read, for hosts and tests. @type {import('./world.js').World | null} */
@@ -127,7 +145,7 @@ export class AutoPlayer {
   /** Forget everything tied to the current fighter. */
   reset() {
     this.sent.fill(0);
-    this.lastDir = 0;
+    this.steer = { dir: 0, since: 0, signH: 0, signV: 0 };
     this.last.h = -1;
     this.reader.reset();
   }
@@ -142,14 +160,20 @@ export class AutoPlayer {
       this.gameFrames = 0;
       this.reset();
       this.telemetry.mode = 'idle';
-      if (this.autoStart) this.pulse('coin1');
+      if (this.autoStart) {
+        this.pulse('coin1');
+        this.coined = true;
+      }
       return;
     }
     // Credited but not started: the main CPU sits in attract_loop's push
-    // start screen with game_mode and main_task both 0. A start press at
-    // a stage start (the same values) is ignored by the game.
-    if (w.mode === 0 && w.task === 0 && this.autoStart) this.pulse('start1');
-    else this.coinPhase = 0;
+    // start screen with game_mode and main_task both 0 (so does the boot,
+    // before attract mode: hence only after a coin of ours).
+    if (this.coined && w.mode === 0 && w.task === 0) this.pulse('start1');
+    else {
+      this.coinPhase = 0;
+      if (w.task !== 0) this.coined = false;
+    }
     // startIdle counts frames of real play (modes 3-5), where it changes
     // the game; idling at the start screen would change nothing.
     if (w.live && w.danger) this.gameFrames += 1;
@@ -164,8 +188,9 @@ export class AutoPlayer {
     const queued = [];
     for (let i = this.delay - 1; i >= 0; i -= 1) queued.push(this.sent[i]);
 
-    w.vHome = w.mode === MODE_CHALLENGE ? HOME_CHALLENGE : HOME_PLAY;
-    buildAimMap(this.aim, w, Math.min(w.v, HOME_PLAY));
+    w.vHome = w.mode === MODE_CHALLENGE ? this.challengeRow(w) : HOME_PLAY;
+    if (w.challenge) buildAimMap(this.aim, w, w.vHome, true);
+    else buildAimMap(this.aim, w, Math.min(w.v, HOME_PLAY));
     if (w.danger) this.planner.prepare(w, w.threats);
     else this.planner.count = 0;
     const aim = this.aim;
@@ -173,13 +198,61 @@ export class AutoPlayer {
       for (let d = 0; d < DIRS.length; d += 1) this.bias[d] = BIAS * (this.random() - 0.5);
     }
     const move = this.planner.choose(w, queued,
-      (h) => aim[Math.max(0, Math.min(255, Math.round(h)))], this.lastDir, this.bias);
-    this.send(move.dir);
-    this.fire(w, move.h, move.v);
+      (h) => aim[Math.max(0, Math.min(255, Math.round(h)))], this.steer, this.bias);
+    const dir = this.hold(w, queued, move.dir);
+    let { h, v } = move;
+    if (dir !== move.dir) {
+      // Where the held direction puts the fighter on the press frame.
+      const s = { h: w.h, v: w.v };
+      for (const d of queued) stepShip(s, d, w);
+      stepShip(s, dir, w);
+      h = s.h;
+      v = s.v;
+    }
+    this.send(dir);
+    this.fire(w, h, v);
 
     this.telemetry.mode = move.tDeath <= this.planner.horizon ? 'dodge' : 'play';
     this.telemetry.threats = this.planner.count;
     this.telemetry.tDeath = move.tDeath;
+  }
+
+  /**
+   * The minimum hold: a direction (or a standstill) is kept for MIN_HOLD
+   * frames after it was taken, whatever the search prefers, unless
+   * holding it runs into a threat within URGENT frames -- then the
+   * search's choice goes out at once. Seen from outside, the fighter
+   * moves in strokes instead of twitching; the search still runs every
+   * frame, so the stroke that follows starts from where it really is.
+   * @param {import('./world.js').World} w @param {number[]} queued
+   * @param {number} want the search's choice
+   * @returns {number} the direction to send
+   */
+  hold(w, queued, want) {
+    const st = this.steer;
+    const min = w.challenge ? MIN_HOLD_CHALLENGE : MIN_HOLD;
+    if (want === st.dir || st.since >= min) return want;
+    return this.planner.survives(w, queued, st.dir) > URGENT ? st.dir : want;
+  }
+
+  /**
+   * The row to rest on in a challenging stage: the one with the most to
+   * shoot at, discounted by the frames it takes to get there (1 px a
+   * frame), and kept unless another is clearly better.
+   * @param {import('./world.js').World} w
+   * @returns {number}
+   */
+  challengeRow(w) {
+    let best = this.row;
+    let bestMass = -1;
+    for (const row of CHALLENGE_ROWS) {
+      let mass = buildAimMap(null, w, row) / (1 + Math.abs(row - w.v) / 48);
+      if (row === this.row) mass *= ROW_HYSTERESIS;
+      if (mass > bestMass) { bestMass = mass; best = row; }
+    }
+    // Nothing to shoot at anywhere: stay put.
+    if (bestMass > 0) this.row = best;
+    return this.row;
   }
 
   /**
@@ -244,7 +317,11 @@ export class AutoPlayer {
     else if (dv > 0) this.m.setInput('down', true);
     this.sent.copyWithin(1, 0, HISTORY - 1);
     this.sent[0] = dir;
-    if (dir !== 0) this.lastDir = dir;
+    const st = this.steer;
+    st.since = dir === st.dir ? st.since + 1 : 0;
+    st.dir = dir;
+    if (dh !== 0) st.signH = dh;
+    if (dv !== 0) st.signV = dv;
   }
 
   /**

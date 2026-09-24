@@ -34,6 +34,7 @@ import { MAIN } from './routines.js';
 import { call } from '../call.js';
 import { disp8 } from '../m6809ops.js';
 import { busy, requestJump } from './gp2_3b_state.js';
+import { ioRead } from '../timing.js';
 
 /** @typedef {import('../../machine/machine.js').Machine} Machine */
 
@@ -64,6 +65,20 @@ function* rd(m, addr, cyc) {
   yield* busy(m, 0);
   const v = m.peek(addr & 0xffff);
   m.charge(cyc);
+  return v;
+}
+
+/**
+ * `lda ,u` (4) of a 56XX input byte: the read is on cycle index 3, not
+ * the extended 4 (timing.js ioRead). U may also point into the demo's
+ * RAM script, which the data cycle does not affect.
+ * @param {Machine} m @param {number} u
+ * @returns {Generator<symbol, number, unknown>}
+ */
+function* rdU(m, u) {
+  yield* busy(m, 0);
+  const v = ioRead(m, u & 0xffff, 3);
+  m.charge(4);
   return v;
 }
 
@@ -532,7 +547,7 @@ export function* task_move_player(m) {
 function* moveShip(m, u) {
   // $CF64: ldb player_y / lda ,u / anda #2 / bne $CF99
   let b = yield* rd(m, 0x1600, 5);
-  const s1 = yield* rd(m, u, 4);
+  const s1 = yield* rdU(m, u);
   m.charge(2); m.charge(3);
   if (s1 & 0x02) {
     // $CF99: cmpb <$79 / bcc $CF73 / addb <$D1 / stb player_y / bra
@@ -545,7 +560,7 @@ function* moveShip(m, u) {
     }
   } else {
     // $CF6D: lda ,u / anda #8 / bne $CF8E
-    const s2 = yield* rd(m, u, 4);
+    const s2 = yield* rdU(m, u);
     m.charge(2); m.charge(3);
     if (s2 & 0x08) {
       // $CF8E: cmpb <$78 / bcs $CF73 / subb <$D1 / stb player_y / bra
@@ -798,13 +813,13 @@ export function* task_player_fire(m) {
       m.charge(3);
       if (held !== 0) {
         // lda ,u / anda #2 / sta <fire_held / bra $D1C1
-        const v = yield* rd(m, u, 4);
+        const v = yield* rdU(m, u);
         m.charge(2);
         yield* st(m, 0x1019, v & 0x02, 4);
         m.charge(3);
       } else {
         // $D187: lda ,u / anda #2 / beq $D1C1
-        const v = yield* rd(m, u, 4);
+        const v = yield* rdU(m, u);
         m.charge(2); m.charge(3);
         fire = (v & 0x02) !== 0;
       }
